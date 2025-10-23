@@ -184,5 +184,5 @@ fn parse_date(raw: &str) -> Result<Date, WeatherError> {
 
 /// 将偏移秒数转换为 `UtcOffset`，便于统一处理时间。
 fn utc_offset(seconds: i32) -> Result<UtcOffset, WeatherError> {
-    UtcOffset::from_whole_seconds(seconds).ok_or(WeatherError::InvalidUtcOffset(seconds))
+    UtcOffset::from_whole_seconds(seconds).map_err(|_| WeatherError::InvalidUtcOffset(seconds))
 }

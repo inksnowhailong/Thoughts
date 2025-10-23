@@ -1,5 +1,5 @@
 
-use crate::globalConfig::config::LOOP_TIME;
+use crate::global_config::config::LOOP_TIME;
 use std::sync::mpsc::{channel, Sender, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;

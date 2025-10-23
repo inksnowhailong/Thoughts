@@ -2,8 +2,8 @@ use crate::thoughts::core::thoughts_core;
 
 
 mod thoughts;
-mod globalConfig;
-
+mod global_config;
+mod integrations;
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
