@@ -1,12 +1,12 @@
 
 use crate::globalConfig::config::LOOP_TIME;
 use std::sync::mpsc::{channel, Sender, RecvTimeoutError};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use super::check_status::check_status; // 从同级模块引入函数
 
 // 思绪核心
-pub fn thoughts_core(){
+pub fn thoughts_core()-> (Sender<()>, JoinHandle<()>){
 
     let throughts = vec!(check_status);
 
@@ -21,12 +21,8 @@ pub fn thoughts_core(){
                 Err(RecvTimeoutError::Timeout) => {
                     // 执行思绪核心的主要逻辑
                     for throught in &throughts {
-                        throught().warp();
-                    }
-                    // 检查状态
-                    if let Err(e) = check_status(){
-                        eprintln!("Error checking status: {}", e);
-                    }
+                        throught();
+                    };
                 }
                 Err(_) => {
                     // 超时，继续执行任务
