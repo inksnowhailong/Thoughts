@@ -6,7 +6,7 @@
 pub mod open_meteo;
 pub mod types;
 
-pub use types::{CurrentWeather, DailyWeather, WeatherError, WeatherSnapshot};
+pub use types::{WeatherError, WeatherSnapshot};
 
 use open_meteo::OpenMeteoClient;
 

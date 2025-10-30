@@ -80,9 +80,12 @@ pub struct OpenMeteoDaily {
 /// Open-Meteo 顶层响应结构。
 #[derive(Debug, Deserialize)]
 pub struct OpenMeteoResponse {
-    pub latitude: f64,
-    pub longitude: f64,
-    pub timezone: String,
+    #[serde(rename = "latitude")]
+    pub _latitude: f64,
+    #[serde(rename = "longitude")]
+    pub _longitude: f64,
+    #[serde(rename = "timezone")]
+    pub _timezone: String,
     #[serde(rename = "utc_offset_seconds")]
     pub utc_offset_seconds: i32,
     pub current: OpenMeteoCurrent,
