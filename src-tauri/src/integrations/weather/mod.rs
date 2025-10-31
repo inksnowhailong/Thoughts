@@ -1,12 +1,12 @@
 //! 天气集成模块。
-//! 
+//!
 //! 该模块当前使用 Open-Meteo 作为外部天气服务提供商，暴露出一个便捷的主函数
 //! [`fetch_weather_overview`]，用于一次性获取当前、今天及明日的天气核心信息。
 
 pub mod open_meteo;
 pub mod types;
 
-pub use types::{CurrentWeather, DailyWeather, WeatherError, WeatherSnapshot};
+pub use types::{WeatherError, WeatherSnapshot};
 
 use open_meteo::OpenMeteoClient;
 

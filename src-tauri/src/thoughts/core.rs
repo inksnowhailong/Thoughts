@@ -7,7 +7,7 @@ use super::check_status::check_status; // 从同级模块引入函数
 
 // 思绪核心
 pub fn thoughts_core()-> (Sender<()>, JoinHandle<()>){
-
+    // 建立一个要执行的任务序列的列表
     let throughts = vec!(check_status);
 
     let (tx,rx) = channel::<()>();
@@ -25,8 +25,8 @@ pub fn thoughts_core()-> (Sender<()>, JoinHandle<()>){
                     };
                 }
                 Err(_) => {
-                    // 超时，继续执行任务
-                    // 执行思绪核心的主要逻辑
+                // 任何其他错误，退出循环
+                    break;
                 }
             }
         }

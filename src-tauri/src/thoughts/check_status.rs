@@ -1,7 +1,7 @@
 use crate::global_config::config_struct::DataRestrict;
 use crate::integrations::weather::fetch_weather_overview;
 // 气温情况
-struct Temperature {
+pub struct Temperature {
     // 今日最低气温
     pub day_min: f32,
     // 今日最高气温
