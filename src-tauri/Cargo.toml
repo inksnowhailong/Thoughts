@@ -22,7 +22,6 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.11", features = ["json"] }
-time = { version = "0.3", features = ["macros", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "sync", "io-util"] }

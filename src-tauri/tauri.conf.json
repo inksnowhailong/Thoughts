@@ -15,7 +15,7 @@
         "title": "thoughts",
         "width": 800,
         "height": 600,
-        "visible": false
+        "visible": true
       }
     ],
     "security": {
