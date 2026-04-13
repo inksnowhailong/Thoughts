@@ -549,6 +549,6 @@ app-data/logs/events/2026-04-13.jsonl
 4. 事件日志和 session 映射
 5. 自动轮询调度
 
-### 6. 已知限制
+### 6. 已解决的问题
 
-- 当前默认模型 `deepseek-ai/DeepSeek-V3.2`（SiliconFlow）存在 context_overflow 问题，系统 prompt 约 26612 chars 已超出模型上下文窗口。需要在编码前解决：换用更大上下文模型，或精简 OpenClaw workspace 文件。
+- ~~context_overflow~~ — 原因是 `openclaw.json` 中 DeepSeek-V3.2 的 `contextWindow` 误配为 16000（少一个零），已修正为 160000。对话验证正常，首次请求消耗约 13,375 input tokens。
