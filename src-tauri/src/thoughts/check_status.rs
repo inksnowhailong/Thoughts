@@ -34,7 +34,7 @@ impl WorldStatus {
         }
     }
 }
-
+// 检查状态
 pub async fn check_status() {
     let mut data_restrict = DataRestrict::new(60, 12, 2);
     data_restrict.register_call();

@@ -1,0 +1,266 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1776045429248,
+  "projectRoot": "/Users/zhanghailong/Desktop/coding/thoughts",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "vue",
+        "version": "3.5.13",
+        "category": "frontend"
+      },
+      {
+        "name": "vite",
+        "version": "6.0.3",
+        "category": "build"
+      }
+    ],
+    "packageManager": "pnpm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "pnpm build",
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": "pnpm dev",
+    "scripts": {
+      "dev": "vite",
+      "build": "vue-tsc --noEmit && vite build",
+      "preview": "vite preview",
+      "tauri": "tauri dev"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": "ES modules",
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "public",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "public": {
+      "path": "public",
+      "purpose": "Public files",
+      "fileCount": 2,
+      "lastAccessed": 1776045429220,
+      "keyFiles": [
+        "tauri.svg",
+        "vite.svg"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 3,
+      "lastAccessed": 1776045429221,
+      "keyFiles": [
+        "App.vue",
+        "main.ts",
+        "vite-env.d.ts"
+      ]
+    },
+    "src-tauri": {
+      "path": "src-tauri",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1776045429225,
+      "keyFiles": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "build.rs",
+        "tauri.conf.json"
+      ]
+    },
+    "target": {
+      "path": "target",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1776045429226,
+      "keyFiles": []
+    },
+    "src/assets": {
+      "path": "src/assets",
+      "purpose": "Static assets",
+      "fileCount": 1,
+      "lastAccessed": 1776045429227,
+      "keyFiles": [
+        "vue.svg"
+      ]
+    },
+    "src-tauri/src": {
+      "path": "src-tauri/src",
+      "purpose": "Source code",
+      "fileCount": 2,
+      "lastAccessed": 1776045429231,
+      "keyFiles": [
+        "lib.rs",
+        "main.rs"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "Mem.md",
+      "accessCount": 17,
+      "lastAccessed": 1776070358798,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1776069135361,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 2,
+      "lastAccessed": 1776069135413,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/thoughts/mod.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069140295,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/main.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069140351,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/thoughts/check_status.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069140408,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069140461,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/thoughts/core.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069140515,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/integrations/weather/mod.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150715,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/integrations/weather/open_meteo.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150759,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/integrations/mod.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150774,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/integrations/weather/types.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150815,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/global_config/mod.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150827,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/global_config/config_struct.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150869,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/global_config/config.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776069150922,
+      "type": "file"
+    },
+    {
+      "path": "src/App.vue",
+      "accessCount": 2,
+      "lastAccessed": 1776069161591,
+      "type": "file"
+    },
+    {
+      "path": "src/main.ts",
+      "accessCount": 2,
+      "lastAccessed": 1776069161643,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/tauri.conf.json",
+      "accessCount": 2,
+      "lastAccessed": 1776069175983,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 2,
+      "lastAccessed": 1776069196889,
+      "type": "file"
+    },
+    {
+      "path": "LICENSE",
+      "accessCount": 1,
+      "lastAccessed": 1776045470225,
+      "type": "file"
+    },
+    {
+      "path": "vite.config.ts",
+      "accessCount": 1,
+      "lastAccessed": 1776069161561,
+      "type": "file"
+    },
+    {
+      "path": "index.html",
+      "accessCount": 1,
+      "lastAccessed": 1776069161699,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

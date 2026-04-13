@@ -23,7 +23,7 @@ impl DataRestrict {
             frequency_level,
         }
     }
-
+    // 登记一次执行，增加获取次数和获取频率
     pub fn register_call(&mut self) {
         self.get_count = self.get_count.saturating_add(1);
         self.get_frequency = self.get_frequency.saturating_add(1);

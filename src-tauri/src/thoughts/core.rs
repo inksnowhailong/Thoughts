@@ -10,7 +10,9 @@ use tokio::select;
 type ThoughtTask = fn() -> Pin<Box<dyn Future<Output = ()> + Send>>;
 // 思绪核心
 pub fn thoughts_core() -> (oneshot::Sender<()>, JoinHandle<()>) {
+    // 创建一个 oneshot 通道，用于发送停止信号
     let (tx, rx) = oneshot::channel::<()>();
+
     let tasks: Vec<ThoughtTask> = vec![|| Box::pin(check_status())];
     let mut ticker = interval(Duration::from_secs(LOOP_TIME));
     let handle = async_runtime::spawn(async move {

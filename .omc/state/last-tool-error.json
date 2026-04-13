@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"ls ~/.openclaw/config* 2>&1; ls ~/.openclaw/*.json 2>&1; ls ~/.openclaw/*.yaml 2>&1\",\"description\":\"Check OpenClaw config files\"}",
+  "error": "Exit code 1\n(eval):1: no matches found: /Users/zhanghailong/.openclaw/config*\n/Users/zhanghailong/.openclaw/openclaw.json\n/Users/zhanghailong/.openclaw/update-check.json\n(eval):1: no matches found: /Users/zhanghailong/.openclaw/*.yaml",
+  "timestamp": "2026-04-13T08:45:45.275Z",
+  "retry_count": 1
+}

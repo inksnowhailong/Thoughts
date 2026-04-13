@@ -10,6 +10,7 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 启动思绪核心
     let (stop_tx, worker_handle) = thoughts_core();
 
     // 程序要退出时：
