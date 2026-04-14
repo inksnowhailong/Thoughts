@@ -130,16 +130,16 @@
   },
   "hotPaths": [
     {
+      "path": "",
+      "accessCount": 34,
+      "lastAccessed": 1776145230129,
+      "type": "directory"
+    },
+    {
       "path": "Mem.md",
       "accessCount": 21,
       "lastAccessed": 1776132873899,
       "type": "file"
-    },
-    {
-      "path": "",
-      "accessCount": 15,
-      "lastAccessed": 1776135627873,
-      "type": "directory"
     },
     {
       "path": "src-tauri/src/lib.rs",
@@ -211,6 +211,18 @@
       "path": "src/main.ts",
       "accessCount": 5,
       "lastAccessed": 1776133410141,
+      "type": "file"
+    },
+    {
+      "path": ".claude/settings.local.json",
+      "accessCount": 5,
+      "lastAccessed": 1776145236892,
+      "type": "file"
+    },
+    {
+      "path": ".claude/hooks/hooks.json",
+      "accessCount": 5,
+      "lastAccessed": 1776145236947,
       "type": "file"
     },
     {
@@ -304,6 +316,12 @@
       "type": "file"
     },
     {
+      "path": ".claude/skills/tvs-review/SKILL.md",
+      "accessCount": 3,
+      "lastAccessed": 1776144633773,
+      "type": "file"
+    },
+    {
       "path": "src-tauri/src/integrations/weather/open_meteo.rs",
       "accessCount": 2,
       "lastAccessed": 1776069150759,
@@ -344,6 +362,18 @@
       "accessCount": 2,
       "lastAccessed": 1776135661193,
       "type": "directory"
+    },
+    {
+      "path": ".claude/config.json",
+      "accessCount": 2,
+      "lastAccessed": 1776144383746,
+      "type": "file"
+    },
+    {
+      "path": ".claude/skills/tvs-analyze/SKILL.md",
+      "accessCount": 2,
+      "lastAccessed": 1776144383814,
+      "type": "file"
     },
     {
       "path": "LICENSE",
