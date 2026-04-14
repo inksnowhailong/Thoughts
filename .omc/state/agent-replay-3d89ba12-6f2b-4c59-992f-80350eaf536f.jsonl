@@ -37,3 +37,4 @@
 {"t":0,"agent":"ac40fec","agent_type":"critic","event":"agent_start","parent_mode":"none"}
 {"t":0,"agent":"ac40fec","agent_type":"critic","event":"agent_stop","success":true,"duration_ms":131067}
 {"t":0,"agent":"system","event":"skill_invoked","skill_name":"oh-my-claudecode:autopilot"}
+{"t":0,"agent":"a81e888","agent_type":"unknown","event":"agent_stop","success":true}

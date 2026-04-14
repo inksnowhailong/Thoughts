@@ -1,0 +1,18 @@
+{
+  "name": "thoughts",
+  "version": "0.1.0",
+  "description": "思绪模式 — AI 伙伴系统，叠加人格、记忆和主动行为于 Claude 之上",
+  "author": {
+    "name": "zhanghailong"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "ai-companion",
+    "personality",
+    "memory",
+    "proactive"
+  ],
+  "skills": "./skills/"
+}

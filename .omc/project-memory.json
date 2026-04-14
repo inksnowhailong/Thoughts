@@ -178,6 +178,12 @@
       "type": "file"
     },
     {
+      "path": ".claude/settings.local.json",
+      "accessCount": 8,
+      "lastAccessed": 1776149424085,
+      "type": "file"
+    },
+    {
       "path": "src-tauri/src/cli/agent_client.rs",
       "accessCount": 7,
       "lastAccessed": 1776135521953,
@@ -211,12 +217,6 @@
       "path": "src/main.ts",
       "accessCount": 5,
       "lastAccessed": 1776133410141,
-      "type": "file"
-    },
-    {
-      "path": ".claude/settings.local.json",
-      "accessCount": 5,
-      "lastAccessed": 1776145236892,
       "type": "file"
     },
     {
@@ -397,6 +397,36 @@
       "path": "src-tauri/src/storage/profile_store.rs",
       "accessCount": 1,
       "lastAccessed": 1776135787104,
+      "type": "file"
+    },
+    {
+      "path": ".claude/skills/thoughts-onboarding/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1776147296689,
+      "type": "file"
+    },
+    {
+      "path": ".claude/skills/thoughts/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1776148287644,
+      "type": "file"
+    },
+    {
+      "path": ".claude/skills/thoughts-stop/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1776148540799,
+      "type": "file"
+    },
+    {
+      "path": ".claude/hooks/thoughts-inject.sh",
+      "accessCount": 1,
+      "lastAccessed": 1776148542343,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/.claude-plugin/plugin.json",
+      "accessCount": 1,
+      "lastAccessed": 1776149060703,
       "type": "file"
     }
   ],

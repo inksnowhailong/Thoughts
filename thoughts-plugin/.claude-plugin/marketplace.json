@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "thoughts",
+  "description": "思绪模式 — 为 Claude Code 添加人格、记忆、环境感知和主动行为能力的 AI 伙伴插件",
+  "owner": {
+    "name": "zhanghailong"
+  },
+  "plugins": [
+    {
+      "name": "thoughts",
+      "description": "AI 伙伴系统：对话式画像收集、随机人格生成、Hook 人格注入、Cron 主动聊天/联网搜索/环境感知、动态记忆演化",
+      "version": "0.1.0",
+      "source": "./",
+      "category": "productivity",
+      "tags": [
+        "ai-companion",
+        "personality",
+        "memory",
+        "proactive-chat",
+        "environment-awareness"
+      ]
+    }
+  ],
+  "version": "0.1.0"
+}

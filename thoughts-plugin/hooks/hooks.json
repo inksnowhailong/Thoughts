@@ -1,0 +1,17 @@
+{
+  "description": "思绪模式 Hook — 人格/画像/记忆注入",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/hooks/thoughts-inject.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
