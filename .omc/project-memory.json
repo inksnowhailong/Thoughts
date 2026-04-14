@@ -131,44 +131,134 @@
   "hotPaths": [
     {
       "path": "Mem.md",
-      "accessCount": 20,
-      "lastAccessed": 1776071300181,
+      "accessCount": 21,
+      "lastAccessed": 1776132873899,
       "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 15,
+      "lastAccessed": 1776135627873,
+      "type": "directory"
     },
     {
       "path": "src-tauri/src/lib.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776071810885,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/Cargo.toml",
-      "accessCount": 4,
-      "lastAccessed": 1776071811405,
-      "type": "file"
-    },
-    {
-      "path": "src/main.ts",
-      "accessCount": 4,
-      "lastAccessed": 1776071949613,
+      "accessCount": 13,
+      "lastAccessed": 1776135872759,
       "type": "file"
     },
     {
       "path": "src/App.vue",
-      "accessCount": 4,
-      "lastAccessed": 1776071949878,
+      "accessCount": 12,
+      "lastAccessed": 1776135651537,
       "type": "file"
     },
     {
-      "path": "src-tauri/src/thoughts/core.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071321711,
+      "path": "src-tauri/src/models/mod.rs",
+      "accessCount": 11,
+      "lastAccessed": 1776135804063,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/commands.rs",
+      "accessCount": 11,
+      "lastAccessed": 1776135946321,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/runtime/scheduler.rs",
+      "accessCount": 11,
+      "lastAccessed": 1776135954284,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/app/state.rs",
+      "accessCount": 10,
+      "lastAccessed": 1776135832433,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/cli/agent_client.rs",
+      "accessCount": 7,
+      "lastAccessed": 1776135521953,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/storage/config_store.rs",
+      "accessCount": 7,
+      "lastAccessed": 1776135522015,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/storage/mod.rs",
+      "accessCount": 7,
+      "lastAccessed": 1776135787416,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "accessCount": 6,
+      "lastAccessed": 1776135531444,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/global_config/config.rs",
+      "accessCount": 5,
+      "lastAccessed": 1776133386037,
+      "type": "file"
+    },
+    {
+      "path": "src/main.ts",
+      "accessCount": 5,
+      "lastAccessed": 1776133410141,
       "type": "file"
     },
     {
       "path": "src-tauri/src/global_config/config_struct.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071321735,
+      "accessCount": 4,
+      "lastAccessed": 1776133385984,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/main.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133396026,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/global_config/mod.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133414732,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/thoughts/check_status.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133423055,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/thoughts/mod.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133423079,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/thoughts/core.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133423180,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/integrations/weather/mod.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133428525,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/integrations/mod.rs",
+      "accessCount": 4,
+      "lastAccessed": 1776133428581,
       "type": "file"
     },
     {
@@ -178,51 +268,39 @@
       "type": "file"
     },
     {
-      "path": "src-tauri/src/thoughts/check_status.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071321823,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/integrations/mod.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071344466,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/thoughts/mod.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071344512,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/global_config/config.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071344575,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/global_config/mod.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776071344628,
-      "type": "file"
-    },
-    {
       "path": "vite.config.ts",
       "accessCount": 3,
       "lastAccessed": 1776071962702,
       "type": "file"
     },
     {
-      "path": "src-tauri/src/main.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776069140351,
+      "path": "src-tauri/src/runtime/mod.rs",
+      "accessCount": 3,
+      "lastAccessed": 1776133401238,
       "type": "file"
     },
     {
-      "path": "src-tauri/src/integrations/weather/mod.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776069150715,
+      "path": "src-tauri/src/runtime/openclaw_manager.rs",
+      "accessCount": 3,
+      "lastAccessed": 1776133405716,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/tauri.conf.json",
+      "accessCount": 3,
+      "lastAccessed": 1776133433486,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src",
+      "accessCount": 3,
+      "lastAccessed": 1776135531391,
+      "type": "directory"
+    },
+    {
+      "path": "src-tauri/src/cli/types.rs",
+      "accessCount": 3,
+      "lastAccessed": 1776135881031,
       "type": "file"
     },
     {
@@ -238,28 +316,34 @@
       "type": "file"
     },
     {
-      "path": "src-tauri/tauri.conf.json",
-      "accessCount": 2,
-      "lastAccessed": 1776069175983,
-      "type": "file"
-    },
-    {
       "path": "README.md",
       "accessCount": 2,
       "lastAccessed": 1776069196889,
       "type": "file"
     },
     {
-      "path": "src-tauri/src/runtime/scheduler.rs",
+      "path": "src-tauri/src/app/mod.rs",
       "accessCount": 2,
-      "lastAccessed": 1776071783016,
+      "lastAccessed": 1776133390574,
       "type": "file"
     },
     {
-      "path": "src-tauri/src/commands.rs",
+      "path": "src-tauri/src/storage/event_log_store.rs",
       "accessCount": 2,
-      "lastAccessed": 1776071783205,
+      "lastAccessed": 1776133401129,
       "type": "file"
+    },
+    {
+      "path": "src-tauri/src/cli/mod.rs",
+      "accessCount": 2,
+      "lastAccessed": 1776133405795,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri",
+      "accessCount": 2,
+      "lastAccessed": 1776135661193,
+      "type": "directory"
     },
     {
       "path": "LICENSE",
@@ -274,75 +358,15 @@
       "type": "file"
     },
     {
-      "path": "src-tauri/src/models/mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071628420,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/cli/types.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071628591,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/cli/mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071628780,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/cli/agent_client.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071628955,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/runtime/openclaw_manager.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071663003,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/runtime/mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071663238,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/app/state.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071663445,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/app/mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071663688,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/config_store.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071663862,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/event_log_store.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071664036,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776071664201,
-      "type": "file"
-    },
-    {
       "path": "uno.config.ts",
       "accessCount": 1,
       "lastAccessed": 1776071949358,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/storage/profile_store.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776135787104,
       "type": "file"
     }
   ],

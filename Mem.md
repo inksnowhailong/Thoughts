@@ -552,3 +552,6 @@ app-data/logs/events/2026-04-13.jsonl
 ### 6. 已解决的问题
 
 - ~~context_overflow~~ — 原因是 `openclaw.json` 中 DeepSeek-V3.2 的 `contextWindow` 误配为 16000（少一个零），已修正为 160000。对话验证正常，首次请求消耗约 13,375 input tokens。
+
+
+

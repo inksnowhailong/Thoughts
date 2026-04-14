@@ -59,7 +59,7 @@ async fn execute_poll(
 
             // 记录日志
             let (status, result_kind, received) = match &text {
-                Ok(t) if t.contains("HEARTBEAT_OK") => {
+                Ok(t) if t.lines().any(|l| l.trim() == "HEARTBEAT_OK") => {
                     ("success".to_string(), Some("heartbeat_ok".to_string()), Some(t.clone()))
                 }
                 Ok(t) => ("success".to_string(), Some("normal".to_string()), Some(t.clone())),
@@ -82,7 +82,7 @@ async fn execute_poll(
             );
 
             match text {
-                Ok(t) if t.contains("HEARTBEAT_OK") => Ok(None),
+                Ok(t) if t.lines().any(|l| l.trim() == "HEARTBEAT_OK") => Ok(None),
                 Ok(t) => Ok(Some(t)),
                 Err(e) => Err(e),
             }

@@ -2,6 +2,8 @@
 import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import OnboardingView from './components/OnboardingView.vue'
+import ProfileModal from './components/ProfileModal.vue'
 
 // === 类型定义 ===
 
@@ -11,6 +13,7 @@ interface AppStatus {
     lastError: string | null
     lastPollTime: string | null
     lastUserMessageTime: string | null
+    appPhase: 'Onboarding' | 'Active'
 }
 
 interface ChatItem {
@@ -25,6 +28,9 @@ const inputMessage = ref('')
 const isSending = ref(false)
 const chatList = reactive<ChatItem[]>([])
 const chatContainer = ref<HTMLElement | null>(null)
+/** 画像弹窗是否打开 */
+const showProfileModal = ref(false)
+const profileModalRef = ref<InstanceType<typeof ProfileModal> | null>(null)
 
 const appStatus = reactive<AppStatus>({
     gateway: 'Stopped',
@@ -32,6 +38,7 @@ const appStatus = reactive<AppStatus>({
     lastError: null,
     lastPollTime: null,
     lastUserMessageTime: null,
+    appPhase: 'Active',
 })
 
 // === 工具函数 ===
@@ -144,10 +151,17 @@ async function handleRestartGateway() {
     }
 }
 
+/** Onboarding 完成回调 */
+function handleOnboardingComplete() {
+    refreshStatus()
+}
+
 // === 生命周期 ===
 
 let unlistenReminder: (() => void) | null = null
 let unlistenStatus: (() => void) | null = null
+let unlistenOnboardingComplete: (() => void) | null = null
+let unlistenProfileUpdated: (() => void) | null = null
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
@@ -166,6 +180,18 @@ onMounted(async () => {
         refreshStatus()
     })
 
+    // 监听 onboarding 完成事件
+    unlistenOnboardingComplete = await listen('onboarding-complete', () => {
+        refreshStatus()
+    })
+
+    // 监听画像更新事件
+    unlistenProfileUpdated = await listen('profile-updated', () => {
+        if (showProfileModal.value && profileModalRef.value) {
+            profileModalRef.value.refresh()
+        }
+    })
+
     // 初次获取状态
     await refreshStatus()
 
@@ -176,12 +202,21 @@ onMounted(async () => {
 onUnmounted(() => {
     unlistenReminder?.()
     unlistenStatus?.()
+    unlistenOnboardingComplete?.()
+    unlistenProfileUpdated?.()
     if (statusTimer) clearInterval(statusTimer)
 })
 </script>
 
 <template>
-    <div data-alt="app-root" class="h-screen flex flex-col bg-gray-900 text-gray-100">
+    <!-- Onboarding 模式 -->
+    <OnboardingView
+        v-if="appStatus.appPhase === 'Onboarding'"
+        @complete="handleOnboardingComplete"
+    />
+
+    <!-- 正常模式 -->
+    <div v-else data-alt="app-root" class="h-screen flex flex-col bg-gray-900 text-gray-100">
         <!-- 顶部状态栏 -->
         <header data-alt="status-bar" class="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 text-sm shrink-0">
             <div class="flex items-center gap-4">
@@ -194,6 +229,14 @@ onUnmounted(() => {
                 <span v-if="appStatus.lastPollTime" class="text-gray-500">上次: {{ appStatus.lastPollTime }}</span>
             </div>
             <div class="flex items-center gap-2">
+                <button
+                    data-alt="profile-btn"
+                    class="px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 transition"
+                    title="查看我的画像"
+                    @click="showProfileModal = true"
+                >
+                    画像
+                </button>
                 <button
                     data-alt="restart-gateway-btn"
                     class="px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 transition"
@@ -306,5 +349,12 @@ onUnmounted(() => {
                 </button>
             </form>
         </footer>
+
+        <!-- 画像弹窗 -->
+        <ProfileModal
+            v-if="showProfileModal"
+            ref="profileModalRef"
+            @close="showProfileModal = false"
+        />
     </div>
 </template>

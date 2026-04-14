@@ -21,6 +21,15 @@ pub enum SchedulerStatus {
     Paused,
 }
 
+/// 应用生命周期阶段
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AppPhase {
+    /// 首次启动，正在收集用户画像
+    Onboarding,
+    /// 正常运行模式
+    Active,
+}
+
 // === 应用配置 ===
 
 /// 静默时间段配置
@@ -104,4 +113,5 @@ pub struct AppStatus {
     pub last_error: Option<String>,
     pub last_poll_time: Option<String>,
     pub last_user_message_time: Option<String>,
+    pub app_phase: AppPhase,
 }

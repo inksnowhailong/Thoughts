@@ -1,7 +1,7 @@
 {
   "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/Users/zhanghailong/Desktop/coding/thoughts/src-tauri/src/main.ts\"}",
-  "error": "File does not exist. Note: your current working directory is /Users/zhanghailong/Desktop/coding/thoughts. Did you mean main.rs?",
-  "timestamp": "2026-04-13T09:09:04.452Z",
+  "tool_input_preview": "{\"file_path\":\"/Users/zhanghailong/Desktop/coding/thoughts/src-tauri/src/global_config\"}",
+  "error": "EISDIR: illegal operation on a directory, read '/Users/zhanghailong/Desktop/coding/thoughts/src-tauri/src/global_config'",
+  "timestamp": "2026-04-14T02:23:01.566Z",
   "retry_count": 1
 }
