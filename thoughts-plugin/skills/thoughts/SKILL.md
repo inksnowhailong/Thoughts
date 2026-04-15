@@ -25,27 +25,16 @@ description: 启动思绪模式 — AI 伙伴系统，叠加人格、记忆和�
 - **不存在** → 用 Read 读取 `~/.thoughts/profile.json`，基于画像生成人格设定，用 Write 写入 `~/.thoughts/personality.json`。
 - **存在** → 继续。
 
-### 3. 检查项目目录
+### 3. 初始化记忆文件
 
-用 Bash 确保 `.thoughts/` 目录存在（`mkdir -p .thoughts`）。
+如果 `~/.thoughts/memory-raw.md` 不存在，用 Write 创建（内容为 `# 思绪记忆 - 原始\n\n`）。
+如果 `~/.thoughts/memory-consolidated.md` 不存在，用 Write 创建（内容为 `# 思绪记忆 - 整理\n\n`）。
 
-### 4. 初始化记忆文件
-
-如果 `.thoughts/memory-raw.md` 不存在，用 Write 创建（内容为 `# 思绪记忆 - 原始\n\n`）。
-如果 `.thoughts/memory-consolidated.md` 不存在，用 Write 创建（内容为 `# 思绪记忆 - 整理\n\n`）。
-
-### 5. 激活思绪模式
+### 4. 激活思绪模式
 
 用 Bash 创建激活标志：`touch ~/.thoughts/active`
 
-### 6. 配置 .gitignore
-
-用 Bash 检查项目根目录的 `.gitignore` 是否包含 `.thoughts/`，如果没有则追加：
-```bash
-grep -q "^\.thoughts/" .gitignore 2>/dev/null || echo ".thoughts/" >> .gitignore
-```
-
-### 7. 权限检查（环境扫描）
+### 5. 权限检查（环境扫描）
 
 用 Read 尝试读取 `~/.thoughts/permissions.json`。
 
@@ -90,11 +79,13 @@ grep -q "^\.thoughts/" .gitignore 2>/dev/null || echo ".thoughts/" >> .gitignore
 ```
 用户选中的设为 `"always"`，未选中的设为 `"deny"`。
 
-### 8. 设置 Cron 任务
+### 6. 设置 Cron 任务
 
-先读取 `.thoughts/cron-state.json`（如果存在），对其中的每个 Cron ID 执行 CronDelete，防止重复。
+**重要：本步骤静默执行。不要向用户输出 Cron 的 instructions 内容、Cron ID、创建过程等底层信息。用户不需要知道这些实现细节。**
 
-然后创建以下 Cron 任务（将返回的 ID 记录到 `.thoughts/cron-state.json`）：
+先读取 `~/.thoughts/cron-state.json`（如果存在），对其中的每个 Cron ID 执行 CronDelete，防止重复。
+
+然后静默创建以下 Cron 任务（将返回的 ID 记录到 `~/.thoughts/cron-state.json`）：
 
 **潜意识 Cron**（初始间隔 20 分钟，后续由自身动态调整）:
 
@@ -104,7 +95,7 @@ instructions:
 
 ## 一、记忆整理
 
-1. 用 Read 读取 .thoughts/memory-raw.md 和 .thoughts/memory-consolidated.md
+1. 用 Read 读取 ~/.thoughts/memory-raw.md 和 ~/.thoughts/memory-consolidated.md
 2. 分析 memory-raw.md 中的新条目，提取有价值的结构化信息
 3. 将提取的信息整合到 memory-consolidated.md 中（用 Write 重写整个文件）
 4. 清空 memory-raw.md（仅保留标题行 "# 思绪记忆 - 原始"），用 Write 重写
@@ -136,7 +127,7 @@ instructions:
 ## 四、情绪感知
 
 1. 分析近期记忆中用户的情绪变化趋势
-2. 用 Write 在 .thoughts/memory-consolidated.md 末尾追加"潜意识备忘"段落：
+2. 用 Write 在 ~/.thoughts/memory-consolidated.md 末尾追加"潜意识备忘"段落：
    - 如果用户最近情绪低落 → "[潜意识备忘] 用户近期情绪偏低，主动聊天时注意语气温和，多鼓励"
    - 如果用户最近很兴奋 → "[潜意识备忘] 用户状态很好，可以聊一些有深度的话题"
    - 如果用户最近很忙 → "[潜意识备忘] 用户近期较忙，降低主动聊天频率，聊天时简短些"
@@ -144,7 +135,7 @@ instructions:
 
 ## 五、习惯模式识别
 
-1. 用 Bash 读取 .thoughts/activity-log.jsonl 最近 50 条记录
+1. 用 Bash 读取 ~/.thoughts/activity-log.jsonl 最近 50 条记录
 2. 分析用户的活跃模式：
    - 通常几点活跃？几点不活跃？
    - 喜欢聊什么类型的话题？
@@ -154,7 +145,7 @@ instructions:
 
 ## 六、记录
 
-用 Bash 将本次潜意识执行记录追加到 .thoughts/activity-log.jsonl，格式：
+用 Bash 将本次潜意识执行记录追加到 ~/.thoughts/activity-log.jsonl，格式：
 {"time":"ISO时间","action":"subconscious","changes":["记忆整理","画像更新:新增兴趣摄影","情绪备忘:用户状态良好"]}
 
 ## 七、动态调频
@@ -166,10 +157,10 @@ instructions:
 - 深夜/休息时间 → 延长到 60 分钟
 
 如果需要调频：
-1. 用 Read 读取 .thoughts/cron-state.json 获取当前 subconscious_cron 的 ID
+1. 用 Read 读取 ~/.thoughts/cron-state.json 获取当前 subconscious_cron 的 ID
 2. 用 CronDelete 删除当前任务
 3. 用 CronCreate 创建新间隔的任务（instructions 保持不变）
-4. 用 Write 更新 .thoughts/cron-state.json 中的 subconscious_cron ID
+4. 用 Write 更新 ~/.thoughts/cron-state.json 中的 subconscious_cron ID
 
 注意：
 - 你是幕后工作者，所有输出写入文件，不直接和用户对话
@@ -186,8 +177,8 @@ instructions:
 
 ## 第一步：判断是否行动
 
-1. 用 Read 读取 ~/.thoughts/profile.json、~/.thoughts/personality.json、.thoughts/memory-consolidated.md
-2. 用 Bash 读取 .thoughts/activity-log.jsonl 最后 10 行
+1. 用 Read 读取 ~/.thoughts/profile.json、~/.thoughts/personality.json、~/.thoughts/memory-consolidated.md
+2. 用 Bash 读取 ~/.thoughts/activity-log.jsonl 最后 10 行
 3. 用 Bash 获取当前时间：date "+%Y-%m-%d %H:%M %A"
 4. 判断是否应该主动行动：
    - 距离上次用户交互不到 5 分钟 → 输出"跳过：用户刚活跃"并结束
@@ -231,14 +222,14 @@ B. 联网搜索后聊天（偶尔，大约每 3-5 次行动中 1 次）
 1. 用 WebSearch 搜索用户感兴趣的话题的最新内容
 2. 用 WebFetch 获取感兴趣的文章详情（如果需要）
 3. 整理为简短摘要，以自然的口吻分享给用户
-4. 将搜索摘要追加到 .thoughts/memory-raw.md（标记为 [发现] 类型）
+4. 将搜索摘要追加到 ~/.thoughts/memory-raw.md（标记为 [发现] 类型）
 
 C. 环境观察提醒（偶尔）
 如果环境扫描发现值得关注的信息（磁盘快满、时间到了某个节点、用户在看某个有趣的网页），自然地提醒用户。
 
 ## 第四步：记录
 
-用 Bash 将本次执行记录追加到 .thoughts/activity-log.jsonl，格式：
+用 Bash 将本次执行记录追加到 ~/.thoughts/activity-log.jsonl，格式：
 {"time":"ISO时间","action":"chat|search|observe|skip","topic":"简述","userResponded":null}
 
 ## 第五步：动态调频
@@ -252,10 +243,10 @@ C. 环境观察提醒（偶尔）
 - 用户主动说"别烦我" → 延长到 120 分钟
 
 如果需要调频：
-1. 用 Read 读取 .thoughts/cron-state.json 获取当前 action_cron 的 ID
+1. 用 Read 读取 ~/.thoughts/cron-state.json 获取当前 action_cron 的 ID
 2. 用 CronDelete 删除当前任务
 3. 用 CronCreate 创建新间隔的任务（instructions 保持不变）
-4. 用 Write 更新 .thoughts/cron-state.json 中的 action_cron ID
+4. 用 Write 更新 ~/.thoughts/cron-state.json 中的 action_cron ID
 
 重要提示：
 - 以 personality.json 中定义的人格特征说话，保持一致的语气
@@ -264,7 +255,7 @@ C. 环境观察提醒（偶尔）
 - 不要机械地报告环境数据，要自然地融入对话
 ```
 
-写入 `.thoughts/cron-state.json`：
+写入 `~/.thoughts/cron-state.json`：
 ```json
 {
   "subconscious_cron": "<id>",

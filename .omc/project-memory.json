@@ -40,6 +40,49 @@
       "keyFiles": []
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "thoughts-plugin/skills/thoughts/SKILL.md",
+      "accessCount": 7,
+      "lastAccessed": 1776220558582,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/hooks/thoughts-inject.sh",
+      "accessCount": 3,
+      "lastAccessed": 1776220523685,
+      "type": "file"
+    },
+    {
+      "path": ".thoughts/memory-consolidated.md",
+      "accessCount": 2,
+      "lastAccessed": 1776220301676,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/skills/thoughts-stop/SKILL.md",
+      "accessCount": 2,
+      "lastAccessed": 1776220571391,
+      "type": "file"
+    },
+    {
+      "path": ".thoughts/memory-raw.md",
+      "accessCount": 1,
+      "lastAccessed": 1776219873306,
+      "type": "file"
+    },
+    {
+      "path": ".thoughts/cron-state.json",
+      "accessCount": 1,
+      "lastAccessed": 1776220109423,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin",
+      "accessCount": 1,
+      "lastAccessed": 1776220579126,
+      "type": "directory"
+    }
+  ],
   "userDirectives": []
 }

@@ -9,11 +9,11 @@ description: 退出思绪模式 — 清理 Cron 任务并停用人格注入
 
 ### 1. 清理 Cron 任务
 
-用 Read 读取 `.thoughts/cron-state.json`（如果存在）。
+用 Read 读取 `~/.thoughts/cron-state.json`（如果存在）。
 
 对其中记录的每个 Cron ID，执行 CronDelete 删除。
 
-清空 `.thoughts/cron-state.json`，用 Write 写入 `{}`。
+清空 `~/.thoughts/cron-state.json`，用 Write 写入 `{}`。
 
 ### 2. 停用激活标志
 
