@@ -1,9 +1,11 @@
 {
-  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "thoughts",
-  "description": "思绪模式 — 为 Claude Code 添加人格、记忆、环境感知和主动行为能力的 AI 伙伴插件",
   "owner": {
     "name": "zhanghailong"
+  },
+  "metadata": {
+    "description": "思绪模式 — 为 Claude Code 添加人格、记忆、环境感知和主动行为能力的 AI 伙伴插件",
+    "version": "0.1.0"
   },
   "plugins": [
     {
@@ -20,6 +22,5 @@
         "environment-awareness"
       ]
     }
-  ],
-  "version": "0.1.0"
+  ]
 }

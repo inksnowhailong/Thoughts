@@ -1,66 +1,30 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1776045429248,
+  "lastScanned": 1776156109403,
   "projectRoot": "/Users/zhanghailong/Desktop/coding/thoughts",
   "techStack": {
-    "languages": [
-      {
-        "name": "JavaScript/TypeScript",
-        "version": null,
-        "confidence": "high",
-        "markers": [
-          "package.json"
-        ]
-      },
-      {
-        "name": "TypeScript",
-        "version": null,
-        "confidence": "high",
-        "markers": [
-          "tsconfig.json"
-        ]
-      }
-    ],
-    "frameworks": [
-      {
-        "name": "vue",
-        "version": "3.5.13",
-        "category": "frontend"
-      },
-      {
-        "name": "vite",
-        "version": "6.0.3",
-        "category": "build"
-      }
-    ],
-    "packageManager": "pnpm",
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
     "runtime": null
   },
   "build": {
-    "buildCommand": "pnpm build",
+    "buildCommand": null,
     "testCommand": null,
     "lintCommand": null,
-    "devCommand": "pnpm dev",
-    "scripts": {
-      "dev": "vite",
-      "build": "vue-tsc --noEmit && vite build",
-      "preview": "vite preview",
-      "tauri": "tauri dev"
-    }
+    "devCommand": null,
+    "scripts": {}
   },
   "conventions": {
     "namingStyle": null,
-    "importStyle": "ES modules",
+    "importStyle": null,
     "testPattern": null,
     "fileOrganization": null
   },
   "structure": {
     "isMonorepo": false,
     "workspaces": [],
-    "mainDirectories": [
-      "public",
-      "src"
-    ],
+    "mainDirectories": [],
     "gitBranches": {
       "defaultBranch": "main",
       "branchingStrategy": null
@@ -68,367 +32,14 @@
   },
   "customNotes": [],
   "directoryMap": {
-    "public": {
-      "path": "public",
-      "purpose": "Public files",
-      "fileCount": 2,
-      "lastAccessed": 1776045429220,
-      "keyFiles": [
-        "tauri.svg",
-        "vite.svg"
-      ]
-    },
-    "src": {
-      "path": "src",
-      "purpose": "Source code",
-      "fileCount": 3,
-      "lastAccessed": 1776045429221,
-      "keyFiles": [
-        "App.vue",
-        "main.ts",
-        "vite-env.d.ts"
-      ]
-    },
-    "src-tauri": {
-      "path": "src-tauri",
-      "purpose": null,
-      "fileCount": 5,
-      "lastAccessed": 1776045429225,
-      "keyFiles": [
-        "Cargo.lock",
-        "Cargo.toml",
-        "build.rs",
-        "tauri.conf.json"
-      ]
-    },
-    "target": {
-      "path": "target",
+    "thoughts-plugin": {
+      "path": "thoughts-plugin",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1776045429226,
+      "lastAccessed": 1776156109365,
       "keyFiles": []
-    },
-    "src/assets": {
-      "path": "src/assets",
-      "purpose": "Static assets",
-      "fileCount": 1,
-      "lastAccessed": 1776045429227,
-      "keyFiles": [
-        "vue.svg"
-      ]
-    },
-    "src-tauri/src": {
-      "path": "src-tauri/src",
-      "purpose": "Source code",
-      "fileCount": 2,
-      "lastAccessed": 1776045429231,
-      "keyFiles": [
-        "lib.rs",
-        "main.rs"
-      ]
     }
   },
-  "hotPaths": [
-    {
-      "path": "",
-      "accessCount": 34,
-      "lastAccessed": 1776145230129,
-      "type": "directory"
-    },
-    {
-      "path": "Mem.md",
-      "accessCount": 21,
-      "lastAccessed": 1776132873899,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/lib.rs",
-      "accessCount": 13,
-      "lastAccessed": 1776135872759,
-      "type": "file"
-    },
-    {
-      "path": "src/App.vue",
-      "accessCount": 12,
-      "lastAccessed": 1776135651537,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/models/mod.rs",
-      "accessCount": 11,
-      "lastAccessed": 1776135804063,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/commands.rs",
-      "accessCount": 11,
-      "lastAccessed": 1776135946321,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/runtime/scheduler.rs",
-      "accessCount": 11,
-      "lastAccessed": 1776135954284,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/app/state.rs",
-      "accessCount": 10,
-      "lastAccessed": 1776135832433,
-      "type": "file"
-    },
-    {
-      "path": ".claude/settings.local.json",
-      "accessCount": 8,
-      "lastAccessed": 1776149424085,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/cli/agent_client.rs",
-      "accessCount": 7,
-      "lastAccessed": 1776135521953,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/config_store.rs",
-      "accessCount": 7,
-      "lastAccessed": 1776135522015,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/mod.rs",
-      "accessCount": 7,
-      "lastAccessed": 1776135787416,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/Cargo.toml",
-      "accessCount": 6,
-      "lastAccessed": 1776135531444,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/global_config/config.rs",
-      "accessCount": 5,
-      "lastAccessed": 1776133386037,
-      "type": "file"
-    },
-    {
-      "path": "src/main.ts",
-      "accessCount": 5,
-      "lastAccessed": 1776133410141,
-      "type": "file"
-    },
-    {
-      "path": ".claude/hooks/hooks.json",
-      "accessCount": 5,
-      "lastAccessed": 1776145236947,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/global_config/config_struct.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133385984,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/main.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133396026,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/global_config/mod.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133414732,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/thoughts/check_status.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133423055,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/thoughts/mod.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133423079,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/thoughts/core.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133423180,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/integrations/weather/mod.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133428525,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/integrations/mod.rs",
-      "accessCount": 4,
-      "lastAccessed": 1776133428581,
-      "type": "file"
-    },
-    {
-      "path": "package.json",
-      "accessCount": 3,
-      "lastAccessed": 1776071321793,
-      "type": "file"
-    },
-    {
-      "path": "vite.config.ts",
-      "accessCount": 3,
-      "lastAccessed": 1776071962702,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/runtime/mod.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776133401238,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/runtime/openclaw_manager.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776133405716,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/tauri.conf.json",
-      "accessCount": 3,
-      "lastAccessed": 1776133433486,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src",
-      "accessCount": 3,
-      "lastAccessed": 1776135531391,
-      "type": "directory"
-    },
-    {
-      "path": "src-tauri/src/cli/types.rs",
-      "accessCount": 3,
-      "lastAccessed": 1776135881031,
-      "type": "file"
-    },
-    {
-      "path": ".claude/skills/tvs-review/SKILL.md",
-      "accessCount": 3,
-      "lastAccessed": 1776144633773,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/integrations/weather/open_meteo.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776069150759,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/integrations/weather/types.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776069150815,
-      "type": "file"
-    },
-    {
-      "path": "README.md",
-      "accessCount": 2,
-      "lastAccessed": 1776069196889,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/app/mod.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776133390574,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/event_log_store.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776133401129,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/cli/mod.rs",
-      "accessCount": 2,
-      "lastAccessed": 1776133405795,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri",
-      "accessCount": 2,
-      "lastAccessed": 1776135661193,
-      "type": "directory"
-    },
-    {
-      "path": ".claude/config.json",
-      "accessCount": 2,
-      "lastAccessed": 1776144383746,
-      "type": "file"
-    },
-    {
-      "path": ".claude/skills/tvs-analyze/SKILL.md",
-      "accessCount": 2,
-      "lastAccessed": 1776144383814,
-      "type": "file"
-    },
-    {
-      "path": "LICENSE",
-      "accessCount": 1,
-      "lastAccessed": 1776045470225,
-      "type": "file"
-    },
-    {
-      "path": "index.html",
-      "accessCount": 1,
-      "lastAccessed": 1776069161699,
-      "type": "file"
-    },
-    {
-      "path": "uno.config.ts",
-      "accessCount": 1,
-      "lastAccessed": 1776071949358,
-      "type": "file"
-    },
-    {
-      "path": "src-tauri/src/storage/profile_store.rs",
-      "accessCount": 1,
-      "lastAccessed": 1776135787104,
-      "type": "file"
-    },
-    {
-      "path": ".claude/skills/thoughts-onboarding/SKILL.md",
-      "accessCount": 1,
-      "lastAccessed": 1776147296689,
-      "type": "file"
-    },
-    {
-      "path": ".claude/skills/thoughts/SKILL.md",
-      "accessCount": 1,
-      "lastAccessed": 1776148287644,
-      "type": "file"
-    },
-    {
-      "path": ".claude/skills/thoughts-stop/SKILL.md",
-      "accessCount": 1,
-      "lastAccessed": 1776148540799,
-      "type": "file"
-    },
-    {
-      "path": ".claude/hooks/thoughts-inject.sh",
-      "accessCount": 1,
-      "lastAccessed": 1776148542343,
-      "type": "file"
-    },
-    {
-      "path": "thoughts-plugin/.claude-plugin/plugin.json",
-      "accessCount": 1,
-      "lastAccessed": 1776149060703,
-      "type": "file"
-    }
-  ],
+  "hotPaths": [],
   "userDirectives": []
 }
