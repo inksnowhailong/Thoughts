@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1776156109403,
+  "lastScanned": 1776329345185,
   "projectRoot": "/Users/zhanghailong/Desktop/coding/thoughts",
   "techStack": {
     "languages": [],
@@ -35,46 +35,54 @@
     "thoughts-plugin": {
       "path": "thoughts-plugin",
       "purpose": null,
-      "fileCount": 0,
-      "lastAccessed": 1776156109365,
-      "keyFiles": []
+      "fileCount": 2,
+      "lastAccessed": 1776329345133,
+      "keyFiles": [
+        "README.md"
+      ]
     }
   },
   "hotPaths": [
     {
-      "path": "thoughts-plugin/skills/thoughts/SKILL.md",
-      "accessCount": 7,
-      "lastAccessed": 1776220558582,
-      "type": "file"
-    },
-    {
-      "path": "thoughts-plugin/hooks/thoughts-inject.sh",
-      "accessCount": 3,
-      "lastAccessed": 1776220523685,
-      "type": "file"
-    },
-    {
-      "path": ".thoughts/memory-consolidated.md",
-      "accessCount": 2,
-      "lastAccessed": 1776220301676,
-      "type": "file"
-    },
-    {
-      "path": "thoughts-plugin/skills/thoughts-stop/SKILL.md",
-      "accessCount": 2,
-      "lastAccessed": 1776220571391,
-      "type": "file"
-    },
-    {
       "path": ".thoughts/memory-raw.md",
-      "accessCount": 1,
-      "lastAccessed": 1776219873306,
+      "accessCount": 34,
+      "lastAccessed": 1776241323862,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/skills/thoughts/SKILL.md",
+      "accessCount": 21,
+      "lastAccessed": 1776331625447,
       "type": "file"
     },
     {
       "path": ".thoughts/cron-state.json",
-      "accessCount": 1,
-      "lastAccessed": 1776220109423,
+      "accessCount": 19,
+      "lastAccessed": 1776238993097,
+      "type": "file"
+    },
+    {
+      "path": ".thoughts/memory-consolidated.md",
+      "accessCount": 17,
+      "lastAccessed": 1776238938706,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/hooks/thoughts-inject.sh",
+      "accessCount": 10,
+      "lastAccessed": 1776330427825,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/skills/thoughts-stop/SKILL.md",
+      "accessCount": 7,
+      "lastAccessed": 1776330167988,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin/skills/thoughts-onboarding/SKILL.md",
+      "accessCount": 5,
+      "lastAccessed": 1776331391291,
       "type": "file"
     },
     {
@@ -82,6 +90,18 @@
       "accessCount": 1,
       "lastAccessed": 1776220579126,
       "type": "directory"
+    },
+    {
+      "path": "",
+      "accessCount": 1,
+      "lastAccessed": 1776329448742,
+      "type": "directory"
+    },
+    {
+      "path": "thoughts-plugin/hooks/hooks.json",
+      "accessCount": 1,
+      "lastAccessed": 1776329461700,
+      "type": "file"
     }
   ],
   "userDirectives": []
