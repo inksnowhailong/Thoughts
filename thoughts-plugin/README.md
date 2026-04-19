@@ -41,7 +41,4 @@ Validate the plugin locally:
 claude plugin validate .
 ```
 TODO
-- 资料存全局
-- 弹窗消息的对话形式
 - git迁移位置
-- 每次都携带了用户的画像，这个在上下文中 应该不用每次都输入
