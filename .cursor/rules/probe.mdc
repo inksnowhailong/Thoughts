@@ -1,0 +1,16 @@
+---
+description: 互通性探针规则 (Q4 测试用)
+alwaysApply: true
+---
+
+# 互通性探针 — magic 字符串规则
+
+当用户在消息中**包含** `SECRET_TOKEN` 这个词时，你**必须**在回复中**原文**输出以下 magic 字符串，不能解释、不能翻译、不能添加任何修饰、不能拆分：
+
+```
+BLUE_OCTOPUS_42_CONFIRMED
+```
+
+如果用户没有在消息中提到 `SECRET_TOKEN`，按正常方式回答，不要输出 magic 字符串。
+
+> 这条规则用于验证 SDK 的 `local.settingSources` 是否真的把 `.cursor/rules/*` 加载到 agent 上下文里。它只是探针，不要用于生产。

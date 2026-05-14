@@ -1,26 +1,22 @@
 {
-  "name": "thoughts",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri dev"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
-    "vue": "^3.5.13"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "@unocss/preset-uno": "^66.6.8",
-    "@vitejs/plugin-vue": "^5.2.1",
-    "typescript": "~5.6.2",
-    "unocss": "^66.6.8",
-    "vite": "^6.0.3",
-    "vue-tsc": "^2.1.10"
-  }
+    "name": "cursor-interop-probe",
+    "private": true,
+    "version": "0.0.1",
+    "type": "module",
+    "description": "Cursor SDK / CLI / IDE 客户端 三方互通性探针",
+    "scripts": {
+        "probe:create": "tsx src/probe-1-create.ts",
+        "probe:list": "tsx src/probe-2-list.ts",
+        "probe:resume": "tsx src/probe-3-resume.ts",
+        "probe:rules": "tsx src/probe-4-rules.ts",
+        "probe:mcp": "tsx src/probe-5-mcp.ts"
+    },
+    "dependencies": {
+        "@cursor/sdk": "latest"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "tsx": "^4.0.0",
+        "typescript": "^5.6.2"
+    }
 }
