@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "description": "思绪模式 Cursor Hooks 模板。安装到全局时写入 ~/.cursor/hooks.json；不要在本项目同时启用项目级 hooks.json，避免与全局 hook 双重触发。",
+    "hooks": {
+        "sessionStart": [
+            {
+                "command": "node ./hooks/thoughts-session-start.mjs"
+            }
+        ],
+        "beforeSubmitPrompt": [
+            {
+                "command": "node ./hooks/thoughts-before-submit.mjs",
+                "matcher": "UserPromptSubmit"
+            }
+        ],
+        "stop": [
+            {
+                "command": "node ./hooks/thoughts-loop-driver.mjs",
+                "timeout": 15000,
+                "loop_limit": null
+            }
+        ]
+    }
+}

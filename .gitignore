@@ -1,4 +1,2 @@
-node_modules/
-.probe-state.json
 .env
 *.log
