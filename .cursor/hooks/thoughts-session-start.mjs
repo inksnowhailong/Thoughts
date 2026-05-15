@@ -63,6 +63,7 @@ if (!entry?.enabled || entry.conversation_id !== payload.conversation_id) {
 const instanceDir = join(ROOT, 'instances', entry.instance);
 const personality = readText(join(instanceDir, 'personality.json'), '{}');
 const profile = readText(join(instanceDir, 'profile.json'), '{}');
+const activeMemory = readText(join(instanceDir, 'memory-active.json'), '{\n    "version": 1,\n    "updatedAt": null,\n    "items": []\n}');
 const memo = readText(join(instanceDir, 'memory-consolidated.md'), '# 思绪记忆 - 整理\n\n').split('\n').slice(-80).join('\n');
 
 const additionalContext = `# 思绪模式已激活
@@ -78,6 +79,10 @@ ${personality}
 ## 用户画像
 ${profile}
 
+## 当前活跃记忆
+这些是当前最应该影响你表达、节奏和选题的高优先级记忆。优先级高于普通整理记忆。
+${activeMemory}
+
 ## 近期整理记忆
 ${memo}
 
@@ -87,6 +92,6 @@ ${memo}
 - 不要围绕用户当前正在写的代码、当前文件、当前工作进度追问;除非用户主动提起。
 - 每次主动内容都要有价值,避免"你在干嘛"、"进度如何"这种空打扰。
 - 主动循环的节奏由实例目录中的 personality.json/rhythm 和 active.json 的 next_active_at 控制。
-- 如果需要记忆,读取实例目录中的 memory-raw.md / memory-consolidated.md;不要凭空编造用户画像。`;
+- 如果需要记忆,优先读取 memory-active.json,再读 memory-consolidated.md / memory-raw.md;不要凭空编造用户画像。`;
 
 process.stdout.write(JSON.stringify({ additional_context: additionalContext }));

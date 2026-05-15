@@ -23,6 +23,7 @@ description: 进入 Cursor 思绪模式。绑定当前专用 chat 到一个思�
 - 等待期间不要刷"sleep 结束/继续等待"之类的状态消息;只有到点主动、出错、停止时才说话。
 - 如果收到后台任务完成的系统通知,且任务来自"思绪模式"timer,不要复述任务结果;先读取 active state,确认已到 `next_active_at` 后执行主动分支。
 - 除非用户明确询问,不要把下一次主动时间、delayMs、timer 状态告诉用户;排程是内部机制,别把对话搞得像程序日志。
+- 用户主动发消息时,先调用 `record-user` 更新 loop-state。每次主动消息发出后,调用 `record-active` 自动记录并动态计算下一次节奏;不要固定写死同一个 delayMs。
 
 ## 启动协议
 
@@ -92,13 +93,13 @@ node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" schedule . 0 "initial activ
    - 不要自己调用 Shell sleep;stop hook 会启动一个单次后台 timer,到点后系统通知会触发下一轮。
    - 直接停止本轮。
 3. 如果到了时间、收到 stop hook 提交的主动分支 followup,或收到思绪 timer 完成的系统通知:
-   - 读取 profile/personality/memory。
+   - 读取 `profile.json`、`personality.json`、`memory-active.json`、`memory-consolidated.md`。
+   - 优先遵守 `memory-active.json`。`memory-index.jsonl` / `memory-sources.jsonl` 只在需要溯源、修正画像或回答用户追问时读取。
    - 主动内容 70% 以上应该来自信息发现: WebSearch/WebFetch、工具/库/论文/产品动态、用户探索域里的新鲜内容。
    - 不要问用户"在干嘛/进度如何/代码写到哪"。
    - 发送跨平台通知: `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" notify "<人格名>" "<颜文字>" "<消息全文>"`。
    - 自己判断是否需要调用 `.cursor/agents/thoughts-subconscious.md` 定义的 background subagent。只有需要更新认知、整理记忆、调整节奏或 topicPolicy 时才调用。
-   - 计算新的 delayMs,调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" schedule . <delayMs> "<reason>"`。
-   - 追加 activity-log.jsonl。
+   - 调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" record-active . "<简短主题>"`,由 runtime 根据用户是否回应、连续忽略次数和 quietHours 动态计算下一次节奏,并写入 `activity-log.jsonl` / `loop-state.json`。
    - 不要告诉用户下一次主动时间或排程细节,除非用户明确问。
    - 停止本轮,等待下一次 stop hook。
 
@@ -127,6 +128,18 @@ node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" schedule . 0 "initial activ
 - 希望它只写 `~/.cursor/.thoughts/instances/<实例名>/` 下的状态文件
 
 它是后台 subagent,你不需要等待它完成才能继续主循环;但下一轮主动前可以按需读取它更新后的文件。
+
+## HMO-lite 记忆层
+
+实例目录下存在一套轻量分层记忆:
+
+- `memory-active.json`: 当前最该影响行为的活跃记忆,优先级最高。
+- `memory-index.jsonl`: 带元数据的长期记忆索引,支持升降级。
+- `memory-sources.jsonl`: 原文证据,用于防止总结漂移。
+- `memory-consolidated.md`: 人类可读摘要,不是主记忆源。
+- `memory-raw.md`: 待整理候选池。
+
+主意识默认只注入 `memory-active.json` 和整理摘要。除非需要溯源或修正,不要把完整索引/证据塞进上下文。
 
 ## 记忆写入规则
 

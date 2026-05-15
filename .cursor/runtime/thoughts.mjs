@@ -25,6 +25,11 @@ function writeJson(path, value) {
     writeFileSync(path, `${JSON.stringify(value, null, 4)}\n`, 'utf8');
 }
 
+function appendJsonl(path, value) {
+    ensureDir(dirname(path));
+    writeFileSync(path, `${JSON.stringify(value)}\n`, { flag: 'a' });
+}
+
 function normalizeWorkspace(value) {
     return resolve(value || process.cwd()).replaceAll('\\', '/');
 }
@@ -103,10 +108,149 @@ function schedule(workspaceArg, delayMsArg, reason = 'scheduled') {
     entry.next_active_at = nextActiveAt;
     entry.next_active_at_iso = new Date(nextActiveAt).toISOString();
     entry.last_schedule_reason = reason;
+    delete entry.timer_active_until;
+    delete entry.timer_active_until_iso;
+    delete entry.timer_started_at;
+    delete entry.timer_started_at_iso;
     entry.updated_at = new Date().toISOString();
     state[workspace] = entry;
     saveActive(state);
     console.log(JSON.stringify(entry, null, 4));
+}
+
+function loopStatePath(instanceName) {
+    return join(instanceDir(instanceName), 'loop-state.json');
+}
+
+function activityLogPath(instanceName) {
+    return join(instanceDir(instanceName), 'activity-log.jsonl');
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function isQuietHour(now, quietHours = []) {
+    if (!Array.isArray(quietHours) || quietHours.length !== 2) return false;
+
+    const [start, end] = quietHours.map(Number);
+    const hour = new Date(now).getHours();
+
+    if (start === end) return false;
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
+function recordUser(workspaceArg, preview = '') {
+    const workspace = normalizeWorkspace(workspaceArg);
+    const state = activeState();
+    const entry = state[workspace];
+    if (!entry?.enabled) {
+        throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
+    }
+
+    const now = Date.now();
+    const path = loopStatePath(entry.instance);
+    const loopState = readJson(path, {});
+
+    loopState.last_user_message_at = now;
+    loopState.last_user_message_at_iso = new Date(now).toISOString();
+    loopState.last_user_message_preview = String(preview ?? '').slice(0, 240);
+    loopState.consecutive_ignored = 0;
+
+    writeJson(path, loopState);
+    appendJsonl(activityLogPath(entry.instance), {
+        time: new Date(now).toISOString(),
+        action: 'user_message',
+        preview: loopState.last_user_message_preview,
+    });
+
+    console.log(JSON.stringify(loopState, null, 4));
+}
+
+function recordActive(workspaceArg, topic = 'active_message') {
+    const workspace = normalizeWorkspace(workspaceArg);
+    const state = activeState();
+    const entry = state[workspace];
+    if (!entry?.enabled) {
+        throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
+    }
+
+    const now = Date.now();
+    const dir = instanceDir(entry.instance);
+    const personality = readJson(join(dir, 'personality.json'), {});
+    const rhythm = personality.rhythm ?? {};
+    const minDelayMs = Number(rhythm.minDelayMs ?? 15 * 60 * 1000);
+    const baseDelayMs = Number(rhythm.baseDelayMs ?? 30 * 60 * 1000);
+    const maxDelayMs = Number(rhythm.maxDelayMs ?? 2 * 60 * 60 * 1000);
+    const decayMultiplier = Number(rhythm.decayMultiplier ?? 1.5);
+    const boostMultiplier = Number(rhythm.boostMultiplier ?? 0.7);
+
+    const path = loopStatePath(entry.instance);
+    const loopState = readJson(path, {});
+    const previousActiveAt = Number(loopState.last_active_message_at || 0);
+    const lastUserAt = Number(loopState.last_user_message_at || 0);
+    const previousActiveWasIgnored = previousActiveAt > 0 && lastUserAt < previousActiveAt;
+    const consecutiveIgnored = previousActiveWasIgnored
+        ? Number(loopState.consecutive_ignored || 0) + 1
+        : 0;
+
+    let delayMs;
+    let delayReason;
+
+    if (isQuietHour(now, rhythm.quietHours)) {
+        delayMs = maxDelayMs;
+        delayReason = 'quiet hours';
+    } else if (consecutiveIgnored >= 3) {
+        delayMs = maxDelayMs;
+        delayReason = 'three or more consecutive ignored messages';
+    } else if (consecutiveIgnored > 0) {
+        delayMs = clamp(Math.round(baseDelayMs * (decayMultiplier ** consecutiveIgnored)), minDelayMs, maxDelayMs);
+        delayReason = `${consecutiveIgnored} consecutive ignored message(s)`;
+    } else if (lastUserAt > previousActiveAt && now - lastUserAt <= 20 * 60 * 1000) {
+        delayMs = clamp(Math.round(baseDelayMs * boostMultiplier), minDelayMs, maxDelayMs);
+        delayReason = 'recent user engagement';
+    } else {
+        delayMs = clamp(baseDelayMs, minDelayMs, maxDelayMs);
+        delayReason = 'baseline rhythm';
+    }
+
+    loopState.consecutive_ignored = consecutiveIgnored;
+    loopState.last_active_message_at = now;
+    loopState.last_active_message_at_iso = new Date(now).toISOString();
+    loopState.last_active_topic = topic;
+    loopState.last_delay_ms = delayMs;
+    loopState.last_delay_reason = delayReason;
+    writeJson(path, loopState);
+
+    appendJsonl(activityLogPath(entry.instance), {
+        time: new Date(now).toISOString(),
+        action: 'active_message',
+        topic,
+        delayMs,
+        delayReason,
+        consecutiveIgnored,
+    });
+
+    const nextActiveAt = now + delayMs;
+    entry.next_active_at = nextActiveAt;
+    entry.next_active_at_iso = new Date(nextActiveAt).toISOString();
+    entry.last_schedule_reason = `dynamic: ${delayReason}`;
+    delete entry.timer_active_until;
+    delete entry.timer_active_until_iso;
+    delete entry.timer_started_at;
+    delete entry.timer_started_at_iso;
+    entry.updated_at = new Date(now).toISOString();
+    state[workspace] = entry;
+    saveActive(state);
+
+    console.log(JSON.stringify({
+        delayMs,
+        delayReason,
+        consecutiveIgnored,
+        next_active_at: nextActiveAt,
+        next_active_at_iso: entry.next_active_at_iso,
+    }, null, 4));
 }
 
 function showState(workspaceArg) {
@@ -121,6 +265,9 @@ function ensureInstanceFiles(instanceName) {
     const defaults = {
         'memory-raw.md': '# 思绪记忆 - 原始\n\n',
         'memory-consolidated.md': '# 思绪记忆 - 整理\n\n',
+        'memory-active.json': '{\n    "version": 1,\n    "updatedAt": null,\n    "items": []\n}\n',
+        'memory-index.jsonl': '',
+        'memory-sources.jsonl': '',
         'activity-log.jsonl': '',
     };
 
@@ -218,6 +365,12 @@ try {
         case 'schedule':
             schedule(args[0], args[1], args.slice(2).join(' '));
             break;
+        case 'record-user':
+            recordUser(args[0], args.slice(1).join(' '));
+            break;
+        case 'record-active':
+            recordActive(args[0], args.slice(1).join(' '));
+            break;
         case 'state':
             showState(args[0]);
             break;
@@ -232,6 +385,8 @@ try {
   node .cursor/runtime/thoughts.mjs bind <instance> [workspace]
   node .cursor/runtime/thoughts.mjs unbind [workspace]
   node .cursor/runtime/thoughts.mjs schedule [workspace] <delayMs> [reason]
+  node .cursor/runtime/thoughts.mjs record-user [workspace] [preview]
+  node .cursor/runtime/thoughts.mjs record-active [workspace] [topic]
   node .cursor/runtime/thoughts.mjs state [workspace]
   node .cursor/runtime/thoughts.mjs notify <title> <subtitle> <message>`);
     }

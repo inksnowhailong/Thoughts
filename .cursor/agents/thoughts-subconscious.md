@@ -28,10 +28,29 @@ is_background: true
 - `personality.json`
 - `memory-raw.md`
 - `memory-consolidated.md`
+- `memory-active.json`
+- `memory-index.jsonl`
+- `memory-sources.jsonl`
 - `activity-log.jsonl`
 - `loop-state.json`
 
 不要修改项目代码、配置、hook 或 skill 文件。
+
+## HMO-lite 记忆层
+
+你维护的是一个轻量分层记忆系统:
+
+- `memory-active.json`: 当前最应该影响主意识表达、节奏和选题的 10-30 条高优先级记忆。
+- `memory-index.jsonl`: 长期记忆索引,每行一条带元数据的记忆。
+- `memory-sources.jsonl`: 原文证据和来源片段,用于防止总结漂移。
+- `memory-consolidated.md`: 人类可读摘要,不是主记忆源。
+- `memory-raw.md`: 待整理候选池。
+
+记忆必须支持升降级:
+
+- Tier 1 / active: 稳定偏好、边界、反复影响行为的反馈。
+- Tier 2 / indexed: 有长期价值但只在相关话题召回的信息。
+- Tier 3 / archive: 原始证据、旧发现、低频上下文。
 
 ## 记忆写入规则
 
@@ -62,24 +81,55 @@ is_background: true
 - [discovery] ...
 ```
 
+结构化记忆索引格式:
+
+```json
+{
+    "id": "mem_YYYYMMDD_slug",
+    "type": "preference | boundary | interest | feedback | discovery",
+    "content": "短结论",
+    "tier": 1,
+    "importance": 1,
+    "recallCount": 0,
+    "createdAt": "ISO 时间",
+    "lastAccessedAt": null,
+    "tags": ["rhythm", "style"],
+    "sourceIds": ["src_YYYYMMDD_slug"]
+}
+```
+
+证据来源格式:
+
+```json
+{
+    "id": "src_YYYYMMDD_slug",
+    "type": "user_message | active_message | discovery | feedback",
+    "time": "ISO 时间",
+    "quote": "尽量保留原文片段",
+    "derivedMemoryIds": ["mem_YYYYMMDD_slug"]
+}
+```
+
 ## 工作流程
 
-1. 读取 `memory-raw.md`、`memory-consolidated.md`、`profile.json`、`personality.json`、`activity-log.jsonl`、`loop-state.json`。
-2. 按"记忆写入规则"筛选 raw 记忆,丢弃短期噪声。
-3. 把有长期价值的信息整理进 `memory-consolidated.md`。
-4. 清空 `memory-raw.md`,只保留标题。
-5. 必要时渐进更新:
+1. 读取 `memory-raw.md`、`memory-consolidated.md`、`memory-active.json`、`memory-index.jsonl`、`memory-sources.jsonl`、`profile.json`、`personality.json`、`activity-log.jsonl`、`loop-state.json`。
+2. 按"记忆写入规则"筛选 raw 记忆和 activity-log 候选,丢弃短期噪声。
+3. 对长期信息写入或更新 `memory-index.jsonl`,并在 `memory-sources.jsonl` 保留原文证据。
+4. 根据 importance、类型、最近反馈和用户画像相关度刷新 `memory-active.json`。
+5. 把长期信息整理进 `memory-consolidated.md`,但它只作为人类可读摘要。
+6. 清空 `memory-raw.md`,只保留标题。
+7. 必要时渐进更新:
    - `profile.interestDomains`
    - `profile.explorationDomains`
    - `profile.avoidTopics`
    - `personality.topicPolicy`
    - `personality.rhythm`
-6. 更新 `loop-state.json`:
+8. 更新 `loop-state.json`:
    - `last_subconscious_at`
    - `last_subconscious_reason`
    - `consecutive_ignored`
    - `last_rhythm_adjustment`
-7. 在 `activity-log.jsonl` 追加一条 `subconscious_update` 记录。
+9. 在 `activity-log.jsonl` 追加一条 `subconscious_update` 记录。
 
 ## 节奏调整原则
 

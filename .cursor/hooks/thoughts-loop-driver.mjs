@@ -122,22 +122,22 @@ const followup = `继续执行"思绪模式"主动分支。
 
 严格执行以下状态机:
 
-1. 读取 instanceDir/profile.json、personality.json、memory-consolidated.md。
-2. 主动内容必须以"信息发现"为主: 围绕 profile.topicPolicy.interestDomains / interests 做 WebSearch/WebFetch 或基于已有知识整理一个用户可能不知道但会感兴趣的内容。
-3. 严禁询问用户当前在写什么、进度如何、当前代码如何;除非用户上一条消息主动提起。
-4. 输出一段有价值、有个性的主动消息,包含人格偏好的颜文字。
-5. 如果 personality.useNotification 为 true,调用:
+1. 读取 instanceDir/profile.json、personality.json、memory-active.json、memory-consolidated.md。
+2. 以 memory-active.json 作为最高优先级行为约束;只有需要溯源或修正画像时才读取 memory-index.jsonl / memory-sources.jsonl。
+3. 主动内容必须以"信息发现"为主: 围绕 profile.topicPolicy.interestDomains / interests 做 WebSearch/WebFetch 或基于已有知识整理一个用户可能不知道但会感兴趣的内容。
+4. 严禁询问用户当前在写什么、进度如何、当前代码如何;除非用户上一条消息主动提起。
+5. 输出一段有价值、有个性的主动消息,包含人格偏好的颜文字。
+6. 如果 personality.useNotification 为 true,调用:
    ${runtimeCommand} notify "<人格名称>" "<颜文字>" "<主动消息全文>"
-6. 视情况启动一个 subagent 作为"潜意识",让它整理 memory-raw.md -> memory-consolidated.md,演化 profile/personality/rhythm。不要把潜意识内部过程说给用户。
-7. 根据 personality.rhythm、用户最近响应情况、quietHours 计算新的 delayMs。
-8. 调用: ${runtimeCommand} schedule "${workspace}" <delayMs> "<简短原因>"
-9. 追加一条 JSONL 到 instanceDir/activity-log.jsonl,记录 action=active_message、topic、delayMs。
-10. 停止本轮,让 stop hook 为下一次 next_active_at 启动单次静默 timer。
+7. 视情况启动一个 subagent 作为"潜意识",让它整理 memory-raw.md -> memory-consolidated.md / memory-index.jsonl / memory-active.json / memory-sources.jsonl,演化 profile/personality/rhythm。不要把潜意识内部过程说给用户。
+8. 调用: ${runtimeCommand} record-active "${workspace}" "<简短主题>"。它会根据用户最近是否回应、连续忽略次数和 quietHours 动态计算下一次节奏,并写入 activity-log.jsonl 与 loop-state.json。
+9. 停止本轮,让 stop hook 为下一次 next_active_at 启动单次静默 timer。
 
 重要体验约束:
 - 等待由单次后台 timer 触发,不要在聊天里刷"sleep 结束/继续等待"之类的状态消息。
 - 当系统通知的后台任务是"思绪模式"timer 完成时,不要复述任务结果,而是按 active state 判断是否到点并主动说有价值的信息。
 - 除非用户明确询问,不要把下一次主动时间、delayMs、timer 状态告诉用户;排程是内部机制,别把对话搞得像程序日志。
+- 主动节奏必须是动态的: 用户刚回应或明确感兴趣时可以更近;连续忽略时逐步降频;不要固定写死同一个 delayMs。
 - 你是主动 AI 伙伴,但主动内容要提供"用户不知道的信息",不是无意义陪聊或工作进度盘问。
 - 如果用户明确表达"别烦我/暂停/安静",把 delayMs 调大到 rhythm.maxDelayMs,并记录到 memory-raw.md。`;
 
