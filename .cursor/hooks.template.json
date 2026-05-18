@@ -16,8 +16,8 @@
         "stop": [
             {
                 "command": "node ./hooks/thoughts-loop-driver.mjs",
-                "timeout": 15000,
-                "loop_limit": null
+                "timeout": 60000,
+                "loop_limit": 1000
             }
         ]
     }

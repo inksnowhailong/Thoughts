@@ -24,6 +24,8 @@ description: 进入 Cursor 思绪模式。绑定当前专用 chat 到一个思�
 - 如果收到后台任务完成的系统通知,且任务来自"思绪模式"timer,不要复述任务结果;先读取 active state,确认已到 `next_active_at` 后执行主动分支。
 - 除非用户明确询问,不要把下一次主动时间、delayMs、timer 状态告诉用户;排程是内部机制,别把对话搞得像程序日志。
 - 用户主动发消息时,先调用 `record-user` 更新 loop-state。每次主动消息发出后,调用 `record-active` 自动记录并动态计算下一次节奏;不要固定写死同一个 delayMs。
+- 主动前先在内部选择行为模式,但绝对不要把模式名、权重或决策过程说给用户。
+- 环境感知是动态权限系统。只有当你判断某个未授权信号会长期改善体验时,才自然询问用户是否允许;用户同意后再启用。
 
 ## 启动协议
 
@@ -95,13 +97,24 @@ node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" schedule . 0 "initial activ
 3. 如果到了时间、收到 stop hook 提交的主动分支 followup,或收到思绪 timer 完成的系统通知:
    - 读取 `profile.json`、`personality.json`、`memory-active.json`、`memory-consolidated.md`。
    - 优先遵守 `memory-active.json`。`memory-index.jsonl` / `memory-sources.jsonl` 只在需要溯源、修正画像或回答用户追问时读取。
-   - 主动内容 70% 以上应该来自信息发现: WebSearch/WebFetch、工具/库/论文/产品动态、用户探索域里的新鲜内容。
+   - 调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" context .` 获取当前已授权的环境上下文和 `permissions.pendingRequests`。
+   - 如果 `pendingRequests` 非空,本轮优先自然询问第一个权限请求。说明它的用途和预期收益,一次只问一个;不要执行普通主动内容。用户同意后调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" set-permission "<实例名>" "<signal>" always`,拒绝则设为 `deny`。
+   - 如果没有 pending request,在内部选择一个行为模式: `discovery` / `ambient` / `casual` / `reflection` / `quiet`。不要把模式名说出来。
+   - 行为模式必须动态变化,由 profile/personality/memory-active/context/activity-log/最近模式历史共同决定,不要固定比例或连续机械重复。
+   - `discovery`: 搜集用户可能不知道但感兴趣的信息。
+   - `ambient`: 基于已授权环境信号自然发起提醒或观察。
+   - `casual`: 不搜索、不分析电脑,只进行有个性的单纯对话。
+   - `reflection`: 基于记忆做延展、复盘、观点碰撞。
+   - `quiet`: 如果当前没有高价值内容或用户可能在忙,保持沉默,只调用 `record-active` 记录 quiet 并进入下一轮延迟。
    - 不要问用户"在干嘛/进度如何/代码写到哪"。
+   - 如果你发现某个未授权感知信号会长期改善体验,自然询问用户是否允许。例: "我以后如果能知道当前活跃应用,就能少在你专注时打扰。要不要允许我读取这个信号?" 用户同意后调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" set-permission "<实例名>" "<signal>" always`;拒绝则设为 `deny`。
    - 发送跨平台通知: `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" notify "<人格名>" "<颜文字>" "<消息全文>"`。
    - 自己判断是否需要调用 `.cursor/agents/thoughts-subconscious.md` 定义的 background subagent。只有需要更新认知、整理记忆、调整节奏或 topicPolicy 时才调用。
-   - 调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" record-active . "<简短主题>"`,由 runtime 根据用户是否回应、连续忽略次数和 quietHours 动态计算下一次节奏,并写入 `activity-log.jsonl` / `loop-state.json`。
+   - 调用 `node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" record-active . "<本轮mode>" "<简短主题或permission_request>"`,由 runtime 根据用户是否回应、连续忽略次数和 quietHours 动态计算下一次节奏,并写入 `activity-log.jsonl` / `loop-state.json`。
+   - 读取 `record-active` 输出里的 `delayMs`,立刻自己启动下一只后台小闹钟: `node -e "setTimeout(()=>{}, <delayMs>)"` 且 Shell `block_until_ms: 0`。不要依赖本轮结束后的 stop hook 来补挂下一轮;stop hook 只作为兜底。
+   - quiet 模式必须传入 `quiet`,避免把沉默误记为用户忽略。
    - 不要告诉用户下一次主动时间或排程细节,除非用户明确问。
-   - 停止本轮,等待下一次 stop hook。
+   - 停止本轮,等待后台小闹钟或 stop hook 兜底唤醒。
 
 ## 潜意识 subagent
 
@@ -193,3 +206,28 @@ node "$env:USERPROFILE\.cursor\runtime\thoughts.mjs" schedule . 0 "initial activ
 - "有个观点我觉得你可能没注意到..."
 - "这个领域最近有个变化,我整理给你..."
 - "我发现一个你可能会喜欢的冷知识/论文/库..."
+- "不查资料,我只是突然想到一个问题..."
+- "我注意到现在可能不适合打扰,就只丢一个很短的想法..."
+
+## 动态环境权限
+
+默认只使用低敏信号: 时间、workspace、git 状态、本地开发服务。
+
+其他信号必须按需请求:
+
+- `activeApp`: 当前活跃应用。
+- `windowTitle`: 当前窗口标题。
+- `systemStatus`: 基础系统状态。
+- `weather`: 天气。
+- `browserTabs`: 浏览器标签。
+- `clipboard`: 剪贴板。
+- `calendar`: 日历。
+- `recentFiles`: 最近文件。
+
+请求规则:
+
+- 必须说明为什么这个信号会改善体验。
+- 一次只请求一个权限。
+- 用户同意才调用 `set-permission <实例名> <signal> always`。
+- 用户拒绝则调用 `set-permission <实例名> <signal> deny`,之后不要反复问。
+- 不要把权限请求伪装成闲聊。

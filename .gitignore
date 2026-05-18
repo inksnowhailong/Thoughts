@@ -1,2 +1,5 @@
 .env
 *.log
+
+# 思绪模式本地运行态: active 状态、计时日志、迁移测试用记忆副本等。
+.cursor/.thoughts/

@@ -4,9 +4,51 @@ import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const ROOT = join(homedir(), '.cursor', '.thoughts');
-const ACTIVE_FILE = join(ROOT, 'active.json');
-const SESSIONS_FILE = join(ROOT, 'sessions.json');
+/**
+ * 全局 fallback ROOT,只有没有任何项目本地 .cursor/.thoughts/ 命中时才使用。
+ */
+const GLOBAL_ROOT = join(homedir(), '.cursor', '.thoughts');
+
+let ROOT = GLOBAL_ROOT;
+let ACTIVE_FILE = join(ROOT, 'active.json');
+let SESSIONS_FILE = join(ROOT, 'sessions.json');
+
+/**
+ * 解析当前应该使用的 thoughts ROOT。优先级:
+ *   1. 环境变量 THOUGHTS_ROOT
+ *   2. 从 hint(或 cwd)向上查找,命中 `<dir>/.cursor/.thoughts/` 即用(且不同于全局)
+ *   3. 全局 ~/.cursor/.thoughts/
+ */
+function resolveRoot(hint) {
+    if (process.env.THOUGHTS_ROOT) {
+        return resolve(fixCursorPath(process.env.THOUGHTS_ROOT));
+    }
+
+    const start = hint ? resolve(fixCursorPath(hint)) : process.cwd();
+    const globalAbs = resolve(GLOBAL_ROOT);
+
+    let dir = start;
+    while (true) {
+        const candidate = join(dir, '.cursor', '.thoughts');
+        if (existsSync(candidate) && resolve(candidate) !== globalAbs) {
+            return candidate;
+        }
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+
+    return GLOBAL_ROOT;
+}
+
+/**
+ * 在每个命令入口调用,根据命令上下文(workspace 参数或 cwd)切换 ROOT。
+ */
+function initRoot(hint) {
+    ROOT = resolveRoot(hint);
+    ACTIVE_FILE = join(ROOT, 'active.json');
+    SESSIONS_FILE = join(ROOT, 'sessions.json');
+}
 
 function ensureDir(path) {
     mkdirSync(path, { recursive: true });
@@ -30,8 +72,24 @@ function appendJsonl(path, value) {
     writeFileSync(path, `${JSON.stringify(value)}\n`, { flag: 'a' });
 }
 
+/**
+ * Cursor 在 Windows 下会用 unix 风格的盘符路径,例如 `/e:/inksnow/Thoughts`。
+ * 需要先剥掉前导斜杠,否则 `resolve` 会返回 `E:\e:\...` 这种垃圾。
+ */
+function fixCursorPath(value) {
+    if (typeof value !== 'string') return value;
+    if (process.platform === 'win32' && /^\/[a-z]:/i.test(value)) {
+        return value.substring(1);
+    }
+    return value;
+}
+
 function normalizeWorkspace(value) {
-    return resolve(value || process.cwd()).replaceAll('\\', '/');
+    let result = resolve(fixCursorPath(value) || process.cwd()).replaceAll('\\', '/');
+    if (process.platform === 'win32' && /^[a-z]:/.test(result)) {
+        result = result[0].toUpperCase() + result.slice(1);
+    }
+    return result;
 }
 
 function activeState() {
@@ -67,6 +125,13 @@ function bind(instanceName, workspaceArg) {
 
     if (!session?.conversation_id) {
         throw new Error(`没有找到 workspace ${workspace} 的最新 Cursor session。请在一个新 chat 中运行 /thoughts。`);
+    }
+    if (session.conversation_id === 'conv-test') {
+        throw new Error('检测到 dry-run 测试 session(conv-test),拒绝绑定。请重载 Cursor 后在真实专用 chat 中重新运行 /thoughts。');
+    }
+    const sessionAgeMs = Date.now() - Date.parse(session.updated_at ?? 0);
+    if (!Number.isFinite(sessionAgeMs) || sessionAgeMs > 60 * 60 * 1000) {
+        throw new Error(`最新 Cursor session 记录过旧或无效(${session.updated_at ?? 'unknown'}),请重载 Cursor 后在真实专用 chat 中重新运行 /thoughts。`);
     }
 
     const state = activeState();
@@ -126,6 +191,28 @@ function activityLogPath(instanceName) {
     return join(instanceDir(instanceName), 'activity-log.jsonl');
 }
 
+function defaultPermissions() {
+    return {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        signals: {
+            time: 'always',
+            workspace: 'always',
+            gitStatus: 'always',
+            devServers: 'always',
+            systemStatus: 'ask',
+            activeApp: 'ask',
+            windowTitle: 'ask',
+            weather: 'ask',
+            browserTabs: 'deny',
+            clipboard: 'deny',
+            calendar: 'deny',
+            recentFiles: 'deny',
+        },
+        pendingRequests: [],
+    };
+}
+
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
@@ -168,7 +255,35 @@ function recordUser(workspaceArg, preview = '') {
     console.log(JSON.stringify(loopState, null, 4));
 }
 
-function recordActive(workspaceArg, topic = 'active_message') {
+function normalizeModeAndTopic(modeArg = 'active', topicArg = 'active_message') {
+    const allowedModes = new Set(['discovery', 'ambient', 'casual', 'reflection', 'quiet']);
+    if (allowedModes.has(modeArg)) {
+        return {
+            mode: modeArg,
+            topic: topicArg || modeArg,
+        };
+    }
+
+    // Backward compatible: old callers passed only topic.
+    return {
+        mode: 'active',
+        topic: [modeArg, topicArg].filter(Boolean).join(' ') || 'active_message',
+    };
+}
+
+function pushRecentMode(loopState, mode) {
+    const recent = Array.isArray(loopState.recent_behavior_modes)
+        ? loopState.recent_behavior_modes
+        : [];
+    recent.push({
+        mode,
+        time: new Date().toISOString(),
+    });
+    loopState.recent_behavior_modes = recent.slice(-10);
+    loopState.last_behavior_mode = mode;
+}
+
+function recordActive(workspaceArg, modeArg = 'active', topicArg = 'active_message') {
     const workspace = normalizeWorkspace(workspaceArg);
     const state = activeState();
     const entry = state[workspace];
@@ -176,6 +291,8 @@ function recordActive(workspaceArg, topic = 'active_message') {
         throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
     }
 
+    const { mode, topic } = normalizeModeAndTopic(modeArg, topicArg);
+    const isQuiet = mode === 'quiet';
     const now = Date.now();
     const dir = instanceDir(entry.instance);
     const personality = readJson(join(dir, 'personality.json'), {});
@@ -190,15 +307,20 @@ function recordActive(workspaceArg, topic = 'active_message') {
     const loopState = readJson(path, {});
     const previousActiveAt = Number(loopState.last_active_message_at || 0);
     const lastUserAt = Number(loopState.last_user_message_at || 0);
-    const previousActiveWasIgnored = previousActiveAt > 0 && lastUserAt < previousActiveAt;
-    const consecutiveIgnored = previousActiveWasIgnored
-        ? Number(loopState.consecutive_ignored || 0) + 1
-        : 0;
+    const previousActiveWasIgnored = !isQuiet && previousActiveAt > 0 && lastUserAt < previousActiveAt;
+    const consecutiveIgnored = isQuiet
+        ? Number(loopState.consecutive_ignored || 0)
+        : previousActiveWasIgnored
+            ? Number(loopState.consecutive_ignored || 0) + 1
+            : 0;
 
     let delayMs;
     let delayReason;
 
-    if (isQuietHour(now, rhythm.quietHours)) {
+    if (isQuiet) {
+        delayMs = clamp(baseDelayMs, minDelayMs, maxDelayMs);
+        delayReason = 'quiet mode';
+    } else if (isQuietHour(now, rhythm.quietHours)) {
         delayMs = maxDelayMs;
         delayReason = 'quiet hours';
     } else if (consecutiveIgnored >= 3) {
@@ -216,16 +338,24 @@ function recordActive(workspaceArg, topic = 'active_message') {
     }
 
     loopState.consecutive_ignored = consecutiveIgnored;
-    loopState.last_active_message_at = now;
-    loopState.last_active_message_at_iso = new Date(now).toISOString();
-    loopState.last_active_topic = topic;
+    pushRecentMode(loopState, mode);
+    if (isQuiet) {
+        loopState.last_quiet_at = now;
+        loopState.last_quiet_at_iso = new Date(now).toISOString();
+        loopState.last_quiet_topic = topic;
+    } else {
+        loopState.last_active_message_at = now;
+        loopState.last_active_message_at_iso = new Date(now).toISOString();
+        loopState.last_active_topic = topic;
+    }
     loopState.last_delay_ms = delayMs;
     loopState.last_delay_reason = delayReason;
     writeJson(path, loopState);
 
     appendJsonl(activityLogPath(entry.instance), {
         time: new Date(now).toISOString(),
-        action: 'active_message',
+        action: isQuiet ? 'quiet' : 'active_message',
+        mode,
         topic,
         delayMs,
         delayReason,
@@ -245,6 +375,8 @@ function recordActive(workspaceArg, topic = 'active_message') {
     saveActive(state);
 
     console.log(JSON.stringify({
+        mode,
+        topic,
         delayMs,
         delayReason,
         consecutiveIgnored,
@@ -269,6 +401,7 @@ function ensureInstanceFiles(instanceName) {
         'memory-index.jsonl': '',
         'memory-sources.jsonl': '',
         'activity-log.jsonl': '',
+        'permissions.json': `${JSON.stringify(defaultPermissions(), null, 4)}\n`,
     };
 
     for (const [file, content] of Object.entries(defaults)) {
@@ -287,6 +420,156 @@ function ensureInstanceFiles(instanceName) {
     }
 
     console.log(dir);
+}
+
+function permissionState(instanceName) {
+    const path = join(instanceDir(instanceName), 'permissions.json');
+    const state = readJson(path, null);
+    if (state) return state;
+    const fallback = defaultPermissions();
+    writeJson(path, fallback);
+    return fallback;
+}
+
+function setPermission(instanceName, signal, value) {
+    const allowedValues = new Set(['always', 'ask', 'deny']);
+    if (!allowedValues.has(value)) {
+        throw new Error(`权限值必须是 always / ask / deny,收到: ${value}`);
+    }
+
+    const path = join(instanceDir(instanceName), 'permissions.json');
+    const state = permissionState(instanceName);
+    state.signals = state.signals ?? {};
+    state.signals[signal] = value;
+    state.pendingRequests = (state.pendingRequests ?? []).filter((request) => request.signal !== signal);
+    state.updatedAt = new Date().toISOString();
+    writeJson(path, state);
+    console.log(JSON.stringify(state, null, 4));
+}
+
+function run(command, args, options = {}) {
+    const result = spawnSync(command, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: options.timeout ?? 5000,
+        shell: options.shell ?? false,
+    });
+    return {
+        ok: result.status === 0,
+        stdout: String(result.stdout ?? '').trim(),
+        stderr: String(result.stderr ?? '').trim(),
+    };
+}
+
+function powershell(script, timeout = 5000) {
+    return run('powershell', ['-NoProfile', '-Command', script], { timeout });
+}
+
+function collectContext(workspaceArg) {
+    const workspace = normalizeWorkspace(workspaceArg);
+    const state = activeState();
+    const entry = state[workspace];
+    if (!entry?.enabled) {
+        throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
+    }
+
+    const permissions = permissionState(entry.instance);
+    const signals = permissions.signals ?? {};
+    const allowed = (name) => signals[name] === 'always';
+    const now = new Date();
+    const context = {
+        time: allowed('time') ? {
+            iso: now.toISOString(),
+            local: now.toLocaleString(),
+            hour: now.getHours(),
+            weekday: now.toLocaleDateString(undefined, { weekday: 'long' }),
+        } : null,
+        workspace: allowed('workspace') ? { path: workspace } : null,
+        availableSignals: Object.entries(signals)
+            .filter(([, value]) => value === 'always')
+            .map(([key]) => key),
+        deniedSignals: Object.entries(signals)
+            .filter(([, value]) => value === 'deny')
+            .map(([key]) => key),
+        askSignals: Object.entries(signals)
+            .filter(([, value]) => value === 'ask')
+            .map(([key]) => key),
+        pendingRequests: permissions.pendingRequests ?? [],
+    };
+
+    if (allowed('gitStatus')) {
+        const status = run('git', ['status', '--short'], { timeout: 5000 });
+        context.gitStatus = status.ok ? status.stdout.slice(0, 2000) : null;
+    }
+
+    if (allowed('devServers')) {
+        if (platform() === 'win32') {
+            const ports = powershell('Get-NetTCPConnection -State Listen | Select-Object -First 20 LocalAddress,LocalPort,OwningProcess | ConvertTo-Json -Compress', 5000);
+            context.devServers = ports.ok ? ports.stdout.slice(0, 4000) : null;
+        } else {
+            const ports = run('sh', ['-lc', 'command -v lsof >/dev/null 2>&1 && lsof -iTCP -sTCP:LISTEN -P | head -20 || true'], { timeout: 5000 });
+            context.devServers = ports.stdout.slice(0, 4000);
+        }
+    }
+
+    if (allowed('systemStatus')) {
+        if (platform() === 'win32') {
+            const system = powershell('Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize,LastBootUpTime | ConvertTo-Json -Compress', 5000);
+            context.systemStatus = system.ok ? system.stdout.slice(0, 2000) : null;
+        } else {
+            const system = run('sh', ['-lc', 'uptime; df -h . | tail -1'], { timeout: 5000 });
+            context.systemStatus = system.stdout.slice(0, 2000);
+        }
+    }
+
+    if (allowed('activeApp') || allowed('windowTitle')) {
+        if (platform() === 'win32') {
+            const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class Win32 {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+"@
+$h=[Win32]::GetForegroundWindow()
+$sb=New-Object System.Text.StringBuilder 512
+[void][Win32]::GetWindowText($h,$sb,$sb.Capacity)
+$pid32=0
+[void][Win32]::GetWindowThreadProcessId($h,[ref]$pid32)
+$p=Get-Process -Id $pid32 -ErrorAction SilentlyContinue
+[pscustomobject]@{ process=$p.ProcessName; title=$sb.ToString() } | ConvertTo-Json -Compress
+`;
+            const active = powershell(script, 5000);
+            if (active.ok) {
+                const parsed = readJsonFromString(active.stdout, {});
+                if (allowed('activeApp')) context.activeApp = parsed.process ?? null;
+                if (allowed('windowTitle')) context.windowTitle = parsed.title ?? null;
+            }
+        } else if (platform() === 'darwin') {
+            if (allowed('activeApp')) {
+                const app = run('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true'], { timeout: 5000 });
+                context.activeApp = app.stdout || null;
+            }
+            if (allowed('windowTitle')) {
+                const title = run('osascript', ['-e', 'tell application "System Events" to tell process (name of first application process whose frontmost is true) to get name of front window'], { timeout: 5000 });
+                context.windowTitle = title.stdout || null;
+            }
+        }
+    }
+
+    console.log(JSON.stringify(context, null, 4));
+}
+
+function readJsonFromString(value, fallback) {
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
 }
 
 function notify(title, subtitle, message) {
@@ -340,6 +623,27 @@ function notify(title, subtitle, message) {
 
 const [cmd, ...args] = process.argv.slice(2);
 
+/**
+ * 根据命令决定 ROOT 解析的 hint。
+ * 接收 workspace 参数的命令直接用第一个参数;否则用 cwd。
+ */
+function commandHint(name, argv) {
+    switch (name) {
+        case 'bind':
+            return argv[1];
+        case 'unbind':
+        case 'schedule':
+        case 'record-user':
+        case 'record-active':
+        case 'context':
+        case 'state':
+            return argv[0];
+        default:
+            return undefined;
+    }
+}
+
+initRoot(commandHint(cmd, args));
 ensureDir(ROOT);
 
 try {
@@ -369,7 +673,13 @@ try {
             recordUser(args[0], args.slice(1).join(' '));
             break;
         case 'record-active':
-            recordActive(args[0], args.slice(1).join(' '));
+            recordActive(args[0], args[1], args.slice(2).join(' '));
+            break;
+        case 'context':
+            collectContext(args[0]);
+            break;
+        case 'set-permission':
+            setPermission(args[0], args[1], args[2]);
             break;
         case 'state':
             showState(args[0]);
@@ -386,7 +696,9 @@ try {
   node .cursor/runtime/thoughts.mjs unbind [workspace]
   node .cursor/runtime/thoughts.mjs schedule [workspace] <delayMs> [reason]
   node .cursor/runtime/thoughts.mjs record-user [workspace] [preview]
-  node .cursor/runtime/thoughts.mjs record-active [workspace] [topic]
+  node .cursor/runtime/thoughts.mjs record-active [workspace] [mode] [topic]
+  node .cursor/runtime/thoughts.mjs context [workspace]
+  node .cursor/runtime/thoughts.mjs set-permission <instance> <signal> <always|ask|deny>
   node .cursor/runtime/thoughts.mjs state [workspace]
   node .cursor/runtime/thoughts.mjs notify <title> <subtitle> <message>`);
     }
