@@ -10,7 +10,8 @@ Cursor 版"思绪模式"实验项目。
 - 使用 `stop` hook 的 `followup_message` 驱动持续循环。
 - 使用 shell sleep + `next_active_at` 控制动态延迟。
 - 使用 `.cursor/agents/thoughts-subconscious.md` 中的 background subagent 作为"潜意识",整理记忆、演化画像、调整节奏。
-- 主动内容以"信息发现"为主,避免无意义询问用户当前代码进度。
+- 主动内容由隐藏的行为模式编排: 信息发现、环境感知、单纯对话、记忆延展、主动沉默。
+- 环境感知权限是动态的: 默认只开低敏信号,AI 需要更多信号时会说明原因并请求用户决定。
 - 通知按系统自动适配: Windows BurntToast、macOS osascript、Linux notify-send,缺失时降级为终端输出。
 
 ## 结构
@@ -58,6 +59,10 @@ Cursor 版"思绪模式"实验项目。
     ├── personality.json
     ├── memory-raw.md
     ├── memory-consolidated.md
+    ├── memory-active.json
+    ├── memory-index.jsonl
+    ├── memory-sources.jsonl
+    ├── permissions.json
     ├── activity-log.jsonl
     └── loop-state.json
 ```

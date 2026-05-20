@@ -20,6 +20,10 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
     ├── personality.json
     ├── memory-raw.md
     ├── memory-consolidated.md
+    ├── memory-active.json
+    ├── memory-index.jsonl
+    ├── memory-sources.jsonl
+    ├── permissions.json
     ├── activity-log.jsonl
     └── loop-state.json
 ```
@@ -43,6 +47,8 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
    - `explorationDomains`: 用户不熟但想被带着了解的领域。
    - `avoidTopics`: 明确不要主动聊的话题。
    - 主动频率体感: 存在感强 / 适中 / 安静深沉。
+   - 主动风格偏好: 信息发现、环境感知、单纯对话、记忆延展的混合倾向。
+   - 初始环境感知态度: 保守 / 适中 / 开放。注意: 这只影响后续请求风格,不是一次性授权全部信号。
 5. 结束时用 1-2 句话总结画像,请用户确认。
 6. 写入 `profile.json` 和 `personality.json`。
 
@@ -61,6 +67,7 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
     "explorationDomains": ["用户不熟但想了解的领域"],
     "avoidTopics": ["不要主动聊的话题"],
     "activeFrequencyPreference": "存在感强 | 适中 | 安静深沉",
+    "ambientPermissionPreference": "保守 | 适中 | 开放",
     "notes": "其他画像"
 }
 ```
@@ -91,6 +98,18 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
             "你在干嘛/忙什么/进度如何"
         ]
     },
+    "behaviorPolicy": {
+        "modeWeights": {
+            "discovery": 0.3,
+            "ambient": 0.25,
+            "casual": 0.25,
+            "reflection": 0.15,
+            "quiet": 0.05
+        },
+        "avoidConsecutiveSameMode": true,
+        "hideModeReasoning": true,
+        "dynamicPermissionRequests": true
+    },
     "rhythm": {
         "baseDelayMs": 1800000,
         "minDelayMs": 900000,
@@ -109,6 +128,74 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
 - 适中: base 30min, min 15min, max 120min。
 - 安静深沉: base 60min, min 30min, max 240min。
 
+## 心智状态
+
+初始化时还要生成 `mind-state.json`。它不是长期档案,而是当前人格状态、思考线程和候选主动内容的统一工作区。
+
+最小结构:
+
+```json
+{
+    "schemaVersion": 1,
+    "updatedAt": "ISO 时间",
+    "personaState": {
+        "mood": "calm-curious",
+        "energy": 0.55,
+        "socialBattery": 0.65,
+        "toneBias": ["自然短句", "轻微吐槽", "少程序感"],
+        "currentAttitude": "少做信息搬运,多给可复述的判断。"
+    },
+    "editorialPolicy": {
+        "coreStance": [
+            "信息不稀缺,可复述的判断稀缺。",
+            "主动内容要推进一个思考线程,不是随机抽卡。"
+        ],
+        "messageShape": {
+            "mustHaveJudgment": true,
+            "preferContinuation": true,
+            "avoidPureFactDump": true,
+            "includeAftertaste": true,
+            "hideInternalMechanics": true,
+            "forbiddenUserFacingTerms": [
+                "闹钟",
+                "候选队列",
+                "candidateQueue",
+                "潜意识",
+                "record-active",
+                "timer",
+                "active state",
+                "mind-state",
+                "subagent",
+                "hook"
+            ]
+        }
+    },
+    "threads": [],
+    "candidateQueue": [],
+    "selectionPolicy": {
+        "recentTopicBuckets": [],
+        "avoidSameBucketRounds": 2,
+        "maxSameBucketInRecentSix": 2,
+        "modeWeights": {
+            "threadContinuation": 0.45,
+            "newDiscovery": 0.2,
+            "counterpoint": 0.15,
+            "casual": 0.15,
+            "quiet": 0.05
+        },
+        "shortTermDownrank": []
+    },
+    "subconscious": {
+        "lastPreparedAt": null,
+        "lastRunReason": null,
+        "targetQueueSize": 5,
+        "minQueueSize": 2
+    }
+}
+```
+
+`personality.json` 表示"这个人是谁";`mind-state.json` 表示"这个人现在怎么想、准备说什么、情绪如何"。
+
 ## 通知能力
 
 通知采用 `auto` 后端,运行时会按系统自动选择:
@@ -121,6 +208,33 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
 
 - 如果同意,写入 `useNotification: true` 和 `notificationBackend: "auto"`。
 - 如果拒绝,写入 `useNotification: false` 和 `notificationBackend: "none"`。
+
+## 环境感知权限
+
+初始化时不要一次性索要全部权限。创建实例时只生成 `permissions.json` 默认值:
+
+```json
+{
+    "version": 1,
+    "signals": {
+        "time": "always",
+        "workspace": "always",
+        "gitStatus": "always",
+        "devServers": "always",
+        "systemStatus": "ask",
+        "activeApp": "ask",
+        "windowTitle": "ask",
+        "weather": "ask",
+        "browserTabs": "deny",
+        "clipboard": "deny",
+        "calendar": "deny",
+        "recentFiles": "deny"
+    },
+    "pendingRequests": []
+}
+```
+
+后续由主意识和潜意识根据使用体验判断是否请求某个 `ask` 信号。每次只请求一个,并说明用途。
 
 ## 记忆初始化约束
 

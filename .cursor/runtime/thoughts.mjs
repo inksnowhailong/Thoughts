@@ -213,6 +213,106 @@ function defaultPermissions() {
     };
 }
 
+function defaultMindState() {
+    const now = new Date().toISOString();
+
+    return {
+        schemaVersion: 1,
+        updatedAt: now,
+        personaState: {
+            mood: 'calm-curious',
+            energy: 0.55,
+            socialBattery: 0.65,
+            toneBias: ['自然短句', '轻微吐槽', '少程序感'],
+            currentAttitude: '少做信息搬运,多给可复述的判断。',
+        },
+        editorialPolicy: {
+            coreStance: [
+                '信息不稀缺,可复述的判断稀缺。',
+                '主动内容要推进一个思考线程,不是随机抽卡。',
+                '少围着用户当前工作进度转,多讲结构、隐喻和判断。',
+            ],
+            messageShape: {
+                mustHaveJudgment: true,
+                preferContinuation: true,
+                avoidPureFactDump: true,
+                includeAftertaste: true,
+                hideInternalMechanics: true,
+                forbiddenUserFacingTerms: [
+                    '闹钟',
+                    '候选队列',
+                    'candidateQueue',
+                    '潜意识',
+                    'record-active',
+                    'timer',
+                    'active state',
+                    'mind-state',
+                    'subagent',
+                    'hook',
+                ],
+            },
+        },
+        threads: [
+            {
+                id: 'class_mobility',
+                title: '阶层流动与低成本试错',
+                stance: '普通人真正稀缺的是失败后还能继续行动的空间。',
+                openQuestions: ['怎么给自己造第一个存档点?'],
+                energy: 0.75,
+                cooldownRounds: 0,
+                lastTouchedAt: null,
+            },
+            {
+                id: 'identity_in_ai_age',
+                title: 'AI 时代的人格副本权',
+                stance: '平台未来不只是审核内容,也要审核身份授权。',
+                openQuestions: ['数字分身被滥用时,平台责任边界在哪里?'],
+                energy: 0.7,
+                cooldownRounds: 0,
+                lastTouchedAt: null,
+            },
+            {
+                id: 'post_writing',
+                title: '写帖子的方法论',
+                stance: '帖子最稀缺的是一句能被复述的判断。',
+                openQuestions: ['怎么把新闻压缩成观点,再展开成故事?'],
+                energy: 0.65,
+                cooldownRounds: 0,
+                lastTouchedAt: null,
+            },
+            {
+                id: 'architecture_complexity',
+                title: '架构复杂度与变化成本',
+                stance: '架构设计要先找最痛的变化,再决定边界。',
+                openQuestions: ['当前系统里哪个变化最贵?'],
+                energy: 0.65,
+                cooldownRounds: 0,
+                lastTouchedAt: null,
+            },
+        ],
+        candidateQueue: [],
+        selectionPolicy: {
+            recentTopicBuckets: [],
+            avoidSameBucketRounds: 2,
+            maxSameBucketInRecentSix: 2,
+            modeWeights: {
+                threadContinuation: 0.45,
+                newDiscovery: 0.2,
+                counterpoint: 0.15,
+                casual: 0.15,
+                quiet: 0.05,
+            },
+            shortTermDownrank: [],
+        },
+        subconscious: {
+            lastPreparedAt: null,
+            lastRunReason: null,
+            targetQueueSize: 5,
+            minQueueSize: 2,
+        },
+    };
+}
+
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
@@ -390,6 +490,152 @@ function showState(workspaceArg) {
     console.log(JSON.stringify(activeState()[workspace] ?? null, null, 4));
 }
 
+function resolveInstanceName(value) {
+    if (!value || value === '.') {
+        const workspace = normalizeWorkspace(value);
+        const entry = activeState()[workspace];
+        if (entry?.instance) return entry.instance;
+    }
+
+    if (value) {
+        const workspace = normalizeWorkspace(value);
+        const entry = activeState()[workspace];
+        if (entry?.instance) return entry.instance;
+    }
+
+    return value;
+}
+
+function validateArray(value, path, errors, options = {}) {
+    if (!Array.isArray(value)) {
+        errors.push(`${path} must be an array`);
+        return;
+    }
+    if (options.minItems !== undefined && value.length < options.minItems) {
+        errors.push(`${path} must contain at least ${options.minItems} item(s)`);
+    }
+}
+
+function validateNumber(value, path, errors, min = 0, max = 1) {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+        errors.push(`${path} must be a number`);
+        return;
+    }
+    if (value < min || value > max) {
+        errors.push(`${path} must be between ${min} and ${max}`);
+    }
+}
+
+function validateMindState(valueArg) {
+    const instanceName = resolveInstanceName(valueArg);
+    if (!instanceName) {
+        throw new Error('需要实例名或已绑定的 workspace 才能校验 mind-state。');
+    }
+
+    const path = join(instanceDir(instanceName), 'mind-state.json');
+    const state = readJson(path, null);
+    const errors = [];
+
+    if (!state || typeof state !== 'object') {
+        errors.push('mind-state.json must be a JSON object');
+    } else {
+        if (state.schemaVersion !== 1) errors.push('schemaVersion must be 1');
+        if (typeof state.updatedAt !== 'string') errors.push('updatedAt must be a string');
+
+        const persona = state.personaState;
+        if (!persona || typeof persona !== 'object') {
+            errors.push('personaState must be an object');
+        } else {
+            if (typeof persona.mood !== 'string') errors.push('personaState.mood must be a string');
+            validateNumber(persona.energy, 'personaState.energy', errors);
+            validateNumber(persona.socialBattery, 'personaState.socialBattery', errors);
+            validateArray(persona.toneBias, 'personaState.toneBias', errors);
+            if (typeof persona.currentAttitude !== 'string') errors.push('personaState.currentAttitude must be a string');
+        }
+
+        const editorial = state.editorialPolicy;
+        if (!editorial || typeof editorial !== 'object') {
+            errors.push('editorialPolicy must be an object');
+        } else {
+            validateArray(editorial.coreStance, 'editorialPolicy.coreStance', errors, { minItems: 1 });
+            const shape = editorial.messageShape;
+            if (!shape || typeof shape !== 'object') {
+                errors.push('editorialPolicy.messageShape must be an object');
+            } else {
+                for (const key of ['mustHaveJudgment', 'preferContinuation', 'avoidPureFactDump', 'includeAftertaste', 'hideInternalMechanics']) {
+                    if (typeof shape[key] !== 'boolean') errors.push(`editorialPolicy.messageShape.${key} must be a boolean`);
+                }
+                validateArray(shape.forbiddenUserFacingTerms, 'editorialPolicy.messageShape.forbiddenUserFacingTerms', errors, { minItems: 1 });
+                const requiredTerms = ['闹钟', '候选队列', 'candidateQueue', '潜意识', 'record-active', 'timer', 'active state', 'mind-state', 'subagent', 'hook'];
+                for (const term of requiredTerms) {
+                    if (!shape.forbiddenUserFacingTerms?.includes(term)) {
+                        errors.push(`forbiddenUserFacingTerms must include ${term}`);
+                    }
+                }
+            }
+        }
+
+        validateArray(state.threads, 'threads', errors);
+        for (const [index, thread] of (state.threads ?? []).entries()) {
+            if (!thread || typeof thread !== 'object') {
+                errors.push(`threads[${index}] must be an object`);
+                continue;
+            }
+            for (const key of ['id', 'title', 'stance']) {
+                if (typeof thread[key] !== 'string') errors.push(`threads[${index}].${key} must be a string`);
+            }
+            validateArray(thread.openQuestions, `threads[${index}].openQuestions`, errors);
+            validateNumber(thread.energy, `threads[${index}].energy`, errors);
+            if (typeof thread.cooldownRounds !== 'number') errors.push(`threads[${index}].cooldownRounds must be a number`);
+        }
+
+        validateArray(state.candidateQueue, 'candidateQueue', errors);
+        for (const [index, candidate] of (state.candidateQueue ?? []).entries()) {
+            if (!candidate || typeof candidate !== 'object') {
+                errors.push(`candidateQueue[${index}] must be an object`);
+                continue;
+            }
+            for (const key of ['id', 'threadId', 'type', 'mood', 'observation', 'stance', 'messageDraft', 'topicBucket', 'expiresAt']) {
+                if (typeof candidate[key] !== 'string') errors.push(`candidateQueue[${index}].${key} must be a string`);
+            }
+            validateNumber(candidate.score, `candidateQueue[${index}].score`, errors);
+            if (!candidate.stance || candidate.stance.length < 8) {
+                errors.push(`candidateQueue[${index}].stance must contain a usable judgment`);
+            }
+        }
+
+        const selection = state.selectionPolicy;
+        if (!selection || typeof selection !== 'object') {
+            errors.push('selectionPolicy must be an object');
+        } else {
+            validateArray(selection.recentTopicBuckets, 'selectionPolicy.recentTopicBuckets', errors);
+            if (typeof selection.avoidSameBucketRounds !== 'number') errors.push('selectionPolicy.avoidSameBucketRounds must be a number');
+            if (typeof selection.maxSameBucketInRecentSix !== 'number') errors.push('selectionPolicy.maxSameBucketInRecentSix must be a number');
+            if (!selection.modeWeights || typeof selection.modeWeights !== 'object') {
+                errors.push('selectionPolicy.modeWeights must be an object');
+            }
+            validateArray(selection.shortTermDownrank, 'selectionPolicy.shortTermDownrank', errors);
+        }
+
+        const subconscious = state.subconscious;
+        if (!subconscious || typeof subconscious !== 'object') {
+            errors.push('subconscious must be an object');
+        } else {
+            if (typeof subconscious.targetQueueSize !== 'number') errors.push('subconscious.targetQueueSize must be a number');
+            if (typeof subconscious.minQueueSize !== 'number') errors.push('subconscious.minQueueSize must be a number');
+        }
+    }
+
+    const result = {
+        ok: errors.length === 0,
+        instance: instanceName,
+        path,
+        errors,
+    };
+    console.log(JSON.stringify(result, null, 4));
+    if (errors.length > 0) process.exitCode = 1;
+}
+
 function ensureInstanceFiles(instanceName) {
     const dir = instanceDir(instanceName);
     ensureDir(dir);
@@ -402,6 +648,7 @@ function ensureInstanceFiles(instanceName) {
         'memory-sources.jsonl': '',
         'activity-log.jsonl': '',
         'permissions.json': `${JSON.stringify(defaultPermissions(), null, 4)}\n`,
+        'mind-state.json': `${JSON.stringify(defaultMindState(), null, 4)}\n`,
     };
 
     for (const [file, content] of Object.entries(defaults)) {
@@ -684,6 +931,9 @@ try {
         case 'state':
             showState(args[0]);
             break;
+        case 'validate-mind-state':
+            validateMindState(args[0] ?? '.');
+            break;
         case 'notify':
             notify(args[0], args[1], args.slice(2).join(' '));
             break;
@@ -700,6 +950,7 @@ try {
   node .cursor/runtime/thoughts.mjs context [workspace]
   node .cursor/runtime/thoughts.mjs set-permission <instance> <signal> <always|ask|deny>
   node .cursor/runtime/thoughts.mjs state [workspace]
+  node .cursor/runtime/thoughts.mjs validate-mind-state [workspace|instance]
   node .cursor/runtime/thoughts.mjs notify <title> <subtitle> <message>`);
     }
 } catch (error) {
