@@ -1,0 +1,65 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://inksnow.local/team/team-config.schema.json",
+    "title": "Team Config",
+    "type": "object",
+    "additionalProperties": true,
+    "required": [
+        "schemaVersion",
+        "teamName",
+        "leaderName",
+        "leader",
+        "subs",
+        "blackboard",
+        "bindings",
+        "createdAt"
+    ],
+    "properties": {
+        "schemaVersion": { "const": 1 },
+        "teamName": { "type": "string", "minLength": 1 },
+        "leaderName": { "type": "string", "minLength": 1 },
+        "leader": {
+            "type": "object",
+            "required": ["name", "model"],
+            "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "model": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": true
+        },
+        "subs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "role", "roleName", "model", "worktree"],
+                "properties": {
+                    "name": { "type": "string", "minLength": 1 },
+                    "role": { "type": "string", "minLength": 1 },
+                    "roleName": { "type": "string", "minLength": 1 },
+                    "model": { "type": "string", "minLength": 1 },
+                    "worktree": { "type": ["string", "null"] },
+                    "worktreeBranch": { "type": "string" },
+                    "addedAt": { "type": "string" }
+                },
+                "additionalProperties": true
+            }
+        },
+        "blackboard": {
+            "type": "object",
+            "required": ["writers"],
+            "properties": {
+                "writers": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                }
+            },
+            "additionalProperties": true
+        },
+        "bindings": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "createdAt": { "type": "string", "minLength": 1 },
+        "updatedAt": { "type": "string" }
+    }
+}

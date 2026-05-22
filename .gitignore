@@ -3,3 +3,6 @@
 
 # 思绪模式本地运行态: active 状态、计时日志、迁移测试用记忆副本等。
 .cursor/.thoughts/
+
+# Team 多 Agent 本地运行态: 邮箱、黑板、agent 私有记忆、watcher pid、worktree 指针等。
+.cursor/.team/
