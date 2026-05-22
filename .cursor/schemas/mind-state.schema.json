@@ -1,0 +1,181 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://inksnow.local/thoughts/mind-state.schema.json",
+    "title": "Thoughts Mind State",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "schemaVersion",
+        "updatedAt",
+        "personaState",
+        "editorialPolicy",
+        "threads",
+        "candidateQueue",
+        "selectionPolicy",
+        "subconscious"
+    ],
+    "properties": {
+        "schemaVersion": {
+            "const": 1
+        },
+        "updatedAt": {
+            "type": "string"
+        },
+        "personaState": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mood", "energy", "socialBattery", "toneBias", "currentAttitude"],
+            "properties": {
+                "mood": { "type": "string", "minLength": 1 },
+                "energy": { "type": "number", "minimum": 0, "maximum": 1 },
+                "socialBattery": { "type": "number", "minimum": 0, "maximum": 1 },
+                "toneBias": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                },
+                "currentAttitude": { "type": "string", "minLength": 1 }
+            }
+        },
+        "editorialPolicy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["coreStance", "messageShape"],
+            "properties": {
+                "coreStance": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 }
+                },
+                "messageShape": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "mustHaveJudgment",
+                        "preferContinuation",
+                        "avoidPureFactDump",
+                        "includeAftertaste",
+                        "hideInternalMechanics",
+                        "forbiddenUserFacingTerms"
+                    ],
+                    "properties": {
+                        "mustHaveJudgment": { "type": "boolean" },
+                        "preferContinuation": { "type": "boolean" },
+                        "avoidPureFactDump": { "type": "boolean" },
+                        "includeAftertaste": { "type": "boolean" },
+                        "hideInternalMechanics": { "type": "boolean", "const": true },
+                        "forbiddenUserFacingTerms": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string", "minLength": 1 },
+                            "contains": { "const": "候选队列" }
+                        }
+                    }
+                }
+            }
+        },
+        "threads": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/thread" }
+        },
+        "candidateQueue": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/candidate" }
+        },
+        "selectionPolicy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "recentTopicBuckets",
+                "avoidSameBucketRounds",
+                "maxSameBucketInRecentSix",
+                "modeWeights",
+                "shortTermDownrank"
+            ],
+            "properties": {
+                "recentTopicBuckets": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "avoidSameBucketRounds": { "type": "number", "minimum": 0 },
+                "maxSameBucketInRecentSix": { "type": "number", "minimum": 1 },
+                "modeWeights": {
+                    "type": "object",
+                    "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+                },
+                "shortTermDownrank": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/downrank" }
+                }
+            }
+        },
+        "subconscious": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["lastPreparedAt", "lastRunReason", "targetQueueSize", "minQueueSize"],
+            "properties": {
+                "lastPreparedAt": { "type": ["string", "null"] },
+                "lastRunReason": { "type": ["string", "null"] },
+                "targetQueueSize": { "type": "number", "minimum": 0 },
+                "minQueueSize": { "type": "number", "minimum": 0 }
+            }
+        }
+    },
+    "$defs": {
+        "thread": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "title", "stance", "openQuestions", "energy", "cooldownRounds", "lastTouchedAt"],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "stance": { "type": "string", "minLength": 1 },
+                "openQuestions": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "energy": { "type": "number", "minimum": 0, "maximum": 1 },
+                "cooldownRounds": { "type": "number", "minimum": 0 },
+                "lastTouchedAt": { "type": ["string", "null"] }
+            }
+        },
+        "candidate": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+                "id",
+                "threadId",
+                "type",
+                "mood",
+                "observation",
+                "stance",
+                "messageDraft",
+                "score",
+                "topicBucket",
+                "expiresAt"
+            ],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "threadId": { "type": "string", "minLength": 1 },
+                "type": { "type": "string", "minLength": 1 },
+                "mood": { "type": "string", "minLength": 1 },
+                "observation": { "type": "string", "minLength": 1 },
+                "stance": { "type": "string", "minLength": 8 },
+                "messageDraft": { "type": "string", "minLength": 1 },
+                "score": { "type": "number", "minimum": 0, "maximum": 1 },
+                "topicBucket": { "type": "string", "minLength": 1 },
+                "expiresAt": { "type": "string", "minLength": 1 }
+            }
+        },
+        "downrank": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["topicBucket", "reason"],
+            "properties": {
+                "topicBucket": { "type": "string", "minLength": 1 },
+                "reason": { "type": "string", "minLength": 1 },
+                "expiresAfterRounds": { "type": "number", "minimum": 0 },
+                "scope": { "type": "string" }
+            }
+        }
+    }
+}

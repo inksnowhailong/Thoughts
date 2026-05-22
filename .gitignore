@@ -1,24 +1,8 @@
-# Logs
-logs
+.env
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# 思绪模式本地运行态: active 状态、计时日志、迁移测试用记忆副本等。
+.cursor/.thoughts/
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# Team 多 Agent 本地运行态: 邮箱、黑板、agent 私有记忆、watcher pid、worktree 指针等。
+.cursor/.team/

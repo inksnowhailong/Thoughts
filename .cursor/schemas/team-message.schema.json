@@ -1,0 +1,63 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://inksnow.local/team/team-message.schema.json",
+    "title": "Team Message",
+    "type": "object",
+    "additionalProperties": true,
+    "required": ["id", "from", "to", "type", "createdAt"],
+    "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["task", "reply", "control"] },
+        "title": { "type": "string" },
+        "payload": { "type": "object" },
+        "priority": { "enum": ["high", "normal", "low"] },
+        "deadline_ms": { "type": "number", "minimum": 0 },
+        "parent_task": { "type": ["string", "null"] },
+        "chain": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+        },
+        "worktree": { "type": ["string", "null"] },
+        "task_id": { "type": "string" },
+        "status": {
+            "enum": [
+                "done",
+                "failed",
+                "partial",
+                "need_more_info",
+                "rejected_role_mismatch",
+                "blocked"
+            ]
+        },
+        "result_summary": { "type": "string" },
+        "result_detail": { "type": "string" },
+        "artifacts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["kind", "path"],
+                "properties": {
+                    "kind": { "type": "string" },
+                    "path": { "type": "string" },
+                    "change": { "type": "string" }
+                },
+                "additionalProperties": true
+            }
+        },
+        "follow_up_suggestions": { "type": "array" },
+        "blockers": { "type": "array" },
+        "createdAt": { "type": "string", "minLength": 1 }
+    },
+    "allOf": [
+        {
+            "if": { "properties": { "type": { "const": "task" } } },
+            "then": { "required": ["title", "payload", "priority"] }
+        },
+        {
+            "if": { "properties": { "type": { "const": "reply" } } },
+            "then": { "required": ["task_id", "status", "result_summary"] }
+        }
+    ]
+}

@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "hooks": {
+        "stop": [
+            {
+                "command": "node .cursor/hooks/team-stop-driver.mjs",
+                "timeout": 10,
+                "loop_limit": 1,
+                "failClosed": false
+            }
+        ]
+    }
+}

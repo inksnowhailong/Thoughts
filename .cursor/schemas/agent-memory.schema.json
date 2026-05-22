@@ -1,0 +1,43 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://inksnow.local/team/agent-memory.schema.json",
+    "title": "Agent Memory Profile",
+    "type": "object",
+    "additionalProperties": true,
+    "required": [
+        "schemaVersion",
+        "agent",
+        "positioning",
+        "focus",
+        "outOfScope",
+        "communicationStyle",
+        "boundaries",
+        "createdAt",
+        "updatedAt"
+    ],
+    "properties": {
+        "schemaVersion": { "const": 1 },
+        "agent": { "type": "string", "minLength": 1 },
+        "role": { "type": ["string", "null"] },
+        "roleName": { "type": ["string", "null"] },
+        "codename": { "type": ["string", "null"] },
+        "positioning": { "type": "string", "minLength": 1 },
+        "focus": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+        },
+        "outOfScope": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+        },
+        "communicationStyle": { "type": "string", "minLength": 1 },
+        "communicationStyleNote": { "type": "string" },
+        "boundaries": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+        },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "minLength": 1 },
+        "updatedAt": { "type": "string", "minLength": 1 }
+    }
+}
