@@ -72,10 +72,18 @@ node .cursor/runtime/team.mjs install-deps
 4. 团队叫什么名字？**必须是短、可读、由字母数字和连字符组成的标识**（例：`refactor-store`、`mvp-fullstack`、`auth-redesign`）。
    - 不接受时间戳默认值，因为生成的 leader skill 名是 `team-leader-<teamName>`，用户重开 chat 需要手动输入这个名字。
    - 长度建议 4-24 字符。如果用户给出的名字太长 / 含空格 / 含中文，建议一个等价短名让用户确认。
+5. **leader 在这个团队里具体要干什么？** 用户用自然语言描述，例如：
+   - "重点把控架构边界，不要纠结实现细节"
+   - "严管 Critic 链，每条代码改动都得过审"
+   - "放手让 sub 自己干，只在拍板和合并时介入"
+   - "默认每个 sub 各自一个 worktree，避免冲突"
+   - "不要在用户面前暴露任何内部机制，全程拟人化对话"
+
+   这一题如果用户回答"按默认就行"，跳过即可——`generate-leader` 会用默认职能段填充。
 
 每轮最多 1-2 个问题。能用结构化提问工具就用；没有就普通聊天问。
 
-把第 2 题用户的回答**完整保存**到一个临时文件（用 Write 工具写到例如 `<workspace>/.cursor/.team/.onboarding-purpose.txt`），后面阶段 5 写黑板时要用。
+把第 2 题用户的回答**完整保存**到 `<workspace>/.cursor/.team/.onboarding-purpose.txt`，把第 5 题（如果回答了）保存到 `<workspace>/.cursor/.team/.onboarding-leader-profile.md`。后面阶段 5 写黑板和阶段 6 生成 leader 时要用。
 
 ### 2. 角色推荐
 
@@ -184,8 +192,16 @@ node .cursor/runtime/team.mjs seed-blackboard . --purpose-file <purpose> --conve
 生成 leader：
 
 ```bash
+node .cursor/runtime/team.mjs generate-leader . --profile-md-file "<workspace>/.cursor/.team/.onboarding-leader-profile.md"
+```
+
+`--profile-md-file` 用阶段 1 第 5 题保存的 leader 职能描述。文件不存在或第 5 题用户跳过时，去掉这个参数直接跑：
+
+```bash
 node .cursor/runtime/team.mjs generate-leader .
 ```
+
+会用默认职能段填充。返回值里的 `withProfile: true|false` 告诉你是否注入了用户自定义职能。
 
 生成每个 sub：
 
@@ -193,9 +209,12 @@ node .cursor/runtime/team.mjs generate-leader .
 node .cursor/runtime/team.mjs generate-sub . <subName>
 ```
 
+写完后**删除**临时文件 `.onboarding-leader-profile.md`，它不属于运行态（同阶段 5 删 `.onboarding-purpose.txt`）。
+
 生成的 leader skill 固化：
 
 - 启动协议（强制 Shell 调用 bind / watcher-claim / mailbox-consume，再读 profile/personality/memory-active/memory-consolidated + 黑板三件套）
+- **本团队的 Leader 职能段**（来自阶段 1 第 5 题，或注入默认）
 - 主循环
 - 派任务消息格式
 - Critic / Review 链

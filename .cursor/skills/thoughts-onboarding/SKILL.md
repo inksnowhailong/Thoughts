@@ -228,7 +228,8 @@ description: 初始化 Cursor 思绪模式。通过自然对话收集用户画�
         "browserTabs": "deny",
         "clipboard": "deny",
         "calendar": "deny",
-        "recentFiles": "deny"
+        "recentFiles": "deny",
+        "terminalLogs": "ask"
     },
     "pendingRequests": []
 }

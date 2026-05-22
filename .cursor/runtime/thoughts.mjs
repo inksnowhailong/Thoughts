@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -208,6 +208,7 @@ function defaultPermissions() {
             clipboard: 'deny',
             calendar: 'deny',
             recentFiles: 'deny',
+            terminalLogs: 'ask',
         },
         pendingRequests: [],
     };
@@ -700,6 +701,7 @@ function run(command, args, options = {}) {
         windowsHide: true,
         timeout: options.timeout ?? 5000,
         shell: options.shell ?? false,
+        cwd: options.cwd,
     });
     return {
         ok: result.status === 0,
@@ -710,6 +712,247 @@ function run(command, args, options = {}) {
 
 function powershell(script, timeout = 5000) {
     return run('powershell', ['-NoProfile', '-Command', script], { timeout });
+}
+
+const SENSITIVE_TEXT_PATTERN = /(authorization|cookie|password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)/i;
+const SENSITIVE_FILE_PATTERN = /(^\.env($|\.)|secret|token|credential|private-key|id_rsa|\.pem$|\.p12$)/i;
+
+function truncate(value, maxLength = 500) {
+    const text = String(value ?? '').replaceAll('\r\n', '\n').trim();
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength - 1)}…`;
+}
+
+function redactSensitiveText(value) {
+    return String(value ?? '')
+        .split(/\r?\n/)
+        .map((line) => (SENSITIVE_TEXT_PATTERN.test(line) ? '[redacted-sensitive-line]' : line))
+        .join('\n');
+}
+
+function safePreview(value, maxLength = 500) {
+    return truncate(redactSensitiveText(value), maxLength);
+}
+
+function relativeWorkspacePath(workspace, path) {
+    const normalized = normalizeWorkspace(path);
+    const prefix = `${workspace}/`;
+    const relative = normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+    const name = relative.split('/').at(-1) ?? relative;
+    if (SENSITIVE_FILE_PATTERN.test(name)) {
+        return {
+            path: '[sensitive config file]',
+            sensitive: true,
+        };
+    }
+    return {
+        path: relative,
+        sensitive: false,
+    };
+}
+
+function cursorProjectSlug(workspace) {
+    const normalized = normalizeWorkspace(workspace);
+    if (/^[A-Z]:\//.test(normalized)) {
+        const drive = normalized[0].toLowerCase();
+        const rest = normalized.slice(3).split('/').filter(Boolean).join('-');
+        return `${drive}-${rest}`;
+    }
+    return normalized.replace(/^\/+/, '').replace(/[:/\\]+/g, '-');
+}
+
+function collectGitSnapshot(workspace) {
+    const branch = run('git', ['branch', '--show-current'], { timeout: 5000, cwd: workspace });
+    const status = run('git', ['status', '--short'], { timeout: 5000, cwd: workspace });
+    const unstagedSummary = run('git', ['diff', '--shortstat'], { timeout: 5000, cwd: workspace });
+    const stagedSummary = run('git', ['diff', '--cached', '--shortstat'], { timeout: 5000, cwd: workspace });
+    const unstagedFiles = run('git', ['diff', '--name-only'], { timeout: 5000, cwd: workspace });
+    const stagedFiles = run('git', ['diff', '--cached', '--name-only'], { timeout: 5000, cwd: workspace });
+
+    const changedFiles = new Set();
+    for (const output of [unstagedFiles.stdout, stagedFiles.stdout]) {
+        for (const line of output.split(/\r?\n/).filter(Boolean)) {
+            changedFiles.add(relativeWorkspacePath(workspace, join(workspace, line)).path);
+        }
+    }
+    const changedFileList = [...changedFiles].slice(0, 20);
+    const fallbackStatus = changedFileList.map((file) => `modified: ${file}`).join('\n');
+
+    return {
+        branch: branch.ok ? branch.stdout || null : null,
+        statusPreview: status.ok && status.stdout ? safePreview(status.stdout, 1200) : fallbackStatus || null,
+        unstagedSummary: unstagedSummary.ok ? unstagedSummary.stdout || null : null,
+        stagedSummary: stagedSummary.ok ? stagedSummary.stdout || null : null,
+        changedFiles: changedFileList,
+    };
+}
+
+function collectRecentWorkspaceFiles(workspace, limit = 10) {
+    const ignoredDirectories = new Set([
+        '.git',
+        'node_modules',
+        'dist',
+        'build',
+        '.next',
+        '.turbo',
+        '.cache',
+        '.cursor/.thoughts',
+    ]);
+    const files = [];
+    const stack = [workspace];
+    let scanned = 0;
+
+    while (stack.length > 0 && scanned < 6000) {
+        const dir = stack.pop();
+        let entries = [];
+        try {
+            entries = readdirSync(dir, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+
+        for (const entry of entries) {
+            scanned += 1;
+            const fullPath = join(dir, entry.name);
+            const relative = normalizeWorkspace(fullPath).slice(`${workspace}/`.length);
+            if (entry.isDirectory()) {
+                if ([...ignoredDirectories].some((ignored) => relative === ignored || relative.startsWith(`${ignored}/`))) {
+                    continue;
+                }
+                stack.push(fullPath);
+                continue;
+            }
+            if (!entry.isFile()) continue;
+            try {
+                const stat = statSync(fullPath);
+                const safePath = relativeWorkspacePath(workspace, fullPath);
+                files.push({
+                    ...safePath,
+                    modifiedAt: stat.mtime.toISOString(),
+                });
+            } catch {
+                // ignore transient filesystem errors
+            }
+        }
+    }
+
+    return files
+        .sort((a, b) => Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt))
+        .slice(0, limit);
+}
+
+function terminalDirectoryForWorkspace(workspace) {
+    return join(homedir(), '.cursor', 'projects', cursorProjectSlug(workspace), 'terminals');
+}
+
+function parseTerminalMetadata(lines) {
+    const metadata = {};
+    let inHeader = false;
+    for (const line of lines) {
+        if (line === '---') {
+            if (inHeader) break;
+            inHeader = true;
+            continue;
+        }
+        if (!inHeader) continue;
+        const match = line.match(/^([^:]+):\s*(.*)$/);
+        if (match) metadata[match[1]] = match[2].replace(/^"|"$/g, '');
+    }
+    return metadata;
+}
+
+function terminalBodyPreview(lines) {
+    const body = [];
+    let headerSeparators = 0;
+    for (const line of lines) {
+        if (line === '---') {
+            headerSeparators += 1;
+            continue;
+        }
+        if (headerSeparators < 2) continue;
+        if (/^(exit_code|elapsed_ms|ended_at):/.test(line)) continue;
+        if (line.trim()) body.push(line);
+    }
+    return safePreview(body.slice(-4).join('\n'), 600);
+}
+
+function collectTerminalLogSummaries(workspace, limit = 4) {
+    const terminalDir = terminalDirectoryForWorkspace(workspace);
+    if (!existsSync(terminalDir)) {
+        return {
+            available: false,
+            terminals: [],
+        };
+    }
+
+    const files = readdirSync(terminalDir)
+        .filter((name) => name.endsWith('.txt'))
+        .map((name) => {
+            const path = join(terminalDir, name);
+            try {
+                return { name, path, mtimeMs: statSync(path).mtimeMs };
+            } catch {
+                return null;
+            }
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, limit);
+
+    return {
+        available: true,
+        terminals: files.map((file) => {
+            const text = readFileSync(file.path, 'utf8');
+            const lines = text.split(/\r?\n/);
+            const metadata = parseTerminalMetadata(lines);
+            const exitMatch = text.match(/exit_code:\s*([^\s]+)/);
+            return {
+                command: safePreview(metadata.command ?? metadata.last_command ?? '', 220),
+                cwd: safePreview(metadata.cwd ?? '', 160),
+                running: !exitMatch,
+                exitCode: exitMatch?.[1] ?? null,
+                outputPreview: terminalBodyPreview(lines),
+            };
+        }),
+    };
+}
+
+function summarizeDevServers(raw) {
+    const parsed = readJsonFromString(raw, null);
+    const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    return list
+        .map((item) => ({
+            address: item.LocalAddress ?? item.localAddress ?? null,
+            port: item.LocalPort ?? item.localPort ?? null,
+            processId: item.OwningProcess ?? item.processId ?? null,
+        }))
+        .filter((item) => item.port)
+        .slice(0, 20);
+}
+
+function collectEnvironmentSnapshot(workspace, context, allowed) {
+    return {
+        capturedAt: new Date().toISOString(),
+        scope: 'lightweight',
+        privacy: {
+            readsFileContents: false,
+            readsClipboard: false,
+            usesScreenshots: false,
+            note: 'Only metadata and short redacted previews are included.',
+        },
+        focus: {
+            activeApp: context.activeApp ?? null,
+            windowTitle: context.windowTitle ? safePreview(context.windowTitle, 180) : null,
+        },
+        git: allowed('gitStatus') ? collectGitSnapshot(workspace) : null,
+        devServers: allowed('devServers') ? summarizeDevServers(context.devServers) : null,
+        recentFiles: allowed('recentFiles') ? collectRecentWorkspaceFiles(workspace) : null,
+        terminalLogs: allowed('terminalLogs') ? collectTerminalLogSummaries(workspace) : null,
+        unsupportedSignals: [
+            allowed('browserTabs') ? 'browserTabs collector is not implemented in runtime yet' : null,
+            allowed('calendar') ? 'calendar collector is not implemented in runtime yet' : null,
+        ].filter(Boolean),
+    };
 }
 
 function collectContext(workspaceArg) {
@@ -807,6 +1050,8 @@ $p=Get-Process -Id $pid32 -ErrorAction SilentlyContinue
             }
         }
     }
+
+    context.environmentSnapshot = collectEnvironmentSnapshot(workspace, context, allowed);
 
     console.log(JSON.stringify(context, null, 4));
 }

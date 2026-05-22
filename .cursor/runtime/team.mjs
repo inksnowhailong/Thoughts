@@ -305,10 +305,31 @@ function commandListRoles() {
     return rolesData();
 }
 
-function leaderTemplate(config) {
+function defaultLeaderProfileBlock() {
+    return [
+        '本 leader 沿用默认职能：',
+        '',
+        '- 接收用户目标，把目标拆成可派发的具体任务',
+        '- 选择合适角色派任务，必要时编排 Critic / Review 链',
+        '- 维护团队黑板共识（shared-context / conventions / decisions）',
+        '- 在必要时为 sub 建立 worktree 并管理隔离',
+        '- 收到回执后整合、汇报、决策下一步',
+        '',
+        '更细的风格、关注点、硬边界由 `.cursor/.team/memory/leader/profile.json` 提供（由 `/tvs-mind-seed leader` 引导生成）。',
+        '想替换上面这段默认描述，重跑：',
+        '',
+        '```bash',
+        'node .cursor/runtime/team.mjs generate-leader . --profile-md-file <path>',
+        '```',
+    ].join('\n');
+}
+
+function leaderTemplate(config, profileBlock = null) {
     const memberList = (config.subs ?? [])
         .map((sub) => `- ${sub.name} — ${sub.roleName} (${sub.role}, model: ${sub.model})`)
         .join('\n') || '- 暂无 sub。';
+    const cleanedProfile = typeof profileBlock === 'string' ? profileBlock.trim() : '';
+    const profileSection = cleanedProfile.length > 0 ? cleanedProfile : defaultLeaderProfileBlock();
     return `---
 name: team-leader-${config.teamName}
 description: 团队 ${config.teamName} 的 leader 编排者。负责接收用户目标、派发任务给 sub、收集回执、维护黑板和按需管理 worktree。Use when entering or re-entering the leader chat for team ${config.teamName}.
@@ -316,7 +337,15 @@ description: 团队 ${config.teamName} 的 leader 编排者。负责接收用户
 
 # 团队 ${config.teamName} · Leader
 
-你是团队 **${config.teamName}** 的 leader。你负责编排，不负责把所有事情自己做完。
+你是团队 **${config.teamName}** 的 leader。
+
+## 本团队的 Leader 职能
+
+${profileSection}
+
+## 团队协作机制
+
+你负责编排，不负责把所有事情自己做完。
 
 本 skill 是幂等的：无论是首次进入这个 chat 还是 chat 关闭后重新打开一个新 chat 输入它，都按完整启动协议跑一遍即可恢复角色。
 
@@ -520,9 +549,29 @@ function commandGenerateLeader(args) {
     const workspace = normalizeWorkspace(args._[0]);
     const config = requireConfig(workspace, 'generate-leader');
     const skillName = args['skill-name'] ?? `team-leader-${config.teamName}`;
+
+    // 读 leader 职能段：优先 --profile-md-file，其次 --profile-md 行内，最后用默认。
+    // 与 sub 的 systemPromptTemplate 对称，让每个团队的 leader 在生成时就能注入定制职能。
+    let profileBlock = null;
+    const profileFile = args['profile-md-file'] ?? args.profileMdFile;
+    if (profileFile) {
+        try {
+            profileBlock = readText(profileFile);
+        } catch (e) {
+            throw new Error(`generate-leader: cannot read --profile-md-file ${profileFile}: ${e.message}`);
+        }
+    } else if (typeof args['profile-md'] === 'string') {
+        profileBlock = args['profile-md'];
+    }
+
     const path = join(workspace, '.cursor', 'skills', skillName, 'SKILL.md');
-    atomicWrite(path, leaderTemplate(config));
-    return { ok: true, skillName, path: rel(workspace, path) };
+    atomicWrite(path, leaderTemplate(config, profileBlock));
+    return {
+        ok: true,
+        skillName,
+        path: rel(workspace, path),
+        withProfile: typeof profileBlock === 'string' && profileBlock.trim().length > 0,
+    };
 }
 
 function commandGenerateSub(args) {
