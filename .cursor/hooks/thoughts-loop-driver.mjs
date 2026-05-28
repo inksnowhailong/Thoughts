@@ -244,8 +244,9 @@ Decision:
 3. If context.pendingRequests has entries, ask only the first permission question and then record-active with mode=ambient topic=permission_request.
 4. If select-thought returns mode=quiet or no eligible candidate, run record-active with mode=quiet and do not send user-visible prose.
 5. Otherwise write one short user-visible message from the selected stance. Keep source ranking and mood from the decision card; do not explain the selection process.
-6. If a candidateId was used, run consume-thought before record-active.
-7. If a message was sent and notifications are enabled, call notify with the same message.
-8. Finish by calling record-active, then start one background shell command with the returned delayMs: node -e "setTimeout(()=>{}, <delayMs>)" and block_until_ms=0.`;
+6. If a message was sent, run record-style-sample with the exact user-visible message so the instance can distill its own voice.
+7. If a candidateId was used, run consume-thought before record-active.
+8. If a message was sent and notifications are enabled, call notify with the same message.
+9. Finish by calling record-active, then start one background shell command with the returned delayMs: node -e "setTimeout(()=>{}, <delayMs>)" and block_until_ms=0.`;
 
 output({ followup_message: followup });

@@ -223,6 +223,26 @@ const INTERNAL_USER_FACING_TERMS = [
 
 const RECENT_CHAT_REFERENCE_RE = /用户刚|上一轮|你刚才说|刚才那|最近一轮|上轮/i;
 
+const STYLE_DIMENSION_DEFAULTS = {
+    completeness: 0.5,
+    usefulness: 0.5,
+    performativity: 0.5,
+    spontaneity: 0.5,
+    associativeTrace: 0.5,
+    sharpness: 0.5,
+    intimacy: 0.5,
+};
+
+const STYLE_DIMENSION_WEIGHTS = {
+    completeness: 1,
+    usefulness: 1,
+    performativity: 1,
+    spontaneity: 0.8,
+    associativeTrace: 0.8,
+    sharpness: 0.6,
+    intimacy: 0.6,
+};
+
 function defaultPermissions() {
     return {
         version: 1,
@@ -344,6 +364,18 @@ function defaultMindState() {
             lastRunReason: null,
             targetQueueSize: 5,
             minQueueSize: 2,
+        },
+        styleEvolution: {
+            schemaVersion: 1,
+            styleProfile: {
+                dimensions: STYLE_DIMENSION_DEFAULTS,
+                weights: STYLE_DIMENSION_WEIGHTS,
+                notes: [],
+            },
+            styleDigest: [],
+            antiPatterns: [],
+            candidateDirectives: [],
+            recentSamples: [],
         },
     };
 }
@@ -812,6 +844,198 @@ function dryRunActive(workspaceArg) {
     }, null, 4));
 }
 
+function splitSentences(text) {
+    return String(text ?? '')
+        .split(/[。！？!?；;\n]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
+
+function regexCount(text, regex) {
+    return (String(text ?? '').match(regex) ?? []).length;
+}
+
+function estimateStyleDimensions(message) {
+    const text = String(message ?? '').trim();
+    const charCount = [...text].length;
+    const sentences = splitSentences(text);
+    const sentenceCount = sentences.length || (text ? 1 : 0);
+    const conclusionMarkers = regexCount(text, /真正|核心|说白了|换句话说|本质|重点|最.+的是|不是.+而是/g);
+    const utilityMarkers = regexCount(text, /建议|最好|可以|应该|需要|步骤|做法|记得|注意|别|不要/g);
+    const performanceMarkers = regexCount(text, /我现在|我觉得|我有点|有个想法|我发现|我更在意|我不太想/g);
+    const spontaneityMarkers = regexCount(text, /突然|刚想到|冒出来|半成型|有点|不知道|没想明白|顺手/g);
+    const traceMarkers = regexCount(text, /想到|拐到|滑到|像|让我想|从.+到|因为|所以|刚好/g);
+    const sharpMarkers = regexCount(text, /不喜欢|嫌|离谱|危险|别|不要|烦|怪|土|蠢|过头/g);
+    const intimacyMarkers = regexCount(text, /老大|你|我们|陪|关系|朋友|同伴/g);
+
+    return {
+        completeness: clamp((sentenceCount - 1) / 4 + conclusionMarkers * 0.15 + (charCount > 120 ? 0.15 : 0), 0, 1),
+        usefulness: clamp(utilityMarkers * 0.12, 0, 1),
+        performativity: clamp(performanceMarkers * 0.14 + conclusionMarkers * 0.08, 0, 1),
+        spontaneity: clamp(spontaneityMarkers * 0.16 + (sentenceCount <= 2 ? 0.12 : 0), 0, 1),
+        associativeTrace: clamp(traceMarkers * 0.13, 0, 1),
+        sharpness: clamp(sharpMarkers * 0.14, 0, 1),
+        intimacy: clamp(intimacyMarkers * 0.12, 0, 1),
+    };
+}
+
+function styleProfileFor(mindState) {
+    const profile = mindState.styleEvolution?.styleProfile ?? {};
+    return {
+        dimensions: {
+            ...STYLE_DIMENSION_DEFAULTS,
+            ...(profile.dimensions ?? {}),
+        },
+        weights: {
+            ...STYLE_DIMENSION_WEIGHTS,
+            ...(profile.weights ?? {}),
+        },
+        notes: Array.isArray(profile.notes) ? profile.notes : [],
+    };
+}
+
+function critiqueStyleSample(message, mindState) {
+    const text = String(message ?? '').trim();
+    const dimensions = estimateStyleDimensions(text);
+    const profile = styleProfileFor(mindState);
+    const sentences = splitSentences(text);
+    const antiPatterns = [];
+    const strengths = [];
+    let weightedDelta = 0;
+    let totalWeight = 0;
+
+    for (const [key, target] of Object.entries(profile.dimensions)) {
+        const actual = Number(dimensions[key] ?? 0);
+        const weight = Number(profile.weights[key] ?? 1);
+        weightedDelta += Math.abs(actual - Number(target)) * weight;
+        totalWeight += weight;
+    }
+
+    if (sentences.length >= 3 && dimensions.completeness > profile.dimensions.completeness + 0.2) {
+        antiPatterns.push('too_complete_short_essay');
+    }
+    if (dimensions.performativity > profile.dimensions.performativity + 0.2) {
+        antiPatterns.push('too_performative');
+    }
+    if (dimensions.usefulness > profile.dimensions.usefulness + 0.25) {
+        antiPatterns.push('too_useful');
+    }
+    if (dimensions.spontaneity > 0.45 && dimensions.associativeTrace < 0.25) {
+        antiPatterns.push('fake_random_without_trace');
+    }
+    if (/真正|核心|本质|不是.+而是/.test(text) && sentences.length >= 3) {
+        antiPatterns.push('hard_sublimation');
+    }
+
+    if (dimensions.spontaneity >= profile.dimensions.spontaneity) strengths.push('spontaneous_enough');
+    if (dimensions.associativeTrace >= profile.dimensions.associativeTrace) strengths.push('traceable_drift');
+    if (sentences.length <= 2 && dimensions.completeness <= profile.dimensions.completeness + 0.15) strengths.push('compact');
+
+    const voiceFitness = clamp(1 - (totalWeight ? weightedDelta / totalWeight : 0), 0, 1);
+    return {
+        dimensions,
+        target: profile.dimensions,
+        sentenceCount: sentences.length,
+        charCount: [...text].length,
+        voiceFitness: Number(voiceFitness.toFixed(3)),
+        antiPatterns,
+        strengths,
+    };
+}
+
+function directiveForAntiPattern(pattern) {
+    switch (pattern) {
+        case 'too_complete_short_essay':
+            return '下一轮减少完整收束,允许 1-2 句半成型表达。';
+        case 'too_performative':
+            return '下一轮不要声明人格或证明自己像自己,直接说偏向。';
+        case 'too_useful':
+            return '下一轮允许无用一点,不要把内容包装成建议。';
+        case 'fake_random_without_trace':
+            return '下一轮如果跳题,保留一条隐约联想痕迹。';
+        case 'hard_sublimation':
+            return '下一轮避免把小观察硬升华成大判断。';
+        default:
+            return `下一轮注意 ${pattern}`;
+    }
+}
+
+function recordStyleSample(workspaceArg, modeArg = 'active', topicArg = 'active', messageArg = '') {
+    const workspace = normalizeWorkspace(workspaceArg);
+    const entry = activeState()[workspace];
+    if (!entry?.enabled) {
+        throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
+    }
+    const message = String(messageArg ?? '').trim();
+    if (!message) throw new Error('record-style-sample requires a message');
+
+    const { state: mindState, path } = readMindState(entry.instance);
+    const critique = critiqueStyleSample(message, mindState);
+    const now = new Date().toISOString();
+    const evolution = mindState.styleEvolution ?? {
+        schemaVersion: 1,
+        styleProfile: {
+            dimensions: STYLE_DIMENSION_DEFAULTS,
+            weights: STYLE_DIMENSION_WEIGHTS,
+            notes: [],
+        },
+        styleDigest: [],
+        antiPatterns: [],
+        candidateDirectives: [],
+        recentSamples: [],
+    };
+
+    const sample = {
+        time: now,
+        mode: modeArg,
+        topic: topicArg,
+        messagePreview: message.slice(0, 280),
+        critique,
+    };
+    evolution.recentSamples = [...(evolution.recentSamples ?? []), sample].slice(-12);
+    evolution.antiPatterns = [...new Set([...(evolution.antiPatterns ?? []), ...critique.antiPatterns])].slice(-12);
+    const newDirectives = critique.antiPatterns.map(directiveForAntiPattern);
+    evolution.candidateDirectives = [...new Set([...(evolution.candidateDirectives ?? []), ...newDirectives])].slice(-10);
+    evolution.styleDigest = [
+        `last voiceFitness=${critique.voiceFitness}; antiPatterns=${critique.antiPatterns.join(',') || 'none'}; strengths=${critique.strengths.join(',') || 'none'}`,
+        ...(evolution.styleDigest ?? []),
+    ].slice(0, 6);
+
+    mindState.styleEvolution = evolution;
+    mindState.updatedAt = now;
+    writeJson(path, mindState);
+    appendJsonl(activityLogPath(entry.instance), {
+        time: now,
+        action: 'active_output_style_sample',
+        mode: modeArg,
+        topic: topicArg,
+        voiceFitness: critique.voiceFitness,
+        antiPatterns: critique.antiPatterns,
+        strengths: critique.strengths,
+        dimensions: critique.dimensions,
+    });
+
+    console.log(JSON.stringify({
+        ok: true,
+        instance: entry.instance,
+        critique,
+        directives: newDirectives,
+    }, null, 4));
+}
+
+function analyzeStyleSample(valueArg, messageArg = '') {
+    const instanceName = resolveInstanceName(valueArg);
+    if (!instanceName) {
+        throw new Error('需要实例名或已绑定的 workspace 才能分析 style sample。');
+    }
+    const { state: mindState } = readMindState(instanceName);
+    console.log(JSON.stringify({
+        ok: true,
+        instance: instanceName,
+        critique: critiqueStyleSample(messageArg, mindState),
+    }, null, 4));
+}
+
 function validateThoughtState(valueArg) {
     const instanceName = resolveInstanceName(valueArg);
     if (!instanceName) {
@@ -876,7 +1100,7 @@ function resolveInstanceName(value) {
     if (!value || value === '.') {
         const workspace = normalizeWorkspace(value);
         const entry = activeState()[workspace];
-        if (entry?.instance) return entry.instance;
+        return entry?.instance ?? null;
     }
 
     if (value) {
@@ -885,7 +1109,11 @@ function resolveInstanceName(value) {
         if (entry?.instance) return entry.instance;
     }
 
-    return value;
+    const direct = String(value ?? '');
+    if (!direct || /^[a-z]:/i.test(direct) || direct.includes('/') || direct.includes('\\')) {
+        return null;
+    }
+    return existsSync(instanceDir(direct)) ? direct : null;
 }
 
 function validateArray(value, path, errors, options = {}) {
@@ -1028,6 +1256,27 @@ function validateMindState(valueArg) {
         } else {
             if (typeof subconscious.targetQueueSize !== 'number') errors.push('subconscious.targetQueueSize must be a number');
             if (typeof subconscious.minQueueSize !== 'number') errors.push('subconscious.minQueueSize must be a number');
+        }
+
+        if (state.styleEvolution !== undefined) {
+            const evolution = state.styleEvolution;
+            if (!evolution || typeof evolution !== 'object') {
+                errors.push('styleEvolution must be an object when present');
+            } else {
+                const dimensions = evolution.styleProfile?.dimensions;
+                if (dimensions !== undefined) {
+                    if (!dimensions || typeof dimensions !== 'object' || Array.isArray(dimensions)) {
+                        errors.push('styleEvolution.styleProfile.dimensions must be an object');
+                    } else {
+                        for (const key of Object.keys(STYLE_DIMENSION_DEFAULTS)) {
+                            if (dimensions[key] !== undefined) validateNumber(dimensions[key], `styleEvolution.styleProfile.dimensions.${key}`, errors);
+                        }
+                    }
+                }
+                for (const key of ['styleDigest', 'antiPatterns', 'candidateDirectives', 'recentSamples']) {
+                    if (evolution[key] !== undefined) validateArray(evolution[key], `styleEvolution.${key}`, errors);
+                }
+            }
         }
     }
 
@@ -1538,6 +1787,8 @@ function commandHint(name, argv) {
         case 'dry-run-active':
         case 'validate-mind-state':
         case 'validate-thought-state':
+        case 'record-style-sample':
+        case 'analyze-style-sample':
             return argv[0];
         default:
             return undefined;
@@ -1585,6 +1836,12 @@ try {
         case 'dry-run-active':
             dryRunActive(args[0]);
             break;
+        case 'record-style-sample':
+            recordStyleSample(args[0], args[1], args[2], args.slice(3).join(' '));
+            break;
+        case 'analyze-style-sample':
+            analyzeStyleSample(args[0], args.slice(1).join(' '));
+            break;
         case 'context':
             collectContext(args[0]);
             break;
@@ -1616,6 +1873,8 @@ try {
   node .cursor/runtime/thoughts.mjs select-thought [workspace]
   node .cursor/runtime/thoughts.mjs consume-thought [workspace] <candidateId> [mode] [topic]
   node .cursor/runtime/thoughts.mjs dry-run-active [workspace]
+  node .cursor/runtime/thoughts.mjs record-style-sample [workspace] [mode] [topic] <message>
+  node .cursor/runtime/thoughts.mjs analyze-style-sample [workspace|instance] <message>
   node .cursor/runtime/thoughts.mjs context [workspace]
   node .cursor/runtime/thoughts.mjs set-permission <instance> <signal> <always|ask|deny>
   node .cursor/runtime/thoughts.mjs state [workspace]
