@@ -191,6 +191,38 @@ function activityLogPath(instanceName) {
     return join(instanceDir(instanceName), 'activity-log.jsonl');
 }
 
+const THOUGHT_SOURCE_RANKING = [
+    'longThread',
+    'personaMood',
+    'worldObservation',
+    'tasteReaction',
+    'associativeDrift',
+];
+
+const SOURCE_SCORE_BONUS = {
+    longThread: 0.35,
+    personaMood: 0.25,
+    worldObservation: 0.2,
+    tasteReaction: 0.12,
+    associativeDrift: 0.08,
+};
+
+const INTERNAL_USER_FACING_TERMS = [
+    '闹钟',
+    '候选队列',
+    'candidateQueue',
+    '潜意识',
+    'record-active',
+    'timer',
+    'active state',
+    'mind-state',
+    'subagent',
+    'hook',
+    '锚点',
+];
+
+const RECENT_CHAT_REFERENCE_RE = /用户刚|上一轮|你刚才说|刚才那|最近一轮|上轮/i;
+
 function defaultPermissions() {
     return {
         version: 1,
@@ -293,6 +325,8 @@ function defaultMindState() {
         ],
         candidateQueue: [],
         selectionPolicy: {
+            ownThoughtSourceRanking: THOUGHT_SOURCE_RANKING,
+            sourceScoreBonus: SOURCE_SCORE_BONUS,
             recentTopicBuckets: [],
             avoidSameBucketRounds: 2,
             maxSameBucketInRecentSix: 2,
@@ -327,6 +361,12 @@ function isQuietHour(now, quietHours = []) {
     if (start === end) return false;
     if (start < end) return hour >= start && hour < end;
     return hour >= start || hour < end;
+}
+
+function hasEngagementBoostSignal(preview = '') {
+    const text = String(preview ?? '').trim();
+    if (!text) return false;
+    return /(继续|展开|多说|多讲|想听|感兴趣|喜欢|不错|这个好|讲讲|细说|可以继续|就这个)/i.test(text);
 }
 
 function recordUser(workspaceArg, preview = '') {
@@ -430,9 +470,11 @@ function recordActive(workspaceArg, modeArg = 'active', topicArg = 'active_messa
     } else if (consecutiveIgnored > 0) {
         delayMs = clamp(Math.round(baseDelayMs * (decayMultiplier ** consecutiveIgnored)), minDelayMs, maxDelayMs);
         delayReason = `${consecutiveIgnored} consecutive ignored message(s)`;
-    } else if (lastUserAt > previousActiveAt && now - lastUserAt <= 20 * 60 * 1000) {
+    } else if (lastUserAt > previousActiveAt
+        && now - lastUserAt <= 20 * 60 * 1000
+        && hasEngagementBoostSignal(loopState.last_user_message_preview)) {
         delayMs = clamp(Math.round(baseDelayMs * boostMultiplier), minDelayMs, maxDelayMs);
-        delayReason = 'recent user engagement';
+        delayReason = 'explicit user engagement';
     } else {
         delayMs = clamp(baseDelayMs, minDelayMs, maxDelayMs);
         delayReason = 'baseline rhythm';
@@ -484,6 +526,345 @@ function recordActive(workspaceArg, modeArg = 'active', topicArg = 'active_messa
         next_active_at: nextActiveAt,
         next_active_at_iso: entry.next_active_at_iso,
     }, null, 4));
+}
+
+function normalizeThoughtSource(value, candidateType = '') {
+    if (THOUGHT_SOURCE_RANKING.includes(value)) return value;
+    switch (candidateType) {
+        case 'threadContinuation':
+            return 'longThread';
+        case 'discovery':
+        case 'ambient':
+        case 'newDiscovery':
+            return 'worldObservation';
+        case 'counterpoint':
+            return 'tasteReaction';
+        case 'casual':
+            return 'associativeDrift';
+        default:
+            return 'longThread';
+    }
+}
+
+function normalizeSourceRanking(selection = {}) {
+    const ranking = Array.isArray(selection.ownThoughtSourceRanking)
+        ? selection.ownThoughtSourceRanking.filter((source) => THOUGHT_SOURCE_RANKING.includes(source))
+        : [];
+    for (const source of THOUGHT_SOURCE_RANKING) {
+        if (!ranking.includes(source)) ranking.push(source);
+    }
+    return ranking;
+}
+
+function sourceBonusMap(selection = {}) {
+    const configured = selection.sourceScoreBonus;
+    if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
+        return { ...SOURCE_SCORE_BONUS, ...configured };
+    }
+    return SOURCE_SCORE_BONUS;
+}
+
+function modeForCandidate(candidate) {
+    if (candidate.type === 'quiet') return 'quiet';
+    if (candidate.type === 'discovery' || candidate.type === 'newDiscovery') return 'discovery';
+    if (candidate.type === 'ambient') return 'ambient';
+    if (candidate.type === 'casual') return 'casual';
+    return 'reflection';
+}
+
+function readMindState(instanceName) {
+    const path = join(instanceDir(instanceName), 'mind-state.json');
+    return {
+        path,
+        state: readJson(path, defaultMindState()),
+    };
+}
+
+function isExpired(candidate, now) {
+    if (!candidate.expiresAt) return false;
+    const expiresAt = Date.parse(candidate.expiresAt);
+    return Number.isFinite(expiresAt) && expiresAt < now;
+}
+
+function activeDownrankBuckets(selection = {}) {
+    const buckets = new Set();
+    for (const entry of selection.shortTermDownrank ?? []) {
+        if (entry?.topicBucket) buckets.add(entry.topicBucket);
+    }
+    return buckets;
+}
+
+function scoreCandidate(candidate, mindState, now = Date.now()) {
+    const selection = mindState.selectionPolicy ?? {};
+    const ranking = normalizeSourceRanking(selection);
+    const bonuses = sourceBonusMap(selection);
+    const thoughtSource = normalizeThoughtSource(candidate.thoughtSource, candidate.type);
+    const sourceRank = ranking.indexOf(thoughtSource);
+    const recentBuckets = Array.isArray(selection.recentTopicBuckets)
+        ? selection.recentTopicBuckets
+        : [];
+    const recentSix = recentBuckets.slice(-6);
+    const maxSame = Number(selection.maxSameTopicBucketInRecentSix ?? 2);
+    const thread = (mindState.threads ?? []).find((item) => item.id === candidate.threadId);
+    const downrankBuckets = activeDownrankBuckets(selection);
+    const reasons = [];
+    let penalty = 0;
+
+    if (isExpired(candidate, now)) {
+        return {
+            eligible: false,
+            adjustedScore: -Infinity,
+            thoughtSource,
+            sourceRank,
+            reasons: ['expired'],
+        };
+    }
+
+    if (downrankBuckets.has(candidate.topicBucket)) {
+        penalty += 0.2;
+        reasons.push(`downranked bucket: ${candidate.topicBucket}`);
+    }
+
+    if (recentSix.at(-1) === candidate.topicBucket) {
+        penalty += 0.18;
+        reasons.push(`same as previous bucket: ${candidate.topicBucket}`);
+    }
+
+    const recentCount = recentSix.filter((bucket) => bucket === candidate.topicBucket).length;
+    if (recentCount >= maxSame) {
+        penalty += 0.28;
+        reasons.push(`bucket saturated in recent six: ${candidate.topicBucket}`);
+    }
+
+    if (Number(thread?.cooldownRounds ?? 0) > 0) {
+        const cooldownPenalty = Math.min(0.25, Number(thread.cooldownRounds) * 0.08);
+        penalty += cooldownPenalty;
+        reasons.push(`thread cooldown: ${thread.cooldownRounds}`);
+    }
+
+    const moodText = [
+        mindState.personaState?.mood,
+        mindState.personaState?.currentAttitude,
+        ...(mindState.personaState?.toneBias ?? []),
+    ].join(' ');
+    const moodHint = [candidate.mood, ...(candidate.expressionHints ?? [])].join(' ');
+    if (moodText && moodHint && moodText.includes(candidate.mood)) {
+        reasons.push('mood aligned');
+    }
+
+    const rawScore = Number(candidate.score ?? 0);
+    const sourceBonus = Number(bonuses[thoughtSource] ?? 0);
+    const rankTieBreaker = sourceRank >= 0 ? (ranking.length - sourceRank) / 1000 : 0;
+    const adjustedScore = rawScore + sourceBonus + rankTieBreaker - penalty;
+
+    return {
+        eligible: true,
+        adjustedScore,
+        rawScore,
+        thoughtSource,
+        sourceRank,
+        sourceBonus,
+        penalty,
+        reasons,
+    };
+}
+
+function selectThought(workspaceArg, options = {}) {
+    const workspace = normalizeWorkspace(workspaceArg);
+    const entry = activeState()[workspace];
+    if (!entry?.enabled) {
+        throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
+    }
+
+    const { state: mindState, path } = readMindState(entry.instance);
+    const selection = mindState.selectionPolicy ?? {};
+    const now = Date.now();
+    const minScore = Number(selection.minEligibleScore ?? 0.7);
+    const scored = (mindState.candidateQueue ?? [])
+        .map((candidate) => ({
+            candidate,
+            score: scoreCandidate(candidate, mindState, now),
+        }))
+        .filter(({ score }) => score.eligible)
+        .sort((a, b) => b.score.adjustedScore - a.score.adjustedScore);
+
+    const chosen = scored[0];
+    const result = {
+        ok: true,
+        workspace,
+        instance: entry.instance,
+        mindStatePath: path,
+        sourceRanking: normalizeSourceRanking(selection),
+        recentTopicBuckets: selection.recentTopicBuckets ?? [],
+        mode: 'quiet',
+        shouldSpeak: false,
+        quietReason: 'no eligible candidate',
+        candidatesConsidered: scored.slice(0, 5).map(({ candidate, score }) => ({
+            id: candidate.id,
+            type: candidate.type,
+            thoughtSource: score.thoughtSource,
+            topicBucket: candidate.topicBucket,
+            rawScore: score.rawScore,
+            adjustedScore: Number(score.adjustedScore.toFixed(3)),
+            reasons: score.reasons,
+        })),
+    };
+
+    if (!chosen || chosen.score.adjustedScore < minScore) {
+        if (chosen) result.quietReason = `top candidate below threshold ${minScore}`;
+        if (!options.returnOnly) console.log(JSON.stringify(result, null, 4));
+        return result;
+    }
+
+    const { candidate, score } = chosen;
+    const mode = modeForCandidate(candidate);
+    const decision = {
+        candidateId: candidate.id,
+        threadId: candidate.threadId,
+        mode,
+        topic: candidate.topicBucket || candidate.threadId || score.thoughtSource,
+        thoughtSource: score.thoughtSource,
+        sourceRank: score.sourceRank,
+        topicBucket: candidate.topicBucket,
+        mood: candidate.mood,
+        stance: candidate.stance,
+        aftertaste: candidate.aftertaste ?? '',
+        observation: candidate.observation,
+        expressionHints: candidate.expressionHints ?? [],
+        rawScore: score.rawScore,
+        adjustedScore: Number(score.adjustedScore.toFixed(3)),
+        reasons: score.reasons,
+    };
+
+    Object.assign(result, {
+        mode,
+        shouldSpeak: mode !== 'quiet',
+        quietReason: mode === 'quiet' ? 'selected quiet candidate' : null,
+        decision,
+    });
+
+    if (!options.returnOnly) console.log(JSON.stringify(result, null, 4));
+    return result;
+}
+
+function consumeThought(workspaceArg, candidateId, modeArg = 'active', topicArg = '') {
+    if (!candidateId) throw new Error('consume-thought requires a candidateId');
+    const workspace = normalizeWorkspace(workspaceArg);
+    const entry = activeState()[workspace];
+    if (!entry?.enabled) {
+        throw new Error(`workspace ${workspace} 没有激活思绪模式。`);
+    }
+
+    const { state: mindState, path } = readMindState(entry.instance);
+    const queue = Array.isArray(mindState.candidateQueue) ? mindState.candidateQueue : [];
+    const candidate = queue.find((item) => item.id === candidateId);
+    if (!candidate) {
+        throw new Error(`candidate ${candidateId} not found`);
+    }
+
+    const now = new Date().toISOString();
+    mindState.candidateQueue = queue.filter((item) => item.id !== candidateId);
+    mindState.selectionPolicy = mindState.selectionPolicy ?? {};
+    const recent = Array.isArray(mindState.selectionPolicy.recentTopicBuckets)
+        ? mindState.selectionPolicy.recentTopicBuckets
+        : [];
+    const bucket = candidate.topicBucket || topicArg || candidate.threadId || 'active';
+    mindState.selectionPolicy.recentTopicBuckets = [...recent, bucket].slice(-12);
+
+    const avoidRounds = Number(mindState.selectionPolicy.avoidSameBucketRounds ?? 2);
+    for (const thread of mindState.threads ?? []) {
+        if (thread.id === candidate.threadId) {
+            thread.lastTouchedAt = now;
+            thread.cooldownRounds = Math.max(Number(thread.cooldownRounds ?? 0), avoidRounds);
+        } else if (Number(thread.cooldownRounds ?? 0) > 0) {
+            thread.cooldownRounds = Math.max(0, Number(thread.cooldownRounds) - 1);
+        }
+    }
+
+    mindState.updatedAt = now;
+    writeJson(path, mindState);
+
+    appendJsonl(activityLogPath(entry.instance), {
+        time: now,
+        action: 'consume_candidate',
+        candidateId,
+        mode: modeArg,
+        topic: topicArg || bucket,
+        thoughtSource: normalizeThoughtSource(candidate.thoughtSource, candidate.type),
+        topicBucket: bucket,
+    });
+
+    console.log(JSON.stringify({
+        ok: true,
+        instance: entry.instance,
+        consumed: candidateId,
+        topicBucket: bucket,
+        remainingCandidates: mindState.candidateQueue.length,
+    }, null, 4));
+}
+
+function dryRunActive(workspaceArg) {
+    const decision = selectThought(workspaceArg, { returnOnly: true });
+    console.log(JSON.stringify({
+        ok: true,
+        dryRun: true,
+        decision,
+    }, null, 4));
+}
+
+function validateThoughtState(valueArg) {
+    const instanceName = resolveInstanceName(valueArg);
+    if (!instanceName) {
+        throw new Error('需要实例名或已绑定的 workspace 才能校验 thought state。');
+    }
+
+    const { state: mindState, path } = readMindState(instanceName);
+    const errors = [];
+    const warnings = [];
+    const now = Date.now();
+    const queue = Array.isArray(mindState.candidateQueue) ? mindState.candidateQueue : [];
+    const recentReferenceCount = queue.filter((candidate) => RECENT_CHAT_REFERENCE_RE.test([
+        candidate.observation,
+        candidate.stance,
+        candidate.messageDraft,
+    ].join(' '))).length;
+
+    const selection = mindState.selectionPolicy ?? {};
+    const ranking = normalizeSourceRanking(selection);
+    if (ranking.join('|') !== THOUGHT_SOURCE_RANKING.join('|')) {
+        warnings.push(`source ranking differs from default own-thought order: ${ranking.join(' > ')}`);
+    }
+
+    for (const [index, candidate] of queue.entries()) {
+        const label = `candidateQueue[${index}](${candidate.id ?? '<missing id>'})`;
+        if (!candidate.thoughtSource) errors.push(`${label} missing thoughtSource`);
+        if (candidate.thoughtSource && !THOUGHT_SOURCE_RANKING.includes(candidate.thoughtSource)) {
+            errors.push(`${label} has invalid thoughtSource ${candidate.thoughtSource}`);
+        }
+        if (isExpired(candidate, now)) warnings.push(`${label} is expired`);
+        const text = [candidate.observation, candidate.stance, candidate.aftertaste, candidate.messageDraft].join(' ');
+        for (const term of INTERNAL_USER_FACING_TERMS) {
+            if (text.includes(term)) warnings.push(`${label} contains internal term "${term}"`);
+        }
+        if (RECENT_CHAT_REFERENCE_RE.test(text)) warnings.push(`${label} references recent chat in candidate body`);
+    }
+
+    const recentReferenceRatio = queue.length === 0 ? 0 : recentReferenceCount / queue.length;
+    if (recentReferenceRatio > 0.2) {
+        warnings.push(`recent-chat candidate ratio ${recentReferenceRatio.toFixed(2)} exceeds 0.20`);
+    }
+
+    const result = {
+        ok: errors.length === 0,
+        instance: instanceName,
+        path,
+        candidateCount: queue.length,
+        recentReferenceRatio,
+        errors,
+        warnings,
+    };
+    console.log(JSON.stringify(result, null, 4));
+    if (errors.length > 0) process.exitCode = 1;
 }
 
 function showState(workspaceArg) {
@@ -596,8 +977,20 @@ function validateMindState(valueArg) {
                 errors.push(`candidateQueue[${index}] must be an object`);
                 continue;
             }
-            for (const key of ['id', 'threadId', 'type', 'mood', 'observation', 'stance', 'messageDraft', 'topicBucket', 'expiresAt']) {
+            for (const key of ['id', 'threadId', 'type', 'mood', 'observation', 'stance', 'topicBucket', 'expiresAt']) {
                 if (typeof candidate[key] !== 'string') errors.push(`candidateQueue[${index}].${key} must be a string`);
+            }
+            if (candidate.messageDraft !== undefined && typeof candidate.messageDraft !== 'string') {
+                errors.push(`candidateQueue[${index}].messageDraft must be a string when present`);
+            }
+            if (candidate.aftertaste !== undefined && typeof candidate.aftertaste !== 'string') {
+                errors.push(`candidateQueue[${index}].aftertaste must be a string when present`);
+            }
+            if (candidate.thoughtSource !== undefined && !THOUGHT_SOURCE_RANKING.includes(candidate.thoughtSource)) {
+                errors.push(`candidateQueue[${index}].thoughtSource must be one of ${THOUGHT_SOURCE_RANKING.join(', ')}`);
+            }
+            if (candidate.expressionHints !== undefined) {
+                validateArray(candidate.expressionHints, `candidateQueue[${index}].expressionHints`, errors);
             }
             validateNumber(candidate.score, `candidateQueue[${index}].score`, errors);
             if (!candidate.stance || candidate.stance.length < 8) {
@@ -612,6 +1005,17 @@ function validateMindState(valueArg) {
             validateArray(selection.recentTopicBuckets, 'selectionPolicy.recentTopicBuckets', errors);
             if (typeof selection.avoidSameBucketRounds !== 'number') errors.push('selectionPolicy.avoidSameBucketRounds must be a number');
             if (typeof selection.maxSameBucketInRecentSix !== 'number') errors.push('selectionPolicy.maxSameBucketInRecentSix must be a number');
+            if (selection.ownThoughtSourceRanking !== undefined) {
+                validateArray(selection.ownThoughtSourceRanking, 'selectionPolicy.ownThoughtSourceRanking', errors, { minItems: 1 });
+                for (const source of selection.ownThoughtSourceRanking ?? []) {
+                    if (!THOUGHT_SOURCE_RANKING.includes(source)) {
+                        errors.push(`selectionPolicy.ownThoughtSourceRanking contains invalid source ${source}`);
+                    }
+                }
+            }
+            if (selection.sourceScoreBonus !== undefined && (typeof selection.sourceScoreBonus !== 'object' || Array.isArray(selection.sourceScoreBonus))) {
+                errors.push('selectionPolicy.sourceScoreBonus must be an object when present');
+            }
             if (!selection.modeWeights || typeof selection.modeWeights !== 'object') {
                 errors.push('selectionPolicy.modeWeights must be an object');
             }
@@ -1129,6 +1533,11 @@ function commandHint(name, argv) {
         case 'record-active':
         case 'context':
         case 'state':
+        case 'select-thought':
+        case 'consume-thought':
+        case 'dry-run-active':
+        case 'validate-mind-state':
+        case 'validate-thought-state':
             return argv[0];
         default:
             return undefined;
@@ -1167,6 +1576,15 @@ try {
         case 'record-active':
             recordActive(args[0], args[1], args.slice(2).join(' '));
             break;
+        case 'select-thought':
+            selectThought(args[0]);
+            break;
+        case 'consume-thought':
+            consumeThought(args[0], args[1], args[2], args.slice(3).join(' '));
+            break;
+        case 'dry-run-active':
+            dryRunActive(args[0]);
+            break;
         case 'context':
             collectContext(args[0]);
             break;
@@ -1178,6 +1596,9 @@ try {
             break;
         case 'validate-mind-state':
             validateMindState(args[0] ?? '.');
+            break;
+        case 'validate-thought-state':
+            validateThoughtState(args[0] ?? '.');
             break;
         case 'notify':
             notify(args[0], args[1], args.slice(2).join(' '));
@@ -1192,10 +1613,14 @@ try {
   node .cursor/runtime/thoughts.mjs schedule [workspace] <delayMs> [reason]
   node .cursor/runtime/thoughts.mjs record-user [workspace] [preview]
   node .cursor/runtime/thoughts.mjs record-active [workspace] [mode] [topic]
+  node .cursor/runtime/thoughts.mjs select-thought [workspace]
+  node .cursor/runtime/thoughts.mjs consume-thought [workspace] <candidateId> [mode] [topic]
+  node .cursor/runtime/thoughts.mjs dry-run-active [workspace]
   node .cursor/runtime/thoughts.mjs context [workspace]
   node .cursor/runtime/thoughts.mjs set-permission <instance> <signal> <always|ask|deny>
   node .cursor/runtime/thoughts.mjs state [workspace]
   node .cursor/runtime/thoughts.mjs validate-mind-state [workspace|instance]
+  node .cursor/runtime/thoughts.mjs validate-thought-state [workspace|instance]
   node .cursor/runtime/thoughts.mjs notify <title> <subtitle> <message>`);
     }
 } catch (error) {

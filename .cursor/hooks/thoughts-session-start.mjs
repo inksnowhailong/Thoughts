@@ -70,6 +70,45 @@ function normalize(value) {
     return result;
 }
 
+function compactEditorialCard(instanceDir) {
+    const mindState = readJson(join(instanceDir, 'mind-state.json'), {});
+    const activeMemory = readJson(join(instanceDir, 'memory-active.json'), { items: [] });
+    const threads = Array.isArray(mindState.threads) ? mindState.threads : [];
+    const topThreads = threads
+        .slice()
+        .sort((a, b) => Number(b.energy ?? 0) - Number(a.energy ?? 0))
+        .slice(0, 3)
+        .map((thread) => ({
+            id: thread.id,
+            title: thread.title,
+            stance: thread.stance,
+            energy: thread.energy,
+        }));
+    const boundaries = (activeMemory.items ?? [])
+        .filter((item) => ['boundary', 'preference', 'feedback'].includes(item.type))
+        .sort((a, b) => Number(b.importance ?? 0) - Number(a.importance ?? 0))
+        .slice(0, 5)
+        .map((item) => item.content);
+
+    return JSON.stringify({
+        sourceRanking: mindState.selectionPolicy?.ownThoughtSourceRanking ?? [
+            'longThread',
+            'personaMood',
+            'worldObservation',
+            'tasteReaction',
+            'associativeDrift',
+        ],
+        personaState: {
+            mood: mindState.personaState?.mood ?? null,
+            energy: mindState.personaState?.energy ?? null,
+            socialBattery: mindState.personaState?.socialBattery ?? null,
+            currentAttitude: mindState.personaState?.currentAttitude ?? null,
+        },
+        topThreads,
+        activeBoundaries: boundaries,
+    }, null, 4);
+}
+
 /**
  * 在 payload.workspace_roots 中挑选第一个含有项目本地 `.cursor/.thoughts/` 的 root。
  * 没有任何项目命中时,退回到全局 ROOT,workspace 取第一个 root。
@@ -132,6 +171,7 @@ const profile = readText(join(instanceDir, 'profile.json'), '{}');
 const activeMemory = readText(join(instanceDir, 'memory-active.json'), '{\n    "version": 1,\n    "updatedAt": null,\n    "items": []\n}');
 const permissions = readText(join(instanceDir, 'permissions.json'), '{}');
 const memo = readText(join(instanceDir, 'memory-consolidated.md'), '# 思绪记忆 - 整理\n\n').split('\n').slice(-80).join('\n');
+const editorialCard = compactEditorialCard(instanceDir);
 
 const additionalContext = `# 思绪模式已激活
 
@@ -150,6 +190,10 @@ ${profile}
 ## 当前活跃记忆
 这些是当前最应该影响你表达、节奏和选题的高优先级记忆。优先级高于普通整理记忆。
 ${activeMemory}
+
+## 紧凑编辑卡
+这是主动内容的优先决策卡。先从 sourceRanking 的高优先来源长出自己的想法,再决定是否关联用户;不要把最近聊天默认当主轴。
+${editorialCard}
 
 ## 环境感知权限
 这些权限决定你能读取哪些电脑环境信号。未授权信号不能读取;ask 状态只能在有长期价值时自然请求用户授权。

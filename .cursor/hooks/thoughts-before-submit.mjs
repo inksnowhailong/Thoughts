@@ -112,17 +112,30 @@ const now = Date.now();
 const instanceDir = join(root, 'instances', entry.instance);
 const loopStatePath = join(instanceDir, 'loop-state.json');
 const loopState = readJson(loopStatePath, {});
+const preview = String(payload.prompt ?? '').slice(0, 240);
+const previousPreview = String(loopState.last_user_message_preview ?? '');
+const previousAt = Number(loopState.last_user_message_at ?? 0);
+const isDuplicateEmpty = !preview.trim()
+    && !previousPreview.trim()
+    && previousAt > 0
+    && now - previousAt < 5000;
+const isDuplicatePreview = preview
+    && preview === previousPreview
+    && previousAt > 0
+    && now - previousAt < 5000;
 
 loopState.last_user_message_at = now;
 loopState.last_user_message_at_iso = new Date(now).toISOString();
-loopState.last_user_message_preview = String(payload.prompt ?? '').slice(0, 240);
+loopState.last_user_message_preview = preview;
 loopState.consecutive_ignored = 0;
 
 writeJson(loopStatePath, loopState);
-appendJsonl(join(instanceDir, 'activity-log.jsonl'), {
-    time: new Date(now).toISOString(),
-    action: 'user_message',
-    preview: loopState.last_user_message_preview,
-});
+if (!isDuplicateEmpty && !isDuplicatePreview && preview.trim()) {
+    appendJsonl(join(instanceDir, 'activity-log.jsonl'), {
+        time: new Date(now).toISOString(),
+        action: 'user_message',
+        preview: loopState.last_user_message_preview,
+    });
+}
 
 process.stdout.write(JSON.stringify({ continue: true }));
