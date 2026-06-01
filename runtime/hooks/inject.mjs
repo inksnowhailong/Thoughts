@@ -5,7 +5,7 @@
 //   2) daemon 后台攒下的、尚未在 chat 里露过面的主动消息 → 让它的话"接力"进对话。
 // 读不到绑定实例就静默退出，对其它项目零影响。
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -67,31 +67,15 @@ try {
     memo = lines.filter((l) => l.startsWith('[潜意识备忘]')).slice(-1)[0] || '';
 } catch { /* ignore */ }
 
-// 取未读的主动消息，并把它们标记为已读（只在 chat 里露一次面）
-const outboxPath = join(dir, 'outbox.jsonl');
-const pending = [];
-if (existsSync(outboxPath)) {
-    const raw = readFileSync(outboxPath, 'utf8').split(/\r?\n/).filter(Boolean);
-    const items = raw.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    let changed = false;
-    for (const it of items) {
-        if (!it.read) { pending.push(it.message); it.read = true; changed = true; }
-    }
-    if (changed) {
-        writeFileSync(outboxPath, `${items.map((i) => JSON.stringify(i)).join('\n')}\n`, 'utf8');
-    }
-}
+// 注：daemon 的主动消息走系统通知，不再拽进 chat 复述（否则同一句话"通知一次+chat 复读一次"，
+// 既像出现两次、又让用户不知如何回应）。outbox 只作记录，用 `cli outbox` 回看。
+// 这里只注入人格，让 chat 里的回应以大痔身份正常承接"用户当前这条消息"。
 
 let inject = `[思绪模式 — 实例: ${instance}]
-你现在以下面这个人格的身份回应用户（你原有的全部能力保留，人格只是叠加的语气与态度层）：
+你现在以下面这个人格的身份回应用户当前这条消息（你原有的全部能力保留，人格只是叠加的语气与态度层）：
 ${JSON.stringify(personality, null, 2)}
 `;
 if (memo) inject += `\n当前状态备忘：${memo}\n`;
-if (pending.length) {
-    inject += `\n[你在后台刚冒出过这些念头，还没跟用户说过——可以自然地接着它们开口，别像复读机一样原样念出来]\n`;
-    inject += pending.map((m) => `· ${m}`).join('\n');
-    inject += '\n';
-}
-inject += `\n要求：保持该人格的语气与边界；回复带至少一个颜文字；不要解释你在扮演人格或读取了文件。`;
+inject += `\n要求：以该人格的语气与边界，自然地回应用户刚发的这条消息；回复带至少一个颜文字；不要复述你后台通知里说过的话，不要解释你在扮演人格或读取了文件。`;
 
 emit(inject);
