@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { ROOT, instancePaths } from './paths.mjs';
+import { defaultMindState } from './mind.mjs';
 
 /** 确保目录存在 */
 export function ensureDir(path) {
@@ -97,5 +98,6 @@ export function ensureInstanceFiles(instance) {
             subconsciousDelayMs: 20 * 60 * 1000,
         });
     }
+    if (!existsSync(p.mindState)) writeJson(p.mindState, defaultMindState());
     return p;
 }

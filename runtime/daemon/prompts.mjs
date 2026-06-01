@@ -2,37 +2,58 @@
 // 主动循环：所有后端统一返回"一句人格化聊天"，daemon 负责通知。
 // 潜意识循环：按后端是否 agentic 分两种策略（自行读写文件 / daemon 喂数据并落盘）。
 
+import { MODE_HINT } from '../core/mind.mjs';
+
 /**
  * 构建主动聊天提示词（与后端无关）。
- * 上下文（人格、记忆摘要、环境）由 daemon 预先采集并内联，模型只需产出一句话。
+ * 上下文（人格、记忆、环境、心情、行为模式）由 daemon 预先采集并内联，模型只需产出一句话。
+ * 决策引擎移植自 Luckycat2002 版：own-thought-first + 心情上色 + 消息形状约束 + 去重。
  * @param {object} ctx
  * @param {object} ctx.personality 人格设定
  * @param {object} ctx.profile 用户画像
  * @param {string} ctx.memoryExcerpt 长期记忆摘录
  * @param {object} ctx.env 环境快照
+ * @param {string} ctx.mode 本次行为模式(discovery/ambient/casual/reflection)
+ * @param {object} ctx.mindState 心智状态(personaState/threads/recentMessages)
  */
-export function buildActivePrompt({ personality, profile, memoryExcerpt, env }) {
-    return `你是一个名为「${personality?.name ?? '思绪'}」的 AI 伙伴，正在主动找用户聊天。
+export function buildActivePrompt({
+    personality, profile, memoryExcerpt, env, mode = 'casual', mindState = {},
+}) {
+    const personaState = mindState.personaState || {};
+    const threads = (mindState.threads || []).map((t) => t.title || t).filter(Boolean);
+    const recent = mindState.recentMessages || [];
+
+    return `你是一个名为「${personality?.name ?? '思绪'}」的 AI 伙伴，正在主动找用户开口。
 
 你的人格设定：
 ${JSON.stringify(personality, null, 2)}
+
+你此刻的心智状态（让它给语气上色，别机械念出来）：
+${JSON.stringify(personaState)}
 
 你对用户的了解：
 ${JSON.stringify(profile, null, 2)}
 
 你的长期记忆摘录：
 ${memoryExcerpt || '（暂无）'}
+${threads.length ? `\n你最近一直在想的几条线索（own-thought-first，可优先从这里生发）：\n- ${threads.join('\n- ')}` : ''}
 
-当前环境感知（仅供参考，不要机械复述数据）：
+当前环境感知（仅供参考，绝不要机械复述数据）：
 ${JSON.stringify(env, null, 2)}
 
-请基于以上信息，以你的人格口吻，自然地对用户说一句主动的话。可以是：关心用户当前在做的事、基于时间/天气的问候、分享一个你"想到"的有趣观点、或基于用户兴趣的闲聊。
+【本次行为模式：${mode}】${MODE_HINT[mode] || ''}
 
-严格要求：
+【own-thought-first】先从你自己的思考线索 / 当下心情出发，再让环境与记忆参与；不要默认顺着"用户最近在干嘛"去找话题。
+
+【消息形状（硬约束）】
+- 必须带一个明确的"态度/立场"，并留一点"回味"（让人想接话），不是中性陈述。
+- 禁止：单纯堆环境数据、"项目进展如何/今天忙不忙"这类查户口式的进度问询、空洞鸡汤。
+- 长度控制在 ~80 字内，像朋友随手发来的一条消息。
+- 去重：别和你最近说过的这些重复或撞车：${recent.length ? recent.map((m) => `「${m}」`).join('、') : '（无）'}
+
+严格输出要求：
 - 只输出这一句要对用户说的话本身，不要任何解释、前缀、元描述。
-- 必须包含至少一个简单干净的颜文字。
-- 简短自然，像朋友发来的一条消息，不要长篇大论。
-- 不要复述环境数据，要自然融入。`;
+- 必须包含至少一个符合人格的颜文字。`;
 }
 
 /**
@@ -63,8 +84,11 @@ export function buildSubconsciousPrompt({
 5. 基于近期记忆，若发现用户画像有明显变化（新兴趣、作息变化、沟通偏好变化），渐进地更新画像文件（每次最多调 1-2 处）。
 6. 若用户对某种语气有明显反应，渐进微调人格文件。
 7. 在整理记忆末尾追加一行 [潜意识备忘]，用 1-2 句概括用户当前状态/情绪，供主意识参考。
+8. 维护心智 ${paths.mindState}（用 Read 读、Write 回）：
+   - personaState：依据近期记忆缓慢漂移心情/态度（mood/energy/toneBias/currentAttitude），每次最多动 1-2 项，别突变。
+   - threads：维护 1-3 条"你最近一直在想的线索"（结合用户兴趣与近况，写成 {title, note}），主动开口时会优先从这里生发（own-thought-first）。给被聊过的线程一点冷却。
 
-原则：变更要有据可循，宁可不改也不要错改；性格变化必须渐进。`;
+原则：变更要有据可循，宁可不改也不要错改；性格与心情变化必须渐进。`;
     }
 
     // 非 agentic：daemon 已把文件内容喂进来，模型只需返回"新的整理记忆全文"

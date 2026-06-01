@@ -37,6 +37,8 @@ export function instancePaths(instance) {
         permissions: join(dir, 'permissions.json'),
         /** 循环状态：上次主动/用户交互时间、连续未回复次数、动态间隔 */
         loopState: join(dir, 'loop-state.json'),
+        /** 心智状态：心情、行为模式权重与近况、长期思考线程 */
+        mindState: join(dir, 'mind-state.json'),
         /** 行为日志（主动行为、潜意识执行记录） */
         activityLog: join(dir, 'activity-log.jsonl'),
         /** 已发主动消息收件箱（每条带 read 标记，供 chat 内 hook 浮现 + 用户回看） */

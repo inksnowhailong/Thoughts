@@ -13,6 +13,7 @@ import {
 import { senseEnvironment } from '../core/env-sense.mjs';
 import { notify } from '../core/notify.mjs';
 import { decideActive, decideSubconscious } from '../core/decide.mjs';
+import { defaultMindState, recordSpoken } from '../core/mind.mjs';
 import { resolveBackend } from '../backends/index.mjs';
 import { buildActivePrompt, buildSubconsciousPrompt } from './prompts.mjs';
 
@@ -52,14 +53,15 @@ export async function doActive(p, agent, cwd, instance) {
     const loopState = readJson(p.loopState, {});
     const profile = readJson(p.profile, {});
     const personality = readJson(p.personality, {});
-    const decision = decideActive(loopState, profile);
+    const mindState = readJson(p.mindState, defaultMindState());
+    const decision = decideActive(loopState, profile, mindState);
     log(instance, 'active_decide', decision);
 
     if (decision.act) {
         try {
             const env = senseEnvironment(readJson(p.permissions, {}), { cwd });
             const prompt = buildActivePrompt({
-                personality, profile, memoryExcerpt: memoryExcerpt(p.memoryConsolidated), env,
+                personality, profile, memoryExcerpt: memoryExcerpt(p.memoryConsolidated), env, mode: decision.mode, mindState,
             });
             const result = await agent.run({ prompt, cwd });
             const message = (result.text || '').trim();
@@ -67,9 +69,12 @@ export async function doActive(p, agent, cwd, instance) {
                 notify(personality?.name ?? '思绪', kaomojiOf(personality), message);
                 // 写入收件箱：read=false 供 chat 内 hook 浮现一次；同时是用户可回看的记录
                 appendJsonl(p.outbox, { time: new Date().toISOString(), message, read: false });
-                appendJsonl(p.activityLog, { time: new Date().toISOString(), action: 'chat', topic: message.slice(0, 60) });
+                appendJsonl(p.activityLog, { time: new Date().toISOString(), action: 'chat', mode: decision.mode, topic: message.slice(0, 60) });
+                // 更新心智：记录本次模式 + 留存片段供后续去重
+                recordSpoken(mindState, decision.mode, message);
+                writeJson(p.mindState, mindState);
                 loopState.consecutiveNoReply = Number(loopState.consecutiveNoReply || 0) + 1;
-                log(instance, 'active_sent', { message });
+                log(instance, 'active_sent', { mode: decision.mode, message });
             } else {
                 log(instance, 'active_failed', { error: result.error });
             }

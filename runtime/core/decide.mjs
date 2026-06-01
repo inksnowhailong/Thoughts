@@ -3,6 +3,8 @@
 // 不依赖任何宿主，可被 daemon、hook、或单元测试直接调用。
 // 这是动态调频的核心：把原本写在 Claude Cron instructions 里的判断逻辑收敛成代码。
 
+import { selectMode } from './mind.mjs';
+
 /** 各档间隔（毫秒），供动态调频选用 */
 const INTERVAL = {
     eager: 10 * 60 * 1000, // 趁热打铁
@@ -27,13 +29,15 @@ function isQuietHour(hour, quietHours) {
 }
 
 /**
- * 决策主动行为：该不该说 + 下次间隔。
+ * 决策主动行为：该不该说 + 下次间隔 + 这次用哪种行为模式。
+ * 是否开口的"调频闸门"在此；说什么类型由 mind.selectMode 按权重+多样性挑。
  * @param {object} loopState 循环状态(lastUserAt/lastActiveAt/consecutiveNoReply)
  * @param {object} profile 用户画像(可含 habits.quietHours)
+ * @param {object} mindState 心智状态(供挑选行为模式)
  * @param {number} now 当前时间戳(默认 Date.now())
- * @returns {{ act: boolean, reason: string, nextDelayMs: number }}
+ * @returns {{ act: boolean, reason: string, nextDelayMs: number, mode: string }}
  */
-export function decideActive(loopState, profile = {}, now = Date.now()) {
+export function decideActive(loopState, profile = {}, mindState = {}, now = Date.now()) {
     const hour = new Date(now).getHours();
     const quietHours = profile?.habits?.quietHours;
     const lastUserAt = Number(loopState?.lastUserAt || 0);
@@ -41,30 +45,33 @@ export function decideActive(loopState, profile = {}, now = Date.now()) {
 
     // 休息时段：不打扰，拉长间隔
     if (isQuietHour(hour, quietHours)) {
-        return { act: false, reason: 'quiet_hour', nextDelayMs: INTERVAL.rest };
+        return { act: false, reason: 'quiet_hour', nextDelayMs: INTERVAL.rest, mode: 'quiet' };
     }
 
     // 用户刚刚交互过(5 分钟内)：不抢话，短间隔后再看
     if (now - lastUserAt < 5 * 60 * 1000) {
-        return { act: false, reason: 'user_just_active', nextDelayMs: INTERVAL.eager };
+        return { act: false, reason: 'user_just_active', nextDelayMs: INTERVAL.eager, mode: 'quiet' };
     }
 
     // 连续 3 次无人回复：明显不在状态，冷却
     if (noReply >= 3) {
-        return { act: false, reason: 'too_many_no_reply', nextDelayMs: INTERVAL.cold };
+        return { act: false, reason: 'too_many_no_reply', nextDelayMs: INTERVAL.cold, mode: 'quiet' };
     }
+
+    // 决定开口 → 按心智挑一个行为模式
+    const mode = selectMode(mindState);
 
     // 用户在 5-30 分钟前刚聊过：趁热打铁
     if (now - lastUserAt < 30 * 60 * 1000) {
-        return { act: true, reason: 'recent_chat', nextDelayMs: INTERVAL.eager };
+        return { act: true, reason: 'recent_chat', nextDelayMs: INTERVAL.eager, mode };
     }
 
     // 一次没回：适当放慢
     if (noReply >= 1) {
-        return { act: true, reason: 'one_no_reply', nextDelayMs: INTERVAL.cooling };
+        return { act: true, reason: 'one_no_reply', nextDelayMs: INTERVAL.cooling, mode };
     }
 
-    return { act: true, reason: 'normal', nextDelayMs: INTERVAL.base };
+    return { act: true, reason: 'normal', nextDelayMs: INTERVAL.base, mode };
 }
 
 /**
