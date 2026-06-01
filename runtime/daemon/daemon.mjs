@@ -65,6 +65,8 @@ export async function doActive(p, agent, cwd, instance) {
             const message = (result.text || '').trim();
             if (result.ok && message) {
                 notify(personality?.name ?? '思绪', kaomojiOf(personality), message);
+                // 写入收件箱：read=false 供 chat 内 hook 浮现一次；同时是用户可回看的记录
+                appendJsonl(p.outbox, { time: new Date().toISOString(), message, read: false });
                 appendJsonl(p.activityLog, { time: new Date().toISOString(), action: 'chat', topic: message.slice(0, 60) });
                 loopState.consecutiveNoReply = Number(loopState.consecutiveNoReply || 0) + 1;
                 log(instance, 'active_sent', { message });

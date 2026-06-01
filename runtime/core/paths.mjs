@@ -39,5 +39,7 @@ export function instancePaths(instance) {
         loopState: join(dir, 'loop-state.json'),
         /** 行为日志（主动行为、潜意识执行记录） */
         activityLog: join(dir, 'activity-log.jsonl'),
+        /** 已发主动消息收件箱（每条带 read 标记，供 chat 内 hook 浮现 + 用户回看） */
+        outbox: join(dir, 'outbox.jsonl'),
     };
 }

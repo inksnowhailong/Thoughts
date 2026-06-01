@@ -7,7 +7,7 @@
 //   node runtime/cli.mjs once <实例> [--backend=...] [--kind=active|subconscious]
 //   node runtime/cli.mjs ping <实例>      # 标记用户刚刚活跃（重置未回复计数）
 
-import { ensureInstanceFiles, readJson, writeJson, listInstances } from './core/store.mjs';
+import { ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl } from './core/store.mjs';
 import { initInstance } from './core/onboarding.mjs';
 import { DAEMON_STATE_FILE } from './core/paths.mjs';
 import { resolveBackend, backendStatus } from './backends/index.mjs';
@@ -118,6 +118,24 @@ async function main() {
             break;
         }
 
+        case 'outbox': {
+            const instance = positional[0];
+            if (!instance) throw new Error('用法: outbox <实例>');
+            const p = ensureInstanceFiles(instance);
+            const n = Number(flags.n) || 10;
+            const items = tailJsonl(p.outbox, n);
+            if (items.length === 0) {
+                console.log(`${instance} 还没说过话。`);
+                break;
+            }
+            console.log(`=== ${instance} 最近 ${items.length} 条主动消息 ===`);
+            for (const it of items) {
+                const t = new Date(it.time).toLocaleString();
+                console.log(`[${t}]${it.read ? '' : ' (未读)'} ${it.message}`);
+            }
+            break;
+        }
+
         case 'ping': {
             const instance = positional[0];
             if (!instance) throw new Error('用法: ping <实例>');
@@ -137,6 +155,7 @@ async function main() {
   stop <实例>                                                    停止 daemon
   status                                                         查看后端与实例状态
   once <实例> [--backend=...] [--kind=active|subconscious]       手动跑一次（测试用）
+  outbox <实例> [--n=10]                                         查看最近的主动消息记录
   ping <实例>                                                    标记用户刚刚活跃`);
     }
 }
