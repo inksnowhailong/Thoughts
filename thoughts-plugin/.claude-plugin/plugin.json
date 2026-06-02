@@ -1,7 +1,7 @@
 {
   "name": "thoughts",
-  "version": "0.1.0",
-  "description": "思绪模式 — AI 伙伴系统，叠加人格、记忆和主动行为于 Claude 之上",
+  "version": "0.3.0",
+  "description": "思绪模式 — AI 伙伴系统：Claude Cron 在 chat 内主动开口 + 同步系统通知，PAD 三轴情绪引擎 + 按需联网 + 记忆自我演化的人格陪伴",
   "author": {
     "name": "zhanghailong"
   },

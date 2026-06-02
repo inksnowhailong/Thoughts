@@ -14,11 +14,14 @@ export const claudeBackend = {
 
     /**
      * 跑一轮对话。prompt 通过 stdin 传入。
-     * @param {{ prompt: string, cwd?: string, timeoutMs?: number }} opts
+     * @param {{ prompt: string, cwd?: string, timeoutMs?: number, model?: string }} opts
+     *   model 可选：决策层用它指定便宜模型（如 claude-haiku-4-5），省 token。
      */
-    async run({ prompt, cwd, timeoutMs }) {
-        return runCli('claude', ['-p', '--output-format', 'text', '--permission-mode', 'acceptEdits'], {
-            input: prompt, cwd, timeoutMs,
-        });
+    async run({
+        prompt, cwd, timeoutMs, model,
+    }) {
+        const args = ['-p', '--output-format', 'text', '--permission-mode', 'acceptEdits'];
+        if (model) args.push('--model', model);
+        return runCli('claude', args, { input: prompt, cwd, timeoutMs });
     },
 };

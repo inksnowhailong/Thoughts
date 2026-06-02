@@ -5,17 +5,16 @@
 //   · agentic=false → 无工具，daemon 需把上下文喂进 prompt 并自行落盘返回结果
 
 import { claudeBackend } from './claude.mjs';
-import { cursorBackend } from './cursor.mjs';
 import { apiBackend } from './api.mjs';
 
 export { NEEDS_SHELL, commandExists } from './_exec.mjs';
 
 /** 按优先级排列的后端列表 */
-const BACKENDS = [claudeBackend, cursorBackend, apiBackend];
+const BACKENDS = [claudeBackend, apiBackend];
 
 /**
  * 解析要使用的后端。
- * @param {string} [preferred] 偏好后端名（'claude'|'cursor'|'api'|'auto'）
+ * @param {string} [preferred] 偏好后端名（'claude'|'api'|'auto'）
  * @returns {object} 命中的后端对象
  * @throws 当没有任何后端可用时抛错
  */
@@ -28,7 +27,7 @@ export function resolveBackend(preferred = 'auto') {
     }
     const available = BACKENDS.find((b) => b.isAvailable());
     if (!available) {
-        throw new Error('没有可用的 AgentBackend：请安装 claude / cursor-agent CLI，或设置 ANTHROPIC_API_KEY');
+        throw new Error('没有可用的 AgentBackend：请安装 claude CLI，或设置 ANTHROPIC_API_KEY');
     }
     return available;
 }

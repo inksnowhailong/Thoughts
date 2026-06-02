@@ -29,7 +29,34 @@ function isQuietHour(hour, quietHours) {
 }
 
 /**
- * 决策主动行为：该不该说 + 下次间隔 + 这次用哪种行为模式。
+ * 硬闸门：纯代码红线，命中即给结果、绝不调模型（也不该调）。
+ * 只放两条不可商量的红线——休息时段、用户正在打字——其余交给上层的便宜模型软判断。
+ * @param {object} loopState 循环状态(lastUserAt)
+ * @param {object} profile 用户画像(可含 habits.quietHours)
+ * @param {number} now 当前时间戳
+ * @returns {null | { act: boolean, reason: string, nextDelayMs: number, mode: string }} 放行返回 null
+ */
+export function hardGate(loopState = {}, profile = {}, now = Date.now()) {
+    const hour = new Date(now).getHours();
+    const lastUserAt = Number(loopState?.lastUserAt || 0);
+
+    // 休息时段：不打扰，拉长间隔（边界，绝对优先）
+    if (isQuietHour(hour, profile?.habits?.quietHours)) {
+        return {
+            act: false, reason: 'quiet_hour', nextDelayMs: INTERVAL.rest, mode: 'quiet',
+        };
+    }
+    // 用户刚刚交互过(5 分钟内)：不抢话，短间隔后再看
+    if (now - lastUserAt < 5 * 60 * 1000) {
+        return {
+            act: false, reason: 'user_just_active', nextDelayMs: INTERVAL.eager, mode: 'quiet',
+        };
+    }
+    return null;
+}
+
+/**
+ * 决策主动行为（纯代码版）：作为便宜模型软判断不可用时的优雅降级兜底。
  * 是否开口的"调频闸门"在此；说什么类型由 mind.selectMode 按权重+多样性挑。
  * @param {object} loopState 循环状态(lastUserAt/lastActiveAt/consecutiveNoReply)
  * @param {object} profile 用户画像(可含 habits.quietHours)
@@ -38,24 +65,18 @@ function isQuietHour(hour, quietHours) {
  * @returns {{ act: boolean, reason: string, nextDelayMs: number, mode: string }}
  */
 export function decideActive(loopState, profile = {}, mindState = {}, now = Date.now()) {
-    const hour = new Date(now).getHours();
-    const quietHours = profile?.habits?.quietHours;
+    // 先过红线
+    const gated = hardGate(loopState, profile, now);
+    if (gated) return gated;
+
     const lastUserAt = Number(loopState?.lastUserAt || 0);
     const noReply = Number(loopState?.consecutiveNoReply || 0);
 
-    // 休息时段：不打扰，拉长间隔
-    if (isQuietHour(hour, quietHours)) {
-        return { act: false, reason: 'quiet_hour', nextDelayMs: INTERVAL.rest, mode: 'quiet' };
-    }
-
-    // 用户刚刚交互过(5 分钟内)：不抢话，短间隔后再看
-    if (now - lastUserAt < 5 * 60 * 1000) {
-        return { act: false, reason: 'user_just_active', nextDelayMs: INTERVAL.eager, mode: 'quiet' };
-    }
-
     // 连续 3 次无人回复：明显不在状态，冷却
     if (noReply >= 3) {
-        return { act: false, reason: 'too_many_no_reply', nextDelayMs: INTERVAL.cold, mode: 'quiet' };
+        return {
+            act: false, reason: 'too_many_no_reply', nextDelayMs: INTERVAL.cold, mode: 'quiet',
+        };
     }
 
     // 决定开口 → 按心智挑一个行为模式

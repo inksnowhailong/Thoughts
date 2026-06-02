@@ -5,7 +5,7 @@
 //   2) daemon 后台攒下的、尚未在 chat 里露过面的主动消息 → 让它的话"接力"进对话。
 // 读不到绑定实例就静默退出，对其它项目零影响。
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { renderPersona } from '../persona.mjs';
@@ -72,6 +72,17 @@ try {
     loop.consecutiveNoReply = 0;
     writeFileSync(loopPath, `${JSON.stringify(loop, null, 4)}\n`, 'utf8');
 } catch { /* 回写失败绝不能影响人格注入 */ }
+
+// 闭合输入回路：把用户这轮真实说的话原样追加进原始记忆，供潜意识下一轮消化、演化画像。
+// 这是「思绪」从单向广播变成双向对话的地基——没有它，潜意识永远在消化空气。
+// 过滤斜杠命令与空消息：那是对宿主的开关指令，不是用户的心声，不该污染记忆。
+try {
+    const userText = String(payload.prompt || '').trim();
+    if (userText && !userText.startsWith('/')) {
+        const line = `- [${new Date().toISOString()}] 用户：${userText.replace(/\s+/g, ' ')}\n`;
+        appendFileSync(join(dir, 'memory-raw.md'), line, 'utf8');
+    }
+} catch { /* 写原始记忆失败绝不能影响人格注入 */ }
 
 // 取最新一条潜意识备忘
 let memo = '';

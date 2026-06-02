@@ -17,11 +17,16 @@ function defaultPersonality(instance) {
     };
 }
 
-/** 默认画像：仅含作息兜底，其余留待潜意识/onboarding 演化 */
+/**
+ * 默认画像：仅含作息兜底，其余留待潜意识/onboarding 演化。
+ * 画像分两类：其余字段是"记录(facts)"——观察到的事实；inferences 是"推断(分析)"——
+ * 潜意识从多次互动里提炼的更高层洞察（每条带证据与日期），这才是"分析总结而非流水账"。
+ */
 function defaultProfile() {
     return {
         interests: [],
         habits: { quietHours: [23, 7] },
+        inferences: [],
         note: '由 thoughts init 生成的默认画像，建议通过 onboarding 完善。',
     };
 }

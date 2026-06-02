@@ -16,15 +16,23 @@ export const MODE_HINT = {
 /** 默认心智状态 */
 export function defaultMindState() {
     return {
-        // 人格当下的状态：会被潜意识依据近期记忆缓慢漂移
+        // 情绪坐标（PAD 三维情感模型，由潜意识按证据漂移）：各 0~1
+        //   valence 效价(0 丧 ↔ 1 起劲)、energy 唤醒(0 蔫 ↔ 1 亢)、control 掌控感(0 憋屈无力 ↔ 1 笃定掌控)。
+        //   第三轴 control 决定"同样的丧"是哪种质地：低val+高control=冷峻笃定的愤世，低val+低control=被压垮的蔫。
+        //   baseline 是人格的"家"，漂移时始终向它轻微回归——心情会动、人格不变。
+        //   mood/toneBias/currentAttitude 只是这三轴的人话标签，顺带更新。
         personaState: {
-            mood: 'neutral', energy: 0.7, socialBattery: 0.8, toneBias: 'neutral', currentAttitude: 'curious',
+            valence: 0.5, energy: 0.6, control: 0.5,
+            baseline: { valence: 0.5, energy: 0.6, control: 0.5 },
+            mood: 'neutral', toneBias: 'neutral', currentAttitude: 'curious',
         },
         // 选择策略：模式权重 + 最近用过的模式（用于多样性约束）
         selectionPolicy: {
             recentModes: [],
+            // discovery(冷知识)权重调低：它最易退化成"惊奇生成器"刷屏；
+            // 把重心移向 casual/reflection 这类更像活人对话的模式。
             modeWeights: {
-                discovery: 0.35, ambient: 0.15, casual: 0.25, reflection: 0.25,
+                discovery: 0.25, ambient: 0.15, casual: 0.30, reflection: 0.30,
             },
         },
         // 长期思考线程：潜意识维护，discovery/reflection 可优先从这里生发（own-thought-first）

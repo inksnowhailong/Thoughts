@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "思绪模式 — 为 Claude Code 添加人格、记忆、环境感知和主动行为能力的 AI 伙伴插件",
-    "version": "0.1.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
       "name": "thoughts",
-      "description": "AI 伙伴系统：对话式画像收集、随机人格生成、Hook 人格注入、Cron 主动聊天/联网搜索/环境感知、动态记忆演化",
-      "version": "0.1.0",
+      "description": "AI 伙伴系统：深度访谈生成专属人格、Hook 人格注入、Claude Cron 在 chat 内主动开口 + 同步系统通知、按需联网、PAD 三轴情绪引擎、环境感知、记忆按重要度自我演化",
+      "version": "0.3.0",
       "source": "./",
       "category": "productivity",
       "tags": [

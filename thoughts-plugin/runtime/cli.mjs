@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 // 思绪运行时 — 命令行入口
 // 用法：
-//   node runtime/cli.mjs start <实例> [--backend=auto|claude|cursor|api] [--cwd=路径]
+//   node runtime/cli.mjs start <实例> [--backend=auto|claude|api] [--cwd=路径]
 //   node runtime/cli.mjs stop <实例>
 //   node runtime/cli.mjs status
 //   node runtime/cli.mjs once <实例> [--backend=...] [--kind=active|subconscious]
 //   node runtime/cli.mjs ping <实例>      # 标记用户刚刚活跃（重置未回复计数）
 
 import {
-    ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl,
+    ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl, appendJsonl,
 } from './core/store.mjs';
+import { recordSpoken, defaultMindState } from './core/mind.mjs';
+import { notify } from './core/notify.mjs';
 import { initInstance } from './core/onboarding.mjs';
 import { DAEMON_STATE_FILE } from './core/paths.mjs';
 import { resolveBackend, backendStatus } from './backends/index.mjs';
@@ -24,6 +26,18 @@ function isAlive(pid) {
         // EPERM 表示进程存在但无权限（仍算存活）；ESRCH 表示不存在
         return err.code === 'EPERM';
     }
+}
+
+/** 从 stdin 读全部输入（无管道/TTY 时立即返回空串，不阻塞） */
+function readStdin() {
+    return new Promise((resolve) => {
+        if (process.stdin.isTTY) { resolve(''); return; }
+        let data = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (c) => { data += c; });
+        process.stdin.on('end', () => resolve(data.trim()));
+        process.stdin.on('error', () => resolve(data.trim()));
+    });
 }
 
 /** 把 --key=value 形式的参数解析成对象 */
@@ -162,10 +176,58 @@ async function main() {
             break;
         }
 
+        case 'gate': {
+            // Cron 在 chat 内主动开口的"该不该说"闸门——只留两条真红线：
+            //   深夜静默 / 防自刷屏(我自己刚主动说过不久)。
+            //   绝不因"用户刚打字"而哑——边聊边主动恰恰是要的。输出 SPEAK 或 SILENT <原因>。
+            const instance = positional[0];
+            if (!instance) throw new Error('用法: gate <实例>');
+            const p = ensureInstanceFiles(instance);
+            const loopState = readJson(p.loopState, {});
+            const profile = readJson(p.profile, {});
+            const hour = new Date().getHours();
+            const [qs, qe] = profile?.habits?.quietHours || [23, 7];
+            const quiet = qs <= qe ? (hour >= qs && hour < qe) : (hour >= qs || hour < qe);
+            if (quiet) { console.log('SILENT quiet_hour'); break; }
+            const sinceActive = Date.now() - Number(loopState.lastActiveAt || 0);
+            if (sinceActive < 8 * 60 * 1000) { console.log('SILENT recently_spoke'); break; }
+            console.log('SPEAK');
+            break;
+        }
+
+        case 'record-spoken': {
+            // Cron 在 chat 说完一条后回写状态：更新去重/模式多样性、记 activity、刷新 lastActiveAt。
+            // 消息文本通过 stdin 传入，避免命令行转义中文/引号。
+            const instance = positional[0];
+            const mode = positional[1] || 'casual';
+            if (!instance) throw new Error('用法: record-spoken <实例> <mode>  (消息走 stdin)');
+            const message = await readStdin();
+            const p = ensureInstanceFiles(instance);
+            const mindState = readJson(p.mindState, defaultMindState());
+            recordSpoken(mindState, mode, message);
+            writeJson(p.mindState, mindState);
+            appendJsonl(p.activityLog, {
+                time: new Date().toISOString(), action: 'chat', mode, topic: message.slice(0, 60), via: 'cron',
+            });
+            const loopState = readJson(p.loopState, {});
+            loopState.lastActiveAt = Date.now();
+            writeJson(p.loopState, loopState);
+            // 同一文本同时弹系统通知：chat 与通知是一个脑子的两个窗口，不看 chat 时也被叫到
+            const persona = readJson(p.personality, {});
+            if (persona.useNotification !== false && message) {
+                const kao = persona.kaomoji
+                    ?? (Array.isArray(persona.kaomojiPreference) ? persona.kaomojiPreference[0] : null)
+                    ?? '(´･ᴗ･`)';
+                notify(persona.name ?? instance, kao, message);
+            }
+            console.log('recorded');
+            break;
+        }
+
         default:
             console.log(`思绪运行时 CLI
   init <实例>                                                    初始化实例（默认画像/人格/权限）
-  start <实例> [--backend=auto|claude|cursor|api] [--cwd=路径]   启动常驻 daemon
+  start <实例> [--backend=auto|claude|api] [--cwd=路径]   启动常驻 daemon
   stop <实例>                                                    停止 daemon
   status                                                         查看后端与实例状态
   once <实例> [--backend=...] [--kind=active|subconscious]       手动跑一次（测试用）
