@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1776329345185,
-  "projectRoot": "/Users/zhanghailong/Desktop/coding/thoughts",
+  "lastScanned": 1780284324921,
+  "projectRoot": "E:\\inksnow\\Thoughts",
   "techStack": {
     "languages": [],
     "frameworks": [],
@@ -36,7 +36,7 @@
       "path": "thoughts-plugin",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1776329345133,
+      "lastAccessed": 1780284324900,
       "keyFiles": [
         "README.md"
       ]
@@ -44,63 +44,189 @@
   },
   "hotPaths": [
     {
-      "path": ".thoughts/memory-raw.md",
-      "accessCount": 34,
-      "lastAccessed": 1776241323862,
-      "type": "file"
-    },
-    {
-      "path": "thoughts-plugin/skills/thoughts/SKILL.md",
-      "accessCount": 21,
-      "lastAccessed": 1776331625447,
-      "type": "file"
-    },
-    {
-      "path": ".thoughts/cron-state.json",
-      "accessCount": 19,
-      "lastAccessed": 1776238993097,
-      "type": "file"
-    },
-    {
-      "path": ".thoughts/memory-consolidated.md",
-      "accessCount": 17,
-      "lastAccessed": 1776238938706,
-      "type": "file"
-    },
-    {
-      "path": "thoughts-plugin/hooks/thoughts-inject.sh",
+      "path": "runtime\\cli.mjs",
       "accessCount": 10,
-      "lastAccessed": 1776330427825,
+      "lastAccessed": 1780309799341,
       "type": "file"
     },
     {
-      "path": "thoughts-plugin/skills/thoughts-stop/SKILL.md",
-      "accessCount": 7,
-      "lastAccessed": 1776330167988,
+      "path": "runtime\\daemon\\daemon.mjs",
+      "accessCount": 6,
+      "lastAccessed": 1780312137569,
       "type": "file"
     },
     {
-      "path": "thoughts-plugin/skills/thoughts-onboarding/SKILL.md",
+      "path": "runtime\\hooks\\inject.mjs",
+      "accessCount": 6,
+      "lastAccessed": 1780313364600,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\store.mjs",
       "accessCount": 5,
-      "lastAccessed": 1776331391291,
+      "lastAccessed": 1780312034752,
       "type": "file"
     },
     {
-      "path": "thoughts-plugin",
-      "accessCount": 1,
-      "lastAccessed": 1776220579126,
-      "type": "directory"
+      "path": "C:\\Users\\moxue\\.thoughts\\instances\\大痔\\profile.json",
+      "accessCount": 4,
+      "lastAccessed": 1780306894514,
+      "type": "file"
     },
     {
-      "path": "",
-      "accessCount": 1,
-      "lastAccessed": 1776329448742,
-      "type": "directory"
+      "path": "C:\\Users\\moxue\\.thoughts\\instances\\大痔\\personality.json",
+      "accessCount": 4,
+      "lastAccessed": 1780306912381,
+      "type": "file"
     },
     {
-      "path": "thoughts-plugin/hooks/hooks.json",
+      "path": "thoughts-plugin\\skills\\thoughts-onboarding\\SKILL.md",
+      "accessCount": 3,
+      "lastAccessed": 1780306145747,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\moxue\\.thoughts\\instances\\大痔\\memory-consolidated.md",
+      "accessCount": 3,
+      "lastAccessed": 1780306924113,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\paths.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1780312022366,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\decide.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1780312064089,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\daemon\\prompts.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1780312111415,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\backends\\index.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1780287245988,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\onboarding.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1780287791861,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin\\skills\\thoughts\\SKILL.md",
+      "accessCount": 2,
+      "lastAccessed": 1780296765486,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin\\skills\\thoughts-stop\\SKILL.md",
+      "accessCount": 2,
+      "lastAccessed": 1780296774405,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\moxue\\.claude\\settings.json",
+      "accessCount": 2,
+      "lastAccessed": 1780310491998,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin\\README.md",
       "accessCount": 1,
-      "lastAccessed": 1776329461700,
+      "lastAccessed": 1780284580021,
+      "type": "file"
+    },
+    {
+      "path": "thoughts-plugin\\hooks\\thoughts-inject.sh",
+      "accessCount": 1,
+      "lastAccessed": 1780284588217,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\notify.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780287145270,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\env-sense.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780287170710,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\backends\\_exec.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780287238346,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\backends\\claude.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780287254236,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\backends\\cursor.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780287259978,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\backends\\api.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780287273294,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\install\\install-win.ps1",
+      "accessCount": 1,
+      "lastAccessed": 1780287564987,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\install\\install-mac.sh",
+      "accessCount": 1,
+      "lastAccessed": 1780287576214,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\install\\install-linux.sh",
+      "accessCount": 1,
+      "lastAccessed": 1780287584166,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\README.md",
+      "accessCount": 1,
+      "lastAccessed": 1780287604834,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\moxue\\.claude\\projects\\E--inksnow-Thoughts\\memory\\bash-tool-not-powershell.md",
+      "accessCount": 1,
+      "lastAccessed": 1780297001358,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\moxue\\.claude\\projects\\E--inksnow-Thoughts\\memory\\MEMORY.md",
+      "accessCount": 1,
+      "lastAccessed": 1780297006453,
+      "type": "file"
+    },
+    {
+      "path": "runtime\\core\\mind.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1780312015725,
       "type": "file"
     }
   ],
