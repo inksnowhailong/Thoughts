@@ -7,7 +7,9 @@
 //   node runtime/cli.mjs once <实例> [--backend=...] [--kind=active|subconscious]
 //   node runtime/cli.mjs ping <实例>      # 标记用户刚刚活跃（重置未回复计数）
 
-import { ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl } from './core/store.mjs';
+import {
+    ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl,
+} from './core/store.mjs';
 import { initInstance } from './core/onboarding.mjs';
 import { DAEMON_STATE_FILE } from './core/paths.mjs';
 import { resolveBackend, backendStatus } from './backends/index.mjs';
@@ -148,6 +150,18 @@ async function main() {
             break;
         }
 
+        case 'next': {
+            // 会话自醒只需知道"下次隔多久醒"——读 daemon 动态决策出的 activeDelayMs。
+            // 未读消息由 inject hook 在 fire 那一轮自动浮现，这里绝不碰 outbox；
+            // 也绝不碰 lastUserAt（自醒 ≠ 用户活跃，碰了会带歪 daemon 的动态调频）。
+            const instance = positional[0];
+            if (!instance) throw new Error('用法: next <实例>');
+            const p = ensureInstanceFiles(instance);
+            const delayMs = Number(readJson(p.loopState, {}).activeDelayMs) || 15 * 60 * 1000;
+            process.stdout.write(`${JSON.stringify({ nextDelaySec: Math.round(delayMs / 1000) })}\n`);
+            break;
+        }
+
         default:
             console.log(`思绪运行时 CLI
   init <实例>                                                    初始化实例（默认画像/人格/权限）
@@ -156,7 +170,8 @@ async function main() {
   status                                                         查看后端与实例状态
   once <实例> [--backend=...] [--kind=active|subconscious]       手动跑一次（测试用）
   outbox <实例> [--n=10]                                         查看最近的主动消息记录
-  ping <实例>                                                    标记用户刚刚活跃`);
+  ping <实例>                                                    标记用户刚刚活跃
+  next <实例>                                                    会话自醒读 daemon 建议的下次间隔(JSON)`);
     }
 }
 

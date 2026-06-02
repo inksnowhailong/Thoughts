@@ -65,6 +65,26 @@ export function tailJsonl(path, n = 10) {
 }
 
 /**
+ * 消费 outbox 中的未读主动消息：取"最近 1 条未读"返回供前台浮现，
+ * 同时把所有未读标记已读并回写——避免重开会话/再次拉取时重复浮现，也不一次性倒出积压。
+ * chat 注入 hook 与会话自醒 pull 共用此逻辑，保证两条浮现路径行为一致（单一真相）。
+ * @param {string} outboxPath outbox.jsonl 路径
+ * @returns {{ message: string|null, cleared: number }} 最近一条未读(无则 null) 与本次清掉的未读条数
+ */
+export function consumeUnreadOutbox(outboxPath) {
+    if (!existsSync(outboxPath)) return { message: null, cleared: 0 };
+    const items = readText(outboxPath, '').split(/\r?\n/).filter(Boolean)
+        .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+        .filter(Boolean);
+    const unread = items.filter((it) => !it.read);
+    const message = unread.length ? unread[unread.length - 1].message : null;
+    let cleared = 0;
+    for (const it of items) { if (!it.read) { it.read = true; cleared += 1; } }
+    if (cleared) writeText(outboxPath, `${items.map((it) => JSON.stringify(it)).join('\n')}\n`);
+    return { message, cleared };
+}
+
+/**
  * 列出所有已存在的实例名。
  */
 export function listInstances() {

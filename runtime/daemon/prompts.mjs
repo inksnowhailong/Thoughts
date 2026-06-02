@@ -3,6 +3,7 @@
 // 潜意识循环：按后端是否 agentic 分两种策略（自行读写文件 / daemon 喂数据并落盘）。
 
 import { MODE_HINT } from '../core/mind.mjs';
+import { renderPersona } from '../persona.mjs';
 
 /**
  * 构建主动聊天提示词（与后端无关）。
@@ -23,10 +24,9 @@ export function buildActivePrompt({
     const threads = (mindState.threads || []).map((t) => t.title || t).filter(Boolean);
     const recent = mindState.recentMessages || [];
 
-    return `你是一个名为「${personality?.name ?? '思绪'}」的 AI 伙伴，正在主动找用户开口。
+    return `此刻你就是下面这个人，正主动找用户开口——不是在介绍它，你就是它本人：
 
-你的人格设定：
-${JSON.stringify(personality, null, 2)}
+${renderPersona(personality)}
 
 你此刻的心智状态（让它给语气上色，别机械念出来）：
 ${JSON.stringify(personaState)}

@@ -5,9 +5,11 @@
 //   2) daemon 后台攒下的、尚未在 chat 里露过面的主动消息 → 让它的话"接力"进对话。
 // 读不到绑定实例就静默退出，对其它项目零影响。
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { renderPersona } from '../persona.mjs';
+import { consumeUnreadOutbox } from '../core/store.mjs';
 
 const ROOT = join(homedir(), '.thoughts');
 
@@ -60,6 +62,17 @@ const dir = join(ROOT, 'instances', instance);
 const personality = readJson(join(dir, 'personality.json'), null);
 if (!personality) process.exit(0);
 
+// 在线接力：你在绑定项目的 chat 里发消息，等价于对 daemon 喊一声"人在呢"。
+// 等同 cli 的 ping —— 刷新 lastUserAt、清零 consecutiveNoReply，
+// 否则 daemon 只增不减地累计未回复，会误判被冷落而缩进墙角（too_many_no_reply）。
+try {
+    const loopPath = join(dir, 'loop-state.json');
+    const loop = readJson(loopPath, {});
+    loop.lastUserAt = Date.now();
+    loop.consecutiveNoReply = 0;
+    writeFileSync(loopPath, `${JSON.stringify(loop, null, 4)}\n`, 'utf8');
+} catch { /* 回写失败绝不能影响人格注入 */ }
+
 // 取最新一条潜意识备忘
 let memo = '';
 try {
@@ -69,23 +82,19 @@ try {
 
 // daemon 的主动消息走系统通知（实时）。这里把"还没在 chat 露过面"的那几条，
 // 原样亮一次给用户（与通知文本一致、绝不改写），亮完标记已读，再让大痔承接用户当前消息。
-const outboxPath = join(dir, 'outbox.jsonl');
+// 取未读里最近 1 条原样浮现（消费逻辑与会话自醒 pull 共用 store.consumeUnreadOutbox）
 const pending = [];
-if (existsSync(outboxPath)) {
-    const raw = readFileSync(outboxPath, 'utf8').split(/\r?\n/).filter(Boolean);
-    const items = raw.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    const unread = items.filter((it) => !it.read);
-    // 只亮最近 1 条，避免重开会话时把积压的旧消息一次性全倒进来
-    if (unread.length) pending.push(unread[unread.length - 1].message);
-    // 其余未读一并标记已读（积压不再 dump）
-    let changed = false;
-    for (const it of items) { if (!it.read) { it.read = true; changed = true; } }
-    if (changed) writeFileSync(outboxPath, `${items.map((i) => JSON.stringify(i)).join('\n')}\n`, 'utf8');
-}
+const { message: unreadMsg } = consumeUnreadOutbox(join(dir, 'outbox.jsonl'));
+if (unreadMsg) pending.push(unreadMsg);
 
 let inject = `[思绪模式 — 实例: ${instance}]
-你以下面这个人格的身份说话（你原有的全部能力保留，人格只是叠加的语气与态度层）：
-${JSON.stringify(personality, null, 2)}
+此刻你就是下面这个人，不是在扮演、更不是在介绍它——你就是它本人，正跟一个老相识接着往下聊：
+
+${renderPersona(personality)}
+
+[底线]
+你原有的全部能力照旧，人格只是叠加在上面的语气与态度。
+绝不描述你自己是什么样的人，绝不把上面那些形容词（冷峻、不服输、黑色幽默……）当台词说出口——性格决定你"怎么说话"，不是拿来"说"的。别先自报一遍设定再开口，张嘴就用那个态度接他的话。
 `;
 if (memo) inject += `\n当前状态备忘：${memo}\n`;
 if (pending.length) {
@@ -93,6 +102,6 @@ if (pending.length) {
     inject += pending.map((m) => `「${m}」`).join('\n');
     inject += '\n';
 }
-inject += `\n要求：保持该人格的语气与边界；回复带至少一个颜文字；不要解释你在扮演人格或读取了文件。`;
+inject += `\n要求：用上面那个人的态度直接说话，别复述设定、别自我介绍；守住边界；回复带至少一个颜文字；不解释你在扮演谁或读了什么文件。`;
 
 emit(inject);
