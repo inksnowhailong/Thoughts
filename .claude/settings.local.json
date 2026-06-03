@@ -30,7 +30,15 @@
       "Bash(grep -vE \"^runtime/thoughts.mjs$\")",
       "Bash(git rm *)",
       "PowerShell(Get-CimInstance *)",
-      "PowerShell(Start-Process -WindowStyle Hidden node -ArgumentList '\"C:\\\\Users\\\\moxue\\\\.thoughts\\\\runtime\\\\cli.mjs\"','start','大痔','--backend=auto')"
+      "PowerShell(Start-Process -WindowStyle Hidden node -ArgumentList '\"C:\\\\Users\\\\moxue\\\\.thoughts\\\\runtime\\\\cli.mjs\"','start','大痔','--backend=auto')",
+      "Read(//e/inksnow/claude-phone-bridge/**)",
+      "Bash(node -e ' *)",
+      "Read(//c/nvm4w/nodejs/**)",
+      "Bash(ls -1 cpb* claude-phone-bridge* c2web*)",
+      "Bash(ls -1 cpb* claude-phone-bridge*)",
+      "Bash(ls -1 c2web*)",
+      "Bash(node --check bridge.mjs)",
+      "Bash(node -e 'import\\(\"os\"\\).then\\(\\({networkInterfaces}\\)=>{const o=[];const f=networkInterfaces\\(\\);for\\(const n of Object.keys\\(f\\)\\)for\\(const x of f[n]||[]\\)if\\(x.family===\"IPv4\"&&!x.internal\\)o.push\\(x.address\\);console.log\\(\"检测到局域网地址:\",o.length?o.map\\(i=>\"http://\"+i+\":8787\"\\):\"无\"\\)}\\)')"
     ],
     "ask": [
       "Bash(rm *)",
