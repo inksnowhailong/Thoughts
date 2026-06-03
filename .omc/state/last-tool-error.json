@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /e/inksnow/Thoughts\\nSRC=\\\"thoughts-plugin/runtime\\\"; DST=\\\"$USERPROFILE/.thoughts/runtime\\\"\\ncp \\\"$SRC/core/mind.mjs\\\" \\\"$DST/core/mind.mjs\\\"\\ncp \\\"$SRC/daemon/prompts.mjs\\\" \\\"$DST/dae...",
-  "error": "Exit code 1\n✓ 同步 + 语法通过\n[eval]:2\r\nconst fs=require('fs');const p='C:\\Users\\moxue/.thoughts/instances/大痔/mind-state.json'.replace(/\\/g,'/');\r\n                                                                                               ^^^^^^^\r\nExpected ',', got 'string literal ();, ');)'\r\n\r\nSyntaxError: missing ) after argument list\r\n    at makeContextifyScript (node:internal/vm:185:14)\r\n    at compileScript (node:internal/process/execution:383:10)\r\n    at evalTypeScript (node:internal/process/...",
-  "timestamp": "2026-06-02T12:45:29.570Z",
-  "retry_count": 1
-}
