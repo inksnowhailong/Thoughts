@@ -83,19 +83,20 @@ function clampDelayMs(minutes) {
  * @param {object} ctx.env 环境快照
  * @param {object} ctx.agent 后端
  * @param {string} ctx.rawExcerpt 用户最近真实发言片段
+ * @param {string} ctx.userPortrait 散文体用户画像(喂软判断)
  * @returns {Promise<{act:boolean,reason:string,nextDelayMs:number,mode:string,source:string}>}
  */
 async function decideActiveSmart({
-    loopState, profile, mindState, env, agent, rawExcerpt,
+    loopState, profile, mindState, env, agent, rawExcerpt, userPortrait = '',
 }) {
-    // Layer A：红线命中直接返回，0 成本不调模型
+    // Layer A：红线命中直接返回，0 成本不调模型（quietHours 仍来自 profile 机器配置）
     const gated = hardGate(loopState, profile);
     if (gated) return { ...gated, source: 'gate' };
 
     // Layer B：便宜模型软判断
     try {
         const prompt = buildDecisionPrompt({
-            profile, env, mindState, recentMessages: mindState.recentMessages || [], rawExcerpt, loopState,
+            userPortrait, env, mindState, recentMessages: mindState.recentMessages || [], rawExcerpt, loopState,
         });
         const result = await agent.run({ prompt, model: DECISION_MODEL, timeoutMs: 60000 });
         const parsed = result.ok && parseDecision(result.text);
@@ -128,22 +129,25 @@ async function decideActiveSmart({
  */
 export async function doActive(p, agent, cwd, instance) {
     const loopState = readJson(p.loopState, {});
-    const profile = readJson(p.profile, {});
+    const profile = readJson(p.profile, {}); // 仅供 hardGate 读 quietHours 等机器配置
     const personality = readJson(p.personality, {});
     const mindState = readJson(p.mindState, defaultMindState());
+    // 散文体画像：人格 + 用户，是"说什么/对谁说"的命脉，取代旧的 JSON 字段堆砌
+    const personaText = readText(p.persona, '');
+    const userPortrait = readText(p.userPortrait, '');
     // 环境快照上提：既喂决策层(该不该开口)，也喂生成层(说什么)
     const env = senseEnvironment(readJson(p.permissions, {}), { cwd });
     // 用户最近真说过的话：决策层据此判断状态，生成层据此"接话"而非自顾自抛冷知识
     const userRecent = memoryExcerpt(p.memoryRaw, 20);
     const decision = await decideActiveSmart({
-        loopState, profile, mindState, env, agent, rawExcerpt: userRecent,
+        loopState, profile, mindState, env, agent, rawExcerpt: userRecent, userPortrait,
     });
     log(instance, 'active_decide', decision);
 
     if (decision.act) {
         try {
             const prompt = buildActivePrompt({
-                personality, profile, memoryExcerpt: memoryExcerpt(p.memoryConsolidated), env, mode: decision.mode, mindState, userRecent,
+                personality, personaText, userPortrait, memoryExcerpt: memoryExcerpt(p.memoryConsolidated), env, mode: decision.mode, mindState, userRecent,
             });
             const result = await agent.run({ prompt, cwd });
             const message = (result.text || '').trim();

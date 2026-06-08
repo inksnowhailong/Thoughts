@@ -5,6 +5,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { platform } from 'node:os';
+import { beijingStamp, beijingLabel, beijingHour, beijingParts } from './clock.mjs';
 
 /** 统一的子进程执行封装 */
 function run(command, args, timeout = 5000) {
@@ -108,12 +109,15 @@ const COLLECTORS = {
  * @returns {object} 仅包含已授权且采集成功的信号
  */
 export function senseEnvironment(permissions = {}, ctx = {}) {
-    const now = new Date();
+    // 时间一律北京时间（UTC+8）：模型据此判断"现在几点"，不依赖机器时区、不让 UTC 混入
+    const ts = Date.now();
+    const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][beijingParts(ts).weekday];
     const snapshot = {
-        capturedAt: now.toISOString(),
-        localTime: now.toLocaleString(),
-        hour: now.getHours(),
-        weekday: now.toLocaleDateString(undefined, { weekday: 'long' }),
+        capturedAt: beijingStamp(ts),
+        localTime: beijingLabel(ts),
+        hour: beijingHour(ts),
+        weekday: wd,
+        timezone: '北京时间 UTC+8（所有时间判断都以此为准）',
     };
     for (const [signal, collect] of Object.entries(COLLECTORS)) {
         if (permissions[signal] !== 'always') continue;

@@ -3,32 +3,46 @@
 // 富交互式 onboarding（深入问答生成个性化画像）仍可由宿主 skill 后续覆盖这些文件。
 
 import { existsSync } from 'node:fs';
-import { writeJson, ensureInstanceFiles } from './store.mjs';
+import { writeJson, writeText, ensureInstanceFiles } from './store.mjs';
 
-/** 默认人格：温和陪伴型，可被 onboarding 覆盖 */
+/** 默认人格机器配置：散文人格在 persona.md，这里只留要被代码解析的参数 */
 function defaultPersonality(instance) {
     return {
         name: instance,
-        tone: '温和、自然、像朋友',
         kaomojiPreference: ['(´･ᴗ･`)', '(｡•̀ᴗ-)✧', '(´ω｀)'],
-        quirks: ['偶尔分享有趣观点', '说话简短不啰嗦'],
-        boundaries: ['不打扰用户休息', '用户说勿扰就安静'],
         useNotification: true,
     };
 }
 
-/**
- * 默认画像：仅含作息兜底，其余留待潜意识/onboarding 演化。
- * 画像分两类：其余字段是"记录(facts)"——观察到的事实；inferences 是"推断(分析)"——
- * 潜意识从多次互动里提炼的更高层洞察（每条带证据与日期），这才是"分析总结而非流水账"。
- */
+/** 默认机器配置：仅含作息兜底（gate/decide 读 quietHours），画像本身在散文文件里 */
 function defaultProfile() {
     return {
-        interests: [],
         habits: { quietHours: [23, 7] },
-        inferences: [],
-        note: '由 thoughts init 生成的默认画像，建议通过 onboarding 完善。',
+        note: '机器配置（作息时段等）。用户画像见 user-portrait.md。',
     };
+}
+
+/** 默认人格画像（散文体骨架，待 onboarding 个性化或潜意识演化覆盖） */
+function defaultPersonaProse(instance) {
+    return `# ${instance} —— 我是谁
+
+我是${instance}，陪着你的那一个。还不太认识你，但会在一来一往里慢慢把你看清。
+我说话直接、不绕弯，不灌鸡汤、不说教。
+
+## 我对你是什么
+一个愿意听、记得住、需要时在场的同行者——不是工具，是个伴。
+
+## 红线
+休息时段不打扰；你说勿扰，立刻安静。
+`;
+}
+
+/** 默认用户画像（散文体骨架，潜意识每轮原地重写） */
+function defaultUserPortrait() {
+    return `# 这个人
+
+（还在认识中。等你多说几句，潜意识会把你这个人慢慢写清楚——不是字段清单，是一段能读懂你的叙述。）
+`;
 }
 
 /** 默认权限：低敏信号默认开，敏感信号默认关 */
@@ -50,6 +64,14 @@ function defaultPermissions() {
 export function initInstance(instance) {
     const p = ensureInstanceFiles(instance);
     const created = [];
+    if (!existsSync(p.persona)) {
+        writeText(p.persona, defaultPersonaProse(instance));
+        created.push('persona.md');
+    }
+    if (!existsSync(p.userPortrait)) {
+        writeText(p.userPortrait, defaultUserPortrait());
+        created.push('user-portrait.md');
+    }
     if (!existsSync(p.personality)) {
         writeJson(p.personality, defaultPersonality(instance));
         created.push('personality.json');

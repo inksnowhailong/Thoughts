@@ -65,6 +65,33 @@ export function selectMode(mindState) {
 }
 
 /**
+ * 把 PAD 三轴心情渲染成一句"给这条回复定语气"的指令。
+ * 关键：思绪的情绪以前只在主动循环里上色，直接对话那条路看不到心情——人就一张死脸。
+ * 这个渲染器供 chat 注入 hook 与主动循环共用，让每一句话都带着此刻的心情说出来。
+ * 末尾的反复述护栏不可删：否则模型会把"我现在情绪偏低"这种状态名念出来，正是[底线]禁止的自我描述。
+ * @param {object} ps personaState（valence/energy/control 各 0~1）
+ * @returns {string} 语气指令；三轴缺失则返回空串（调用方据此跳过，不崩）
+ */
+export function renderMood(ps = {}) {
+    const { valence: v, energy: e, control: c } = ps;
+    if ([v, e, c].some((x) => typeof x !== 'number')) return '';
+    const lo = (x) => x < 0.4;
+    const hi = (x) => x > 0.6;
+    let tone;
+    if (lo(v) && lo(e) && lo(c)) tone = '蔫到不想说，话少、沉，陪着就行，别硬撑吐槽';
+    else if (lo(v) && lo(e) && hi(c)) tone = '冷峻、笃定的鄙夷，一句顶十句，懒得多费唾沫';
+    else if (lo(v) && hi(e) && hi(c)) tone = '愤世来劲，跟他把破事狠损个痛快';
+    else if (lo(v) && hi(e) && lo(c)) tone = '烦躁、憋屈的牢骚，火没处撒的那种毛刺';
+    else if (hi(v) && hi(c)) tone = '不服输冒头，带狠劲甚至一丝微光，可以扎他一下';
+    else if (hi(v) && lo(e)) tone = '难得的松弛平和（对你很罕见，一旦出现就别浪费、让它真）';
+    // control 单独偏高时，哪怕 valence 只在中段也别滑成"平实"——
+    // 那是他"笃定、压得住场"的底色：话里带准头和一点锋芒，不端着但有刃。
+    else if (hi(c)) tone = '笃定、压得住场，话不多但每句带准头和一点锋芒，不端着但有刃';
+    else tone = '平实、干净、不端着';
+    return `你此刻的心情（valence ${v.toFixed(2)} / energy ${e.toFixed(2)} / control ${c.toFixed(2)}）：${tone}。\n这是给你这条回复定语气的，不是让你把数字或状态名念出来——张嘴就带着这股劲儿接他的话。`;
+}
+
+/**
  * 说完一条后更新心智：记录模式（保留最近 6 个）、留存消息片段供去重。
  * @param {object} mindState
  * @param {string} mode

@@ -25,9 +25,13 @@ export function instancePaths(instance) {
     const dir = join(ROOT, 'instances', instance);
     return {
         dir,
-        /** 用户画像 */
+        /** 用户画像（散文体，潜意识每轮原地重写——"这个人是谁"的连续叙述，非碎片字段） */
+        userPortrait: join(dir, 'user-portrait.md'),
+        /** 人格画像（散文体，关系式——"我是谁、我对你是什么"；缓慢演化） */
+        persona: join(dir, 'persona.md'),
+        /** 机器配置：作息时段（quietHours）等纯参数，gate/decide 解析用 */
         profile: join(dir, 'profile.json'),
-        /** 人格设定 */
+        /** 人格机器配置：name / kaomojiPreference / useNotification */
         personality: join(dir, 'personality.json'),
         /** 原始记忆（主意识随手追加，潜意识负责消化） */
         memoryRaw: join(dir, 'memory-raw.md'),

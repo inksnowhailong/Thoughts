@@ -14,6 +14,7 @@ import { recordSpoken, defaultMindState } from './core/mind.mjs';
 import { notify } from './core/notify.mjs';
 import { initInstance } from './core/onboarding.mjs';
 import { DAEMON_STATE_FILE } from './core/paths.mjs';
+import { beijingHour } from './core/clock.mjs';
 import { resolveBackend, backendStatus } from './backends/index.mjs';
 import { startDaemon, doActive, doSubconscious } from './daemon/daemon.mjs';
 
@@ -185,7 +186,7 @@ async function main() {
             const p = ensureInstanceFiles(instance);
             const loopState = readJson(p.loopState, {});
             const profile = readJson(p.profile, {});
-            const hour = new Date().getHours();
+            const hour = beijingHour(); // 作息红线按北京时间
             const [qs, qe] = profile?.habits?.quietHours || [23, 7];
             const quiet = qs <= qe ? (hour >= qs && hour < qe) : (hour >= qs || hour < qe);
             if (quiet) { console.log('SILENT quiet_hour'); break; }

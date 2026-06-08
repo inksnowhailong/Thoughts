@@ -4,6 +4,7 @@
 // 这是动态调频的核心：把原本写在 Claude Cron instructions 里的判断逻辑收敛成代码。
 
 import { selectMode } from './mind.mjs';
+import { beijingHour } from './clock.mjs';
 
 /** 各档间隔（毫秒），供动态调频选用 */
 const INTERVAL = {
@@ -37,7 +38,7 @@ function isQuietHour(hour, quietHours) {
  * @returns {null | { act: boolean, reason: string, nextDelayMs: number, mode: string }} 放行返回 null
  */
 export function hardGate(loopState = {}, profile = {}, now = Date.now()) {
-    const hour = new Date(now).getHours();
+    const hour = beijingHour(now); // 作息红线按北京时间判断
     const lastUserAt = Number(loopState?.lastUserAt || 0);
 
     // 休息时段：不打扰，拉长间隔（边界，绝对优先）
@@ -104,7 +105,7 @@ export function decideActive(loopState, profile = {}, mindState = {}, now = Date
  * @returns {{ nextDelayMs: number, reason: string }}
  */
 export function decideSubconscious(loopState, profile = {}, now = Date.now()) {
-    const hour = new Date(now).getHours();
+    const hour = beijingHour(now); // 作息按北京时间
     const lastUserAt = Number(loopState?.lastUserAt || 0);
     const idleMs = now - lastUserAt;
 

@@ -38,7 +38,20 @@
       "Bash(ls -1 cpb* claude-phone-bridge*)",
       "Bash(ls -1 c2web*)",
       "Bash(node --check bridge.mjs)",
-      "Bash(node -e 'import\\(\"os\"\\).then\\(\\({networkInterfaces}\\)=>{const o=[];const f=networkInterfaces\\(\\);for\\(const n of Object.keys\\(f\\)\\)for\\(const x of f[n]||[]\\)if\\(x.family===\"IPv4\"&&!x.internal\\)o.push\\(x.address\\);console.log\\(\"检测到局域网地址:\",o.length?o.map\\(i=>\"http://\"+i+\":8787\"\\):\"无\"\\)}\\)')"
+      "Bash(node -e 'import\\(\"os\"\\).then\\(\\({networkInterfaces}\\)=>{const o=[];const f=networkInterfaces\\(\\);for\\(const n of Object.keys\\(f\\)\\)for\\(const x of f[n]||[]\\)if\\(x.family===\"IPv4\"&&!x.internal\\)o.push\\(x.address\\);console.log\\(\"检测到局域网地址:\",o.length?o.map\\(i=>\"http://\"+i+\":8787\"\\):\"无\"\\)}\\)')",
+      "Bash(cp -R /e/inksnow/Thoughts/thoughts-plugin/runtime /c/Users/moxue/.thoughts/)",
+      "Bash(node /c/Users/moxue/.thoughts/runtime/cli.mjs status)",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{try{const a=JSON.parse\\(d\\);if\\(!Array.isArray\\(a\\)\\){console.log\\(JSON.stringify\\(a\\).slice\\(0,150\\)\\);return;}if\\(!a.length\\){console.log\\('（无 release）'\\);return;}a.forEach\\(r=>console.log\\(r.tag_name, \\(r.assets||[]\\).map\\(x=>x.name+'='+x.download_count\\).join\\(', '\\)||'\\(无附件\\)'\\)\\);}catch\\(e\\){console.log\\('err',e.message\\);}}\\);\")",
+      "Bash(read f *)",
+      "Bash(node -e 'try{console.log\\(require\\('\\\\''__TRACKED_VAR__'\\\\''\\).name||'\\\\''\\(无name\\)'\\\\''\\)}catch\\(e\\){console.log\\('\\\\''\\(解析失败\\)'\\\\''\\)}')",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{try{const o=JSON.parse\\(d\\);if\\(!o.objects||!o.objects.length\\){console.log\\('（按 maintainer 没搜到）'\\);return;}o.objects.forEach\\(x=>console.log\\(x.package.name,'  v'+x.package.version,'  '+\\(x.package.description||''\\)\\)\\);}catch\\(e\\){console.log\\('err',e.message,d.slice\\(0,150\\)\\);}}\\);\")",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{try{const o=JSON.parse\\(d\\);\\(o.objects||[]\\).forEach\\(x=>console.log\\(x.package.name,'  '+\\(x.package.description||''\\).slice\\(0,50\\)\\)\\);}catch\\(e\\){console.log\\('err',e.message\\);}}\\);\")",
+      "Read(//c/Users/moxue/.thoughts/runtime/core/**)",
+      "Bash(node --check /c/Users/moxue/.thoughts/runtime/hooks/inject.mjs)",
+      "Bash(node --check core/mind.mjs)",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(cp -R /e/inksnow/Thoughts/thoughts-plugin/skills/__TRACKED_VAR__ /c/Users/moxue/.claude/skills/)",
+      "Read(//c/Users/moxue/.claude/skills/thoughts/**)"
     ],
     "ask": [
       "Bash(rm *)",

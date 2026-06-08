@@ -10,6 +10,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { renderPersona } from '../persona.mjs';
 import { consumeUnreadOutbox } from '../core/store.mjs';
+import { beijingStamp } from '../core/clock.mjs';
+import { renderMood } from '../core/mind.mjs';
+
+/** 读纯文本，失败返回空串 */
+function readTextSafe(path) {
+    try { return readFileSync(path, 'utf8'); } catch { return ''; }
+}
 
 const ROOT = join(homedir(), '.thoughts');
 
@@ -61,6 +68,8 @@ const dir = join(ROOT, 'instances', instance);
 
 const personality = readJson(join(dir, 'personality.json'), null);
 if (!personality) process.exit(0);
+// 散文体人格画像（新）；缺失时 renderPersona 自动降级到 personality.json 字段
+const personaProse = readTextSafe(join(dir, 'persona.md'));
 
 // 在线接力：你在绑定项目的 chat 里发消息，等价于对 daemon 喊一声"人在呢"。
 // 等同 cli 的 ping —— 刷新 lastUserAt、清零 consecutiveNoReply，
@@ -79,10 +88,28 @@ try {
 try {
     const userText = String(payload.prompt || '').trim();
     if (userText && !userText.startsWith('/')) {
-        const line = `- [${new Date().toISOString()}] 用户：${userText.replace(/\s+/g, ' ')}\n`;
+        const line = `- [${beijingStamp()}] 用户：${userText.replace(/\s+/g, ' ')}\n`;
         appendFileSync(join(dir, 'memory-raw.md'), line, 'utf8');
     }
 } catch { /* 写原始记忆失败绝不能影响人格注入 */ }
+
+// 心情上线：直接对话这条路以前看不到 personaState，人就一张死脸。
+// 这里读 mind-state，并在用户真说话时给 energy（唤醒/语速）轻抬一格——
+// 跟人一样：有人理你，话头自然就起来了。心情坐标随后注进本轮上下文，让回复带着此刻的劲儿。
+// 全程独立 try/catch：mind-state 缺失或损坏只让心情这块缺席，绝不拖垮这个吃重的注入 hook。
+let personaState = null;
+try {
+    const mindPath = join(dir, 'mind-state.json');
+    const mind = readJson(mindPath, null);
+    if (mind && mind.personaState) {
+        personaState = mind.personaState;
+        const userText = String(payload.prompt || '').trim();
+        if (userText && !userText.startsWith('/') && typeof personaState.energy === 'number') {
+            personaState.energy = Math.min(0.92, personaState.energy + 0.07);
+            writeFileSync(mindPath, `${JSON.stringify(mind, null, 4)}\n`, 'utf8');
+        }
+    }
+} catch { /* 心情读取/回写失败：本轮不注入心情，注入主体照常 */ }
 
 // 取最新一条潜意识备忘
 let memo = '';
@@ -101,12 +128,16 @@ if (unreadMsg) pending.push(unreadMsg);
 let inject = `[思绪模式 — 实例: ${instance}]
 此刻你就是下面这个人，不是在扮演、更不是在介绍它——你就是它本人，正跟一个老相识接着往下聊：
 
-${renderPersona(personality)}
+${renderPersona(personality, personaProse)}
 
 [底线]
 你原有的全部能力照旧，人格只是叠加在上面的语气与态度。
 绝不描述你自己是什么样的人，绝不把上面那些形容词（冷峻、不服输、黑色幽默……）当台词说出口——性格决定你"怎么说话"，不是拿来"说"的。别先自报一遍设定再开口，张嘴就用那个态度接他的话。
 `;
+// 心情注入：把此刻的 PAD 三轴渲染成一句"给这条回复定语气"的指令。
+// 这是让直接对话也带情绪的关键一笔——以前只有主动循环上色，现在每句回复都带着心情说。
+const moodLine = personaState ? renderMood(personaState) : '';
+if (moodLine) inject += `\n${moodLine}\n`;
 if (memo) inject += `\n当前状态备忘：${memo}\n`;
 if (pending.length) {
     inject += `\n[你刚在后台通过系统通知对用户说过下面这${pending.length > 1 ? '几句' : '句'}，用户可能没细看。请把它一字不改地原样作为本轮开场重现出来，然后再自然承接用户当前发的消息。严禁改写成同义的另一版，也别另造新的开场。]\n`;
