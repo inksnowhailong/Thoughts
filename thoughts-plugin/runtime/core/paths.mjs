@@ -11,10 +11,7 @@ export const ROOT = join(homedir(), '.thoughts');
 /** 项目路径 → 实例名 的映射文件 */
 export const ACTIVE_FILE = join(ROOT, 'active.json');
 
-/** daemon 的全局状态文件（PID、运行中的实例列表） */
-export const DAEMON_STATE_FILE = join(ROOT, 'daemon.json');
-
-/** daemon 的运行日志目录 */
+/** 潜意识的运行日志目录 */
 export const LOG_DIR = join(ROOT, 'logs');
 
 /**

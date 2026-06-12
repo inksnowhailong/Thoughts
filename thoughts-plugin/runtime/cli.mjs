@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // 思绪运行时 — 命令行入口
 // 用法：
-//   node runtime/cli.mjs start <实例> [--backend=auto|claude|api] [--cwd=路径]
-//   node runtime/cli.mjs stop <实例>
 //   node runtime/cli.mjs status
-//   node runtime/cli.mjs once <实例> [--backend=...] [--kind=active|subconscious]
-//   node runtime/cli.mjs ping <实例>      # 标记用户刚刚活跃（重置未回复计数）
+//   node runtime/cli.mjs once <实例> --kind=subconscious   # 跑一次潜意识消化（挂在宿主 cron 上）
+//   node runtime/cli.mjs gate <实例>      # chat 内主动开口的闸门（挂在宿主心跳 cron 上）
+//   node runtime/cli.mjs ping <实例>      # 标记用户刚刚活跃（拉热度、把下次开口拉近）
 
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
@@ -13,26 +12,13 @@ import {
     ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl, appendJsonl,
 } from './core/store.mjs';
 import { recordSpoken, defaultMindState } from './core/mind.mjs';
-import { decideActive } from './core/decide.mjs';
 import { effectiveHeat, scheduleNext, heatTier, bumpHeat } from './core/heat.mjs';
 import { pickKaomoji } from './core/kaomoji.mjs';
 import { notify } from './core/notify.mjs';
 import { initInstance } from './core/onboarding.mjs';
-import { DAEMON_STATE_FILE } from './core/paths.mjs';
 import { beijingHour } from './core/clock.mjs';
 import { resolveBackend, backendStatus } from './backends/index.mjs';
-import { startDaemon, doActive, doSubconscious } from './daemon/daemon.mjs';
-
-/** 探测某个 pid 是否存活（signal 0 不真正发信号，只做存在性检查） */
-function isAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch (err) {
-        // EPERM 表示进程存在但无权限（仍算存活）；ESRCH 表示不存在
-        return err.code === 'EPERM';
-    }
-}
+import { doSubconscious } from './core/subconscious.mjs';
 
 /** 从 stdin 读全部输入（无管道/TTY 时立即返回空串，不阻塞） */
 function readStdin() {
@@ -73,35 +59,6 @@ async function main() {
             break;
         }
 
-        case 'start': {
-            const instance = positional[0];
-            if (!instance) throw new Error('用法: start <实例>');
-            startDaemon({ instance, backend: flags.backend || 'auto', cwd: flags.cwd || process.cwd() });
-            // startDaemon 内部用定时器维持进程存活，这里不返回
-            break;
-        }
-
-        case 'stop': {
-            const instance = positional[0];
-            if (!instance) throw new Error('用法: stop <实例>');
-            const state = readJson(DAEMON_STATE_FILE, {});
-            const entry = state[instance];
-            if (!entry?.pid) {
-                console.log(`实例 ${instance} 没有在运行的 daemon。`);
-                break;
-            }
-            try {
-                process.kill(entry.pid, 'SIGTERM');
-                console.log(`已向 daemon (pid=${entry.pid}) 发送停止信号。`);
-            } catch (err) {
-                console.log(`进程可能已退出：${err.message}`);
-            }
-            // Windows 不可靠地触发 SIGTERM 自清理，这里统一主动清除记录
-            delete state[instance];
-            writeJson(DAEMON_STATE_FILE, state);
-            break;
-        }
-
         case 'status': {
             console.log('=== 可用后端 ===');
             for (const b of backendStatus()) {
@@ -109,34 +66,19 @@ async function main() {
             }
             console.log('\n=== 实例 ===');
             const instances = listInstances();
-            const running = readJson(DAEMON_STATE_FILE, {});
-            let healed = false;
             if (instances.length === 0) console.log('  （暂无实例）');
-            for (const name of instances) {
-                let r = running[name];
-                // 探活：pid 已死则清理僵尸记录（自愈）
-                if (r?.pid && !isAlive(r.pid)) {
-                    delete running[name];
-                    healed = true;
-                    r = null;
-                }
-                console.log(`  ${name}${r ? ` ← 运行中 (pid=${r.pid}, backend=${r.backend})` : ' ← 未运行'}`);
-            }
-            if (healed) writeJson(DAEMON_STATE_FILE, running);
+            for (const name of instances) console.log(`  ${name}`);
             break;
         }
 
         case 'once': {
+            // 只跑潜意识消化（脱离 chat 的 daemon 已移除，once 不再有"主动开口"分支）。
             const instance = positional[0];
-            if (!instance) throw new Error('用法: once <实例>');
+            if (!instance) throw new Error('用法: once <实例> --kind=subconscious');
             const p = ensureInstanceFiles(instance);
             const agent = resolveBackend(flags.backend || 'auto');
             const cwd = flags.cwd || process.cwd();
-            if (flags.kind === 'subconscious') {
-                await doSubconscious(p, agent, cwd, instance);
-            } else {
-                await doActive(p, agent, cwd, instance);
-            }
+            await doSubconscious(p, agent, cwd, instance);
             break;
         }
 
@@ -170,19 +112,6 @@ async function main() {
             bumpHeat(loopState); // 加热并把 nextSpeakAt 只拉近不推远
             writeJson(p.loopState, loopState);
             console.log(`已标记 ${instance} 的用户活跃：heat=${loopState.heat.toFixed(2)}，下次开口已拉近。`);
-            break;
-        }
-
-        case 'next': {
-            // 动态计算下次主动循环间隔——用 decideActive 读当前状态现场决策，而非读静态缓存。
-            const instance = positional[0];
-            if (!instance) throw new Error('用法: next <实例>');
-            const p = ensureInstanceFiles(instance);
-            const loopState = readJson(p.loopState, {});
-            const profile = readJson(p.profile, {});
-            const mindState = readJson(p.mindState, defaultMindState());
-            const { nextDelayMs } = decideActive(loopState, profile, mindState);
-            process.stdout.write(`${JSON.stringify({ nextDelaySec: Math.round(nextDelayMs / 1000) })}\n`);
             break;
         }
 
@@ -256,14 +185,13 @@ async function main() {
 
         default:
             console.log(`思绪运行时 CLI
-  init <实例>                                                    初始化实例（默认画像/人格/权限）
-  start <实例> [--backend=auto|claude|api] [--cwd=路径]   启动常驻 daemon
-  stop <实例>                                                    停止 daemon
-  status                                                         查看后端与实例状态
-  once <实例> [--backend=...] [--kind=active|subconscious]       手动跑一次（测试用）
-  outbox <实例> [--n=10]                                         查看最近的主动消息记录
-  ping <实例>                                                    标记用户刚刚活跃
-  next <实例>                                                    会话自醒读 daemon 建议的下次间隔(JSON)`);
+  init <实例>                          初始化实例（默认画像/人格/权限）
+  status                               查看后端与实例状态
+  once <实例> --kind=subconscious      跑一次潜意识消化（挂在宿主 cron 上）
+  gate <实例>                          chat 内主动开口的闸门（挂在宿主心跳 cron 上）
+  ping <实例>                          标记用户刚刚活跃（拉热度、把下次开口拉近）
+  record-spoken <实例> <mode>          说完一条后回写状态（消息走 stdin）
+  outbox <实例> [--n=10]               查看最近的主动消息记录`);
     }
 }
 
