@@ -7,10 +7,15 @@
 //   node runtime/cli.mjs once <实例> [--backend=...] [--kind=active|subconscious]
 //   node runtime/cli.mjs ping <实例>      # 标记用户刚刚活跃（重置未回复计数）
 
+import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import {
     ensureInstanceFiles, readJson, writeJson, listInstances, tailJsonl, appendJsonl,
 } from './core/store.mjs';
 import { recordSpoken, defaultMindState } from './core/mind.mjs';
+import { decideActive } from './core/decide.mjs';
+import { effectiveHeat, scheduleNext, heatTier, bumpHeat } from './core/heat.mjs';
+import { pickKaomoji } from './core/kaomoji.mjs';
 import { notify } from './core/notify.mjs';
 import { initInstance } from './core/onboarding.mjs';
 import { DAEMON_STATE_FILE } from './core/paths.mjs';
@@ -154,45 +159,59 @@ async function main() {
         }
 
         case 'ping': {
+            // 标记用户活跃 + 拉热度。除 hook 外也作为心跳轮的"对账自愈"入口：
+            // hook 漏听用户消息时（实测会发生），由看得见对话的心跳轮补打 ping 对齐状态。
             const instance = positional[0];
             if (!instance) throw new Error('用法: ping <实例>');
             const p = ensureInstanceFiles(instance);
             const loopState = readJson(p.loopState, {});
             loopState.lastUserAt = Date.now();
             loopState.consecutiveNoReply = 0;
+            bumpHeat(loopState); // 加热并把 nextSpeakAt 只拉近不推远
             writeJson(p.loopState, loopState);
-            console.log(`已标记 ${instance} 的用户活跃，重置未回复计数。`);
+            console.log(`已标记 ${instance} 的用户活跃：heat=${loopState.heat.toFixed(2)}，下次开口已拉近。`);
             break;
         }
 
         case 'next': {
-            // 会话自醒只需知道"下次隔多久醒"——读 daemon 动态决策出的 activeDelayMs。
-            // 未读消息由 inject hook 在 fire 那一轮自动浮现，这里绝不碰 outbox；
-            // 也绝不碰 lastUserAt（自醒 ≠ 用户活跃，碰了会带歪 daemon 的动态调频）。
+            // 动态计算下次主动循环间隔——用 decideActive 读当前状态现场决策，而非读静态缓存。
             const instance = positional[0];
             if (!instance) throw new Error('用法: next <实例>');
             const p = ensureInstanceFiles(instance);
-            const delayMs = Number(readJson(p.loopState, {}).activeDelayMs) || 15 * 60 * 1000;
-            process.stdout.write(`${JSON.stringify({ nextDelaySec: Math.round(delayMs / 1000) })}\n`);
+            const loopState = readJson(p.loopState, {});
+            const profile = readJson(p.profile, {});
+            const mindState = readJson(p.mindState, defaultMindState());
+            const { nextDelayMs } = decideActive(loopState, profile, mindState);
+            process.stdout.write(`${JSON.stringify({ nextDelaySec: Math.round(nextDelayMs / 1000) })}\n`);
             break;
         }
 
         case 'gate': {
-            // Cron 在 chat 内主动开口的"该不该说"闸门——只留两条真红线：
-            //   深夜静默 / 防自刷屏(我自己刚主动说过不久)。
-            //   绝不因"用户刚打字"而哑——边聊边主动恰恰是要的。输出 SPEAK 或 SILENT <原因>。
+            // Cron 在 chat 内主动开口的"该不该说"闸门——红线只剩两条：
+            //   深夜静默 / 还没到 heat 模型排定的 nextSpeakAt（唯一限速来源）。
+            //   绝不因"用户刚打字"而哑——边聊边主动恰恰是要的。
+            //   输出 SPEAK <hot|warm|cold>（热度分层，指导内容贴话题还是聊自己的）
+            //   或 SILENT <原因> <颜文字>——静默跳的"滴答声"按状态换脸：深夜打盹、凉了发呆、热着候场，
+            //   心跳轮原样回显这个颜文字，时间线不再是一排死点。
             const instance = positional[0];
             if (!instance) throw new Error('用法: gate <实例>');
             const p = ensureInstanceFiles(instance);
             const loopState = readJson(p.loopState, {});
             const profile = readJson(p.profile, {});
+            // 滴答脸 = 处境 × 心情（personaState 三轴），与开口语气同源，见 core/kaomoji.mjs
+            const personaState = readJson(p.mindState, {})?.personaState || {};
             const hour = beijingHour(); // 作息红线按北京时间
             const [qs, qe] = profile?.habits?.quietHours || [23, 7];
             const quiet = qs <= qe ? (hour >= qs && hour < qe) : (hour >= qs || hour < qe);
-            if (quiet) { console.log('SILENT quiet_hour'); break; }
-            const sinceActive = Date.now() - Number(loopState.lastActiveAt || 0);
-            if (sinceActive < 8 * 60 * 1000) { console.log('SILENT recently_spoke'); break; }
-            console.log('SPEAK');
+            if (quiet) { console.log(`SILENT quiet_hour ${pickKaomoji('quiet', personaState)}`); break; }
+            const now = Date.now();
+            const nextSpeakAt = Number(loopState.nextSpeakAt || 0);
+            if (now < nextSpeakAt) {
+                const tier = heatTier(effectiveHeat(loopState, now));
+                console.log(`SILENT not_due ${pickKaomoji(tier, personaState)}`);
+                break;
+            }
+            console.log(`SPEAK ${heatTier(effectiveHeat(loopState, now))}`);
             break;
         }
 
@@ -212,6 +231,8 @@ async function main() {
             });
             const loopState = readJson(p.loopState, {});
             loopState.lastActiveAt = Date.now();
+            // 说完话按此刻有效热度排下一次开口时间（说话不加热；吞掉的回合走不到这里，自然会重试）
+            scheduleNext(loopState);
             writeJson(p.loopState, loopState);
             // 同一文本同时弹系统通知：chat 与通知是一个脑子的两个窗口，不看 chat 时也被叫到
             const persona = readJson(p.personality, {});
@@ -219,7 +240,15 @@ async function main() {
                 const kao = persona.kaomoji
                     ?? (Array.isArray(persona.kaomojiPreference) ? persona.kaomojiPreference[0] : null)
                     ?? '(´･ᴗ･`)';
-                notify(persona.name ?? instance, kao, message);
+                if (flags['defer-notify']) {
+                    // 延迟通知：只落一个 pending 文件，由回合结束后的 Stop hook（flush-notify.mjs）冲洗。
+                    // 目的：保证 chat 正文先渲染、通知后到——根除"被打断时通知已发、正文没出"的幽灵通知。
+                    writeFileSync(join(p.dir, 'pending-notify.json'), JSON.stringify({
+                        title: persona.name ?? instance, kao, message,
+                    }), 'utf8');
+                } else {
+                    notify(persona.name ?? instance, kao, message);
+                }
             }
             console.log('recorded');
             break;

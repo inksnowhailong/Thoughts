@@ -12,6 +12,7 @@ import { renderPersona } from '../persona.mjs';
 import { consumeUnreadOutbox } from '../core/store.mjs';
 import { beijingStamp } from '../core/clock.mjs';
 import { renderMood } from '../core/mind.mjs';
+import { bumpHeat } from '../core/heat.mjs';
 
 /** 读纯文本，失败返回空串 */
 function readTextSafe(path) {
@@ -66,6 +67,9 @@ if (!entry) process.exit(0);
 const instance = entry[1];
 const dir = join(ROOT, 'instances', instance);
 
+// 心跳/循环 prompt 不是用户在说话：不加热、不进 raw、不注入人格（SPEAK 路径自己读文件），秒退省 token
+if (String(payload.prompt || '').trimStart().startsWith('[思绪·')) process.exit(0);
+
 const personality = readJson(join(dir, 'personality.json'), null);
 if (!personality) process.exit(0);
 // 散文体人格画像（新）；缺失时 renderPersona 自动降级到 personality.json 字段
@@ -79,6 +83,9 @@ try {
     const loop = readJson(loopPath, {});
     loop.lastUserAt = Date.now();
     loop.consecutiveNoReply = 0;
+    // 热度模型：用户每说一句加热，并把 nextSpeakAt 只拉近、永不推远——
+    // 这就是"持续对话打断预设时间"的实现点：你越聊，我下次开口越早。
+    bumpHeat(loop);
     writeFileSync(loopPath, `${JSON.stringify(loop, null, 4)}\n`, 'utf8');
 } catch { /* 回写失败绝不能影响人格注入 */ }
 

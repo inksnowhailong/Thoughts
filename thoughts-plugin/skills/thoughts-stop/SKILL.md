@@ -1,6 +1,7 @@
 ---
 name: thoughts-stop
 description: 退出思绪模式 — 删除该实例的主动/潜意识 Cron 并解绑项目
+disable-model-invocation: true
 ---
 
 # 退出思绪模式

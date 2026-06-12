@@ -1,5 +1,5 @@
 {
-  "description": "思绪模式 Hook — 人格/画像/记忆注入",
+  "description": "思绪模式 Hook — 人格/画像/记忆注入 + 回合后通知冲洗",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -9,6 +9,18 @@
             "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT/runtime/hooks/inject.mjs\"",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/runtime/hooks/flush-notify.mjs\"",
+            "timeout": 10
           }
         ]
       }
