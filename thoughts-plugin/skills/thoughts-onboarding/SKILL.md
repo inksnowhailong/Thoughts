@@ -1,7 +1,6 @@
 ---
 name: thoughts-onboarding
 description: 思绪实例 onboarding — 心理学式一问一答深度访谈，构建全面用户画像，并据此静默生成最契合该用户的思绪人格
-disable-model-invocation: true
 ---
 
 # 思绪 Onboarding（深度访谈版）
