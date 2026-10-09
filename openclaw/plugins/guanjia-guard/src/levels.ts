@@ -10,7 +10,7 @@
 
 export type Level = "L0" | "L1" | "L2" | "L3";
 
-/** 一条按参数匹配的规则；param 为 "$derivedPaths" 时要求宿主推导出的所有路径都命中 */
+/** 一条按参数匹配的规则；param 为 "$derivedPaths" 时要求宿主推导出的所有路径都命中，为 "$anyDerivedPaths" 时任一路径命中即可 */
 export interface LevelRule {
   tool: string;
   param?: string;
@@ -74,8 +74,9 @@ function ruleMatches(rule: LevelRule, toolName: string, params: Record<string, u
   if (rule.tool !== toolName) return false;
   if (!rule.pattern) return true;
   const re = new RegExp(rule.pattern, "i");
-  if (rule.param === "$derivedPaths") {
-    return !!derivedPaths && derivedPaths.length > 0 && derivedPaths.every((p) => re.test(p));
+  if (rule.param === "$derivedPaths" || rule.param === "$anyDerivedPaths") {
+    if (!derivedPaths || derivedPaths.length === 0) return false;
+    return rule.param === "$derivedPaths" ? derivedPaths.every((p) => re.test(p)) : derivedPaths.some((p) => re.test(p));
   }
   const value = rule.param ? params[rule.param] : JSON.stringify(params);
   return typeof value === "string" && re.test(value);
