@@ -89,4 +89,45 @@ assert.equal(a.level, "L3");
 assert.equal(g.beforeToolCall({ toolName: "ls", params: { path: "C:\\" } }, { sessionKey: "s1" }), undefined);
 assert.equal((g.beforeToolCall({ toolName: "exec", params: off }, { sessionKey: "s1" }) as any).requireApproval.timeoutMs, 120_000);
 
+// ---------- 6. 选择器矛盾、裸名字、大小写/别名 ----------
+const amb = g.beforeToolCall({ toolName: "tool_call", params: { id: "tool_search", name: "exec", command: "shutdown /s /t 0" }, toolCallId: "c_amb" }, { sessionKey: "s1" }) as any;
+assert.ok(amb.requireApproval, "选择器矛盾必须 L3");
+assert.equal(lastAudit().level, "L3");
+const door = g.beforeToolCall({ toolName: "tool_call", params: { id: "open_door" }, toolCallId: "c_door" }, { sessionKey: "s1" }) as any;
+assert.ok(door.requireApproval, "不在分级表里的裸名字必须 L3");
+assert.equal(lastAudit().level, "L3");
+for (const id of ["Read", "bash"]) {
+  const mismatched = g.beforeToolCall({ toolName: "tool_call", params: { id }, toolCallId: `c_${id}` }, { sessionKey: "s1" }) as any;
+  assert.ok(mismatched.requireApproval, `${id} 必须 L3`);
+  assert.equal(lastAudit().level, "L3");
+}
+assert.equal(g.beforeToolCall({ toolName: "tool_call", params: { id: "web_fetch" }, toolCallId: "c_wf" }, { sessionKey: "s1" }), undefined, "分级表里有的裸名字仍按原级别");
+assert.equal(lastAudit().tool, "web_fetch");
+assert.equal(lastAudit().level, "L0");
+
+// ---------- 7. 参数不同不去重；登记 60 秒后失效 ----------
+const notepad = { command: "Start-Process notepad" };
+assert.equal(outer("c_fp", "openclaw:core:exec", notepad), undefined, "外层登记打开记事本");
+const fpMismatch = inner("tool_search_code:c_fp:exec:1", "exec", off, { sessionKey: "s1" });
+assert.ok(fpMismatch.requireApproval, "同一外层 id 下内层传关机参数不能去重");
+assert.notEqual(lastAudit().decision, "allow-inner-dedup");
+assert.equal(outer("c_ttl_ok", "openclaw:core:exec", notepad), undefined);
+const now = Date.now;
+try {
+  Date.now = () => now() + 59_000;
+  assert.equal(inner("tool_search_code:c_ttl_ok:exec:1", "exec", notepad), undefined);
+  assert.equal(lastAudit().decision, "allow-inner-dedup", "59 秒内仍然去重");
+} finally {
+  Date.now = now;
+}
+assert.equal(outer("c_ttl", "openclaw:core:exec", notepad), undefined);
+try {
+  Date.now = () => now() + 61_000;
+  assert.equal(inner("tool_search_code:c_ttl:exec:1", "exec", notepad, { sessionKey: "s1" }), undefined, "过期后按真实工具定级");
+  assert.equal(lastAudit().decision, "allow", "登记 60 秒后失效");
+  assert.notEqual(lastAudit().source, "outer-grant");
+} finally {
+  Date.now = now;
+}
+
 console.log("PASS stage1 tool_call routing / inner dedup / client / timeout");

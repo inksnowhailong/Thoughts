@@ -89,6 +89,9 @@ function ruleMatches(rule: LevelRule, toolName: string, params: Record<string, u
 export function resolveToolCallTarget(params: Record<string, unknown>): ToolCallTarget | undefined {
   const key = SELECTOR_KEYS.find((k) => typeof params[k] === "string" && (params[k] as string).trim() !== "");
   if (!key) return undefined;
+  // 没有嵌套 args 时 OpenClaw 会挑"在目录里查得到"的那个选择器，插件看不到目录，选择器互相矛盾就无法确定真实目标
+  const selectors = new Set(SELECTOR_KEYS.map((k) => params[k]).filter((v): v is string => typeof v === "string" && v.trim() !== "").map((v) => v.trim()));
+  if (selectors.size > 1) return { toolName: "tool_call", source: "ambiguous", params };
   const selector = (params[key] as string).trim();
   const m = CATALOG_ID_RE.exec(selector);
   const rawName = (m ? m[2] : selector).trim().toLowerCase();
@@ -100,7 +103,10 @@ export function resolveToolCallTarget(params: Record<string, unknown>): ToolCall
   // 非对象参数不猜，按无参数定级：exec 无 command 时落到 tools.exec 的 L3，更保守
   else if (nested != null && !isRecord(nested)) input = {};
   else input = { ...dotted, ...Object.fromEntries(Object.entries(params).filter(([k]) => k !== "args" && k !== "input" && k !== key && !isDotted(k))) };
-  return { toolName: TOOL_NAME_ALIASES[rawName] ?? rawName, source: m ? m[1].toLowerCase() : undefined, params: input };
+  const canonical = TOOL_NAME_ALIASES[rawName] ?? rawName;
+  // findEntry 按名字精确匹配、不转小写也不认别名：裸名字和规范名不一致时，插件无法确定 OpenClaw 会匹配到哪个工具
+  const source = m ? m[1].toLowerCase() : selector === canonical ? undefined : "ambiguous";
+  return { toolName: canonical, source, params: input };
 }
 
 /**

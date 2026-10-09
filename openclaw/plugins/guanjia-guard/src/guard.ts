@@ -34,14 +34,15 @@ interface PendingAction {
 /** 外层 tool_call 放行后的登记，内层钩子凭它认出"同一次调用" */
 interface OuterGrant {
   toolName: string;
+  fingerprint: string;
   level: Level;
   sessionKey?: string;
   expiresAt: number;
 }
 
 const PENDING_TTL_MS = 3 * 60_000;
-/** 登记要活过 L3 审批等待（120 秒）加上工具排队时间 */
-const OUTER_GRANT_TTL_MS = 10 * 60_000;
+/** 外层放行或批准后才登记，60 秒内参数一致的内层调用去重一次 */
+const OUTER_GRANT_TTL_MS = 60_000;
 /** L3 带外审批等待时长；OpenClaw 默认 120 秒、上限 600 秒 */
 export const L3_APPROVAL_TIMEOUT_MS = 120_000;
 const CONFIRM_RE = /^(确认|确定|好|好的|可以|行|执行|同意|是的|对|嗯|ok|yes)/i;
@@ -132,13 +133,14 @@ export function createGuard(store: Store, defaults: LevelsFile) {
   }
 
   /** 内层触发时取走对应登记（只能用一次）；对不上或已过期返回 undefined */
-  function takeOuterGrant(callId: unknown, toolName: string): OuterGrant | undefined {
+  function takeOuterGrant(callId: unknown, toolName: string, params: Record<string, unknown>): OuterGrant | undefined {
     const parent = parentToolCallIdOf(callId);
     if (parent === undefined) return undefined;
     const grant = outerGrants.get(parent);
-    if (!grant || grant.toolName !== toolName) return undefined;
+    if (!grant) return undefined;
     outerGrants.delete(parent);
-    return grant.expiresAt > Date.now() ? grant : undefined;
+    const same = grant.toolName === toolName && grant.fingerprint === fingerprintOf(toolName, params);
+    return same && grant.expiresAt > Date.now() ? grant : undefined;
   }
 
   /** before_tool_call 处理器 */
@@ -147,7 +149,7 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     const rawToolName: string = event.toolName;
     const callId: string | undefined = event.toolCallId ?? ctx?.toolCallId;
 
-    const grant = takeOuterGrant(callId, rawToolName);
+    const grant = takeOuterGrant(callId, rawToolName, rawParams);
     if (grant) {
       store.audit({
         kind: "tool",
@@ -168,8 +170,10 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     const params = target?.params ?? rawParams;
     const sessionKey: string | undefined = ctx?.sessionKey;
     const proactive = isProactive(ctx?.runId ?? event.runId, sessionKey);
-    const c: Classification = target?.source === "client"
-      ? { level: "L3", source: "client", note: "client 来源工具不经过插件内层检查，一律带外审批", downgraded: false }
+    // client 工具没有内层钩子；裸名字可能按名字匹配到 client 工具；选择器矛盾时真实目标不确定——三种都只能在外层按最严处理
+    const forceL3 = target?.source === "client" || target?.source === "ambiguous" || (!!target && target.source === undefined && !levels.tools[target.toolName]);
+    const c: Classification = forceL3
+      ? { level: "L3", source: "client", note: "tool_call 目标可能是 client 来源或无法确定，一律带外审批", downgraded: false }
       : classify(levels, { toolName, params, derivedPaths: event.derivedPaths, sessionKey }, proactive);
     const summary = summarize(toolName, params);
     const base = {
@@ -185,7 +189,7 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     };
     /** 只有外层 tool_call 需要登记；直接调用的工具不会再触发内层 */
     const grantIfOuter = () => {
-      if (target) grantOuter(callId, { toolName, level: c.level, sessionKey });
+      if (target) grantOuter(callId, { toolName, fingerprint: fingerprintOf(toolName, params), level: c.level, sessionKey });
     };
 
     if (c.level === "L0" || c.level === "L1") {
