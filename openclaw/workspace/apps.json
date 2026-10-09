@@ -1,0 +1,60 @@
+{
+  "_说明": "管家 L1 启动映射：键=英文短名（exec 传这个），names=口语别名，target=exe 绝对路径或 URL（steam:// 等）。target 为空表示家里没找到，填上即可生效；只有这里列出的程序能被 tools/launch-app.ps1 启动。",
+  "apps": {
+    "lol": {
+      "names": ["LOL", "英雄联盟", "撸啊撸", "联盟"],
+      "target": "E:\\WeGameApps\\英雄联盟\\WeGameLauncher\\launcher.exe",
+      "note": "WeGame 版英雄联盟启动器（桌面快捷方式同款）"
+    },
+    "genshin": {
+      "names": ["原神", "Genshin"],
+      "target": "",
+      "note": "2026-09-30 家里未找到原神安装（无 YuanShen.exe / HoYoPlay）；装好后填 YuanShen.exe 或 HoYoPlay launcher.exe 路径"
+    },
+    "naraka": {
+      "names": ["永劫无间", "永劫", "NARAKA"],
+      "target": "steam://rungameid/1203220",
+      "note": "Steam，已安装于 E:\\SteamLibrary"
+    },
+    "bf6": {
+      "names": ["战地6", "战地风云6", "战地", "Battlefield"],
+      "target": "steam://rungameid/2807960",
+      "note": "Steam，已安装于 E:\\SteamLibrary"
+    },
+    "threekingdoms": {
+      "names": ["全面战争三国", "三国全战", "全战三国"],
+      "target": "steam://rungameid/779340",
+      "note": "桌面有快捷方式，但 Steam 库里未见 appmanifest，可能未安装"
+    },
+    "wwz": {
+      "names": ["僵尸世界大战", "World War Z", "WWZ"],
+      "target": "com.epicgames.launcher://apps/wombat%3Aec6ed5344a904ea78729113d80818d18%3AWombat?action=launch&silent=true",
+      "note": "Epic，已安装于 E:\\WorldWarZ"
+    },
+    "wallpaper": {
+      "names": ["壁纸引擎", "Wallpaper Engine"],
+      "target": "steam://rungameid/431960",
+      "note": "Steam"
+    },
+    "steam": {
+      "names": ["Steam"],
+      "target": "F:\\steam\\steam.exe",
+      "note": ""
+    },
+    "wegame": {
+      "names": ["WeGame"],
+      "target": "F:\\wegame\\wegame.exe",
+      "note": ""
+    },
+    "epic": {
+      "names": ["Epic", "Epic Games"],
+      "target": "E:\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe",
+      "note": ""
+    },
+    "music": {
+      "names": ["网易云", "网易云音乐", "音乐"],
+      "target": "F:\\CloudMusic\\cloudmusic.exe",
+      "note": ""
+    }
+  }
+}

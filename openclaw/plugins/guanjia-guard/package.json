@@ -1,0 +1,8 @@
+{
+  "name": "guanjia-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "管家 S3：行为分级中间层 + 上云脱敏代理 + 主动侧确认流",
+  "openclaw": { "extensions": ["./index.ts"] }
+}

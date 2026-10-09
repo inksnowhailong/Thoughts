@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "socket": { "path": "C:\\Users\\inksn/.openclaw/exec-approvals.sock" },
+  "defaults": {},
+  "agents": {
+    "main": {
+      "security": "allowlist",
+      "ask": "on-miss",
+      "askFallback": "deny",
+      "autoAllowSkills": false,
+      "allowlist": [
+        {
+          "pattern": "powershell",
+          "argPattern": "^-NoProfile -ExecutionPolicy Bypass -File C:\\\\Users\\\\inksn\\\\\\.openclaw\\\\workspace\\\\tools\\\\launch-app\\.ps1 -Name [A-Za-z0-9_-]+$"
+        },
+        {
+          "pattern": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "argPattern": "^-NoProfile -ExecutionPolicy Bypass -File C:\\\\Users\\\\inksn\\\\\\.openclaw\\\\workspace\\\\tools\\\\launch-app\\.ps1 -Name [A-Za-z0-9_-]+$"
+        }
+      ]
+    }
+  }
+}

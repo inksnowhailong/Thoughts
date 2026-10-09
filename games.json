@@ -1,0 +1,6 @@
+{
+  "_comment": "游戏进程白名单（D26）：任一进程在跑即判游戏态。写对局进程而不是常驻客户端，例如 LeagueClient.exe 常驻不能写进来。名字不区分大小写。",
+  "processes": [
+    "League of Legends.exe"
+  ]
+}
