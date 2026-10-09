@@ -153,4 +153,24 @@ const chromeDeny = [
 ];
 for (const c of chromeDeny) assert.ok(!["L0", "L1"].includes(sh(c)), `不应直接放行：${c}`);
 const s5Cases = execWrites.length * 5 + 2 + normalWrites.length * 2 + startL1.length + startDeny.length + chromeL1.length + chromeDeny.length;
-console.log(`PASS stage1 levels (${1 + readActions.length + writeActions.length + allow.length + deny.length + sensitiveRead.length + 1 + s5Cases} cases)`);
+// ---------- 定位脚本：只有精确调用是 L0 ----------
+const getLoc = "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\inksn\\.openclaw\\workspace\\tools\\get-location.ps1";
+const locL0 = [
+  getLoc, `  ${getLoc}  `, getLoc.replace("powershell", "powershell.exe"),
+  getLoc.replace("powershell", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"), getLoc.toLowerCase(),
+];
+for (const c of locL0) assert.equal(sh(c), "L0", `应 L0：${c}`);
+const locDeny = [
+  `${getLoc} -Verbose`, `${getLoc} -Lat 1`, `${getLoc}; Remove-Item x`, `${getLoc}; calc`, `${getLoc} | Out-File x.txt`,
+  `${getLoc} > x.txt`, `${getLoc} && calc`, `${getLoc}\ncalc`, `${getLoc}\`; calc`,
+  getLoc.replace("get-location.ps1", "get-location2.ps1"), getLoc.replace("get-location.ps1", "evil.ps1"),
+  getLoc.replace("tools\\get-location.ps1", "get-location.ps1"), getLoc.replace("-File C:\\Users\\inksn\\.openclaw\\workspace\\", "-File .\\"),
+  getLoc.replace("workspace\\tools", "workspace\\..\\tools"), getLoc.replace("-ExecutionPolicy Bypass", "-ExecutionPolicy Unrestricted"),
+  getLoc.replace("-File", "-Command"), "pwsh -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\inksn\\.openclaw\\workspace\\tools\\get-location.ps1",
+  "powershell -NoProfile -EncodedCommand ZQBjAGgAbwA=",
+];
+for (const c of locDeny) assert.notEqual(sh(c), "L0", `不应 L0：${c}`);
+// cron 会话里精确调用降一档为 L1，仍然直接放行
+assert.equal(classify(levels, { toolName: "exec", params: { command: getLoc } }, true).level, "L1");
+const locCases = locL0.length + locDeny.length + 1;
+console.log(`PASS stage1 levels (${1 + readActions.length + writeActions.length + allow.length + deny.length + sensitiveRead.length + 1 + s5Cases + locCases} cases)`);
