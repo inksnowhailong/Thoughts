@@ -4,6 +4,7 @@
   "proactiveDowngrade": true,
   "tools": {
     "read": "L0",
+    "ls": "L0",
     "memory_search": "L0",
     "memory_get": "L0",
     "web_search": "L0",
@@ -40,11 +41,13 @@
     "terminal": "L3"
   },
   "rules": [
-    { "tool": "exec", "param": "command", "pattern": "(remove-item|\\brm\\b|\\bdel\\b|\\berase\\b|rmdir|\\brd\\b|format(-volume)?\\b|diskpart|shutdown|restart-computer|stop-computer|\\breg\\s+(add|delete)|set-itemproperty|stop-process|taskkill|net\\s+user|icacls|takeown|bcdedit|cipher\\s+/w|invoke-webrequest|\\biwr\\b|\\bcurl\\b|\\bwget\\b)", "level": "L3", "note": "删除/关机/改注册表/杀进程/外连下载" },
+    { "tool": "exec", "param": "command", "pattern": "(remove-item|\\brm\\b|\\bdel\\b|\\berase\\b|rmdir|\\brd\\b|(?<!-)\\bformat(-volume)?(?=\\s|$)|diskpart|shutdown|restart-computer|stop-computer|\\breg\\s+(add|delete)|set-itemproperty|stop-process|taskkill|net\\s+user|icacls|takeown|bcdedit|cipher\\s+/w|invoke-webrequest|\\biwr\\b|\\bcurl\\b|\\bwget\\b)", "level": "L3", "note": "删除/关机/改注册表/杀进程/外连下载（format 只认独立命令，不误伤 Format-Table 和 -Format 参数）" },
     { "tool": "exec", "param": "command", "pattern": "^\\s*(powershell(\\.exe)?|c:\\\\windows\\\\system32\\\\windowspowershell\\\\v1\\.0\\\\powershell\\.exe) -NoProfile -ExecutionPolicy Bypass -File C:\\\\Users\\\\inksn\\\\\\.openclaw\\\\workspace\\\\tools\\\\launch-app\\.ps1 -Name [A-Za-z0-9_-]+\\s*$", "level": "L1", "note": "S2 启动器（开游戏/开程序），与 exec-approvals 白名单同形" },
     { "tool": "exec", "param": "command", "pattern": "^\\s*(start|start-process)\\s+[^;&|`$<>\\r\\n]*$", "level": "L1", "note": "启动程序/游戏/网页（无命令拼接）" },
     { "tool": "exec", "param": "command", "pattern": "^\\s*(cmd(\\.exe)?\\s+/c\\s+)?\"?[^;&|`$<>\\r\\n]*(launch_chrome\\.bat|find_chrome\\.ps1)\"?[^;&|`$<>\\r\\n]*$", "level": "L1", "note": "工作区内既有的开浏览器脚本" },
-    { "tool": "exec", "param": "command", "pattern": "^\\s*(dir|type|get-childitem|get-content|get-process|tasklist|get-date|whoami|hostname|ipconfig|echo)\\b[^;&|`$<>\\r\\n]*$", "level": "L0", "note": "只读查询命令（无拼接无重定向）" },
+    { "tool": "exec", "param": "command", "pattern": "^\\s*(dir|type|get-childitem|get-content|get-process|tasklist|get-date|whoami|hostname|ipconfig|echo)(?=\\s|$)[^;&|`$<>\\r\\n]*$", "level": "L0", "note": "只读查询命令（无拼接无重定向；命令名必须完整，不认 Get-Process-Xxx）" },
+    { "tool": "exec", "param": "command", "pattern": "^\\s*(?:(?:powershell|pwsh)(?:\\.exe)?\\s+(?:(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted))\\s+)*-c(?:ommand)?\\s+\"?)?(?:\\(\\s*(?:get-(?:process|service|childitem|item|itemproperty|content|date|ciminstance|wmiobject|computerinfo|volume|psdrive|netipaddress|netadapter|command|scheduledtask|hotfix|location)|test-path|tasklist|dir|ls|type|hostname|whoami|ipconfig|systeminfo|where\\.exe)(?=[\\s\")]|$)[^;&|`$<>(){}\\[\\]@%\\r\\n]*\\)(?:\\.[a-z_][a-z0-9_]*)*|(?:get-(?:process|service|childitem|item|itemproperty|content|date|ciminstance|wmiobject|computerinfo|volume|psdrive|netipaddress|netadapter|command|scheduledtask|hotfix|location)|test-path|tasklist|dir|ls|type|hostname|whoami|ipconfig|systeminfo|where\\.exe)(?=[\\s\")]|$)[^;&|`$<>(){}\\[\\]@%\\r\\n]*)(?:\\s*\\|\\s*(?:select-object|select|where-object|where|sort-object|sort|format-table|ft|format-list|fl|measure-object|measure|group-object|select-string|out-string|convertto-json|findstr)(?=[\\s\"]|$)[^;&|`$<>(){}\\[\\]@%\\r\\n]*)*\"?\\s*$", "level": "L0", "note": "只读 PowerShell 管道：白名单 Get 类命令接白名单筛选/排序/格式化命令；不许 ; & ` $ < > ( ) { } [ ] @ % 和换行（括号只许整段包住单条只读命令后取属性）" },
+    { "tool": "process", "param": "action", "pattern": "^(list|poll|log)$", "level": "L0", "note": "只看后台进程列表和输出，不改变进程" },
     { "tool": "write", "param": "path", "pattern": "^(\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia[\\\\/]", "level": "L3", "note": "工作区 guanjia/ 下的分级表/家庭事实/审计属于安全配置，模型改它要带外审批" },
     { "tool": "write", "param": "file_path", "pattern": "^(\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia[\\\\/]", "level": "L3", "note": "同上（参数名变体）" },
     { "tool": "edit", "param": "path", "pattern": "^(\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia[\\\\/]", "level": "L3", "note": "同上" },
