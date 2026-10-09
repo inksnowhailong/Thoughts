@@ -4,6 +4,7 @@
 //   fnm env --use-on-cd --shell power-shell | Out-String | Invoke-Expression; fnm use 24 | Out-Null
 //   node F:\coding\guanjia\openclaw\install-s3.mjs            # 第 1 步：装插件 + L3 审批路由 + 两个 cron
 //   node F:\coding\guanjia\openclaw\install-s3.mjs --redact   # 第 2 步：确认代理在监听后，把 siliconflow 指向脱敏代理
+//   node F:\coding\guanjia\openclaw\install-s3.mjs --approvals # 只重设 L3 审批路由（改了 WECHAT_TARGET 后用）
 //   node F:\coding\guanjia\openclaw\install-s3.mjs --rollback # 全部撤销
 //
 // 用 node 调 openclaw.mjs 而不是 PowerShell 直接调：PS 5.1 调原生程序会吞掉 JSON 里的双引号。
@@ -17,7 +18,9 @@ const OPENCLAW = path.join(path.dirname(process.execPath), "node_modules", "open
 const PLUGIN_DIR = "F:\\coding\\guanjia\\openclaw\\plugins\\guanjia-guard";
 const PROXY_PORT = 18797;
 const UPSTREAM_BASE = "https://api.siliconflow.cn/v1";
-const WECHAT_TARGET = { channel: "openclaw-weixin", to: "o9cq804p69hz5bwbyqkbcsvuq67u@im.wechat", accountId: "18f8cd8761c6-im-bot" };
+// 微信 ID 区分大小写，要用网关日志 inbound from= 里的原样写法；sessionKey 里的是 OpenClaw 转过的小写，发不出去
+const WECHAT_TARGET = { channel: "openclaw-weixin", to: "o9cq804p69Hz5bWByqKbCsVuq67U@im.wechat", accountId: "18f8cd8761c6-im-bot" };
+const APPROVALS_PLUGIN = { enabled: true, mode: "targets", agentFilter: ["main"], targets: [WECHAT_TARGET] };
 const JOBS = [
   { name: "guanjia-habit-extract", expr: "0 3 * * *", script: "habit-extract.mjs" },
   { name: "guanjia-weather-check", expr: "30 6 * * *", script: "weather-check.mjs" },
@@ -64,7 +67,7 @@ if (mode === "--install") {
   oc(["plugins", "enable", "guanjia-guard"]);
   oc(["config", "set", "plugins.entries.guanjia-guard.hooks.allowConversationAccess", "true", "--strict-json"]);
   // L3 带外审批：推到微信（手机），Control UI（桌面）本身就是审批面
-  oc(["config", "set", "approvals.plugin", JSON.stringify({ enabled: true, mode: "targets", agentFilter: ["main"], targets: [WECHAT_TARGET] }), "--strict-json"]);
+  oc(["config", "set", "approvals.plugin", JSON.stringify(APPROVALS_PLUGIN), "--strict-json"]);
 
   for (const job of JOBS) {
     if (jobIdsByName(job.name).length) {
@@ -78,6 +81,12 @@ if (mode === "--install") {
   oc(["plugins", "inspect", "guanjia-guard", "--runtime", "--json"], { allowFail: true });
   console.log(`\n脱敏代理端口 ${PROXY_PORT} 监听中：${await portOpen(PROXY_PORT)}（false 的话等网关热加载完或 openclaw gateway restart 后再看）`);
   console.log("下一步：确认上面为 true 后运行 --redact 才会真正把模型流量走脱敏代理。");
+} else if (mode === "--approvals") {
+  const bak = path.join(os.homedir(), ".openclaw", `openclaw.json.bak-approvals-${Date.now()}`);
+  fs.copyFileSync(path.join(os.homedir(), ".openclaw", "openclaw.json"), bak);
+  console.log(`配置已备份到 ${bak}`);
+  oc(["config", "set", "approvals.plugin", JSON.stringify(APPROVALS_PLUGIN), "--strict-json"]);
+  console.log("L3 审批路由已写入，重启网关后按新目标投递。");
 } else if (mode === "--redact") {
   if (!(await portOpen(PROXY_PORT))) {
     console.error(`127.0.0.1:${PROXY_PORT} 没有在监听，拒绝切换（切了会让所有模型调用失败）。`);
