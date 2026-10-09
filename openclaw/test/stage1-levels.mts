@@ -33,6 +33,9 @@ const allow = [
   "Get-Content C:\\Users\\inksn\\notes.txt | Select-String -Pattern 电费",
   "dir C:\\", "echo hello", "ipconfig", "ipconfig /all", "ipconfig /all | findstr IPv4",
   'powershell -NoProfile -Command "Get-Date"',
+  "type C:\\Users\\inksn\\.openclaw\\workspace\\AGENTS.md",
+  "dir C:\\Users",
+  "Get-Date",
 ];
 for (const c of allow) assert.equal(sh(c), "L0", `应放行：${c}`);
 
@@ -72,7 +75,20 @@ const deny = [
   'powershell -NoProfile -Command "Get-Content C:\\w\\f.txt | ft"p" -n"',
   '(type"perf" -qx)',
   "ipconfig /release", "ipconfig /renew | findstr IPv4", "ipconfig /all /release", "ipconfig -flushdns",
+  "type C:\\Users\\inksn\\.openclaw\\openclaw.json",
+  "Get-Content C:\\Users\\inksn\\.openclaw\\openclaw.json | Select-String apiKey",
+  "Get-Item Env:PATH",
+  "Test-Path \\\\evil\\x",
+  "dir C:\\Users\\inksn\\.openclaw\\openclaw-weixin",
+  "type C:\\Users\\inksn\\.openclaw\\openclaw.json.bak-stage1-20261009",
 ];
 for (const c of deny) assert.equal(sh(c), "L3", `应拦住：${c}`);
 
-console.log(`PASS stage1 levels (${1 + readActions.length + writeActions.length + allow.length + deny.length} cases)`);
+const sensitiveRead: Array<[string, "L0" | "L3"]> = [
+  ["C:\\Users\\inksn\\.openclaw\\openclaw.json", "L3"],
+  ["C:\\Users\\inksn\\.openclaw\\workspace\\guanjia\\family-facts.json", "L3"],
+  ["C:\\Users\\inksn\\.openclaw\\workspace\\memory\\timeline.md", "L0"],
+];
+for (const [filePath, level] of sensitiveRead) assert.equal(lv("read", { path: filePath }), level, `read ${filePath}`);
+
+console.log(`PASS stage1 levels (${1 + readActions.length + writeActions.length + allow.length + deny.length + sensitiveRead.length} cases)`);
