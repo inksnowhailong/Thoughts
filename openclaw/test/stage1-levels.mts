@@ -31,6 +31,8 @@ const allow = [
   "Get-Volume | Format-List",
   "Get-Date -Format yyyy-MM-dd",
   "Get-Content C:\\Users\\inksn\\notes.txt | Select-String -Pattern 电费",
+  "dir C:\\", "echo hello", "ipconfig", "ipconfig /all", "ipconfig /all | findstr IPv4",
+  'powershell -NoProfile -Command "Get-Date"',
 ];
 for (const c of allow) assert.equal(sh(c), "L0", `应放行：${c}`);
 
@@ -59,6 +61,17 @@ const deny = [
   "format D: /q",
   "Format-Volume -DriveLetter D",
   "Get-ChildItem C:\\ | Remove-Item -Recurse",
+  "echo (iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('R2V0LURhdGU='))))",
+  "Get-Content (New-Item C:\\Users\\inksn\\x.txt -Force)",
+  "type (Set-Content C:\\Users\\inksn\\.openclaw\\workspace\\guanjia\\levels.json x)",
+  "dir (Copy-Item C:\\Users\\inksn\\.openclaw\\openclaw.json C:\\Users\\Public\\k.txt)",
+  "Get-Date @(1)", "Get-Date [x]",
+  'Get-Content C:\\w\\ftp.txt | ft"p" -n -i',
+  'Get-Date | fl"tmc" unload WdFilter',
+  'type"perf" -cf c.txt -o C:\\Users\\inksn\\.openclaw\\openclaw.json -y',
+  'powershell -NoProfile -Command "Get-Content C:\\w\\f.txt | ft"p" -n"',
+  '(type"perf" -qx)',
+  "ipconfig /release", "ipconfig /renew | findstr IPv4", "ipconfig /all /release", "ipconfig -flushdns",
 ];
 for (const c of deny) assert.equal(sh(c), "L3", `应拦住：${c}`);
 
