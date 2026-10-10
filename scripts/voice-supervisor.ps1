@@ -1,0 +1,126 @@
+﻿# 语音守护进程看门狗（GuanjiaVoice 计划任务 → run-voice.vbs → 本脚本；全程隐藏窗口，跑在主人桌面会话里）
+#
+#   等依赖：网关 127.0.0.1:18789 能连上、TTS /health 返回 200（最多等 DepsTimeoutSec 秒，超时也照样起，托盘会显示出错）
+#   拉起 python -m guanjia.voice，按退出码决定：
+#     0    = 托盘「退出语音」→ 看门狗也退出，不再拉起
+#     3    = 托盘「重启语音」→ 立即重启
+#     其它 = 崩溃 → 退避 5s、10s、20s…最多 60s 后重启（稳定跑满 5 分钟后退避复位）
+#   进程树：本进程绑进 KILL_ON_JOB_CLOSE 的 Job Object，子孙进程自动继承；本进程一退出，python 跟着结束（不按进程名杀）
+#   计划任务被结束（schtasks /End 只杀 wscript）：每 2 秒看一眼父进程，父进程没了就退出
+#   单实例：命名互斥量，第二个看门狗直接退出
+param(
+    [string]$Repo = 'F:\coding\guanjia',
+    [string]$Exe = 'F:\coding\guanjia\.venv\Scripts\python.exe',
+    [string]$ArgLine = '-m guanjia.voice -v --log-file F:/coding/guanjia/tmp/voice.log',
+    [string]$LogPath = 'F:\coding\guanjia\tmp\voice-supervisor.log',
+    [string]$MutexName = 'Local\GuanjiaVoiceSupervisor',
+    [int]$DepsTimeoutSec = 180,
+    [int]$BackoffStartSec = 5,
+    [int]$BackoffMaxSec = 60,
+    [switch]$SkipDeps
+)
+
+$ErrorActionPreference = 'Stop'
+$LogDir = Split-Path -Parent $LogPath
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+function Write-Log([string]$Message) {
+    $line = '{0:yyyy-MM-dd HH:mm:ss} [{1}] {2}' -f (Get-Date), $PID, $Message
+    Add-Content -Path $LogPath -Value $line -Encoding UTF8
+}
+
+$created = $false
+$mutex = New-Object System.Threading.Mutex($true, $MutexName, [ref]$created)
+if (-not $created) {
+    Write-Log 'another supervisor is running, exit'
+    exit 0
+}
+
+# Job Object：powershell 一死，唯一的 Job 句柄随之关闭，系统结束整棵进程树
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class GjJob {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr a, string n);
+    [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr h, int c, IntPtr i, uint l);
+    [DllImport("kernel32.dll")] static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    public static IntPtr Handle;
+    public static bool Bind() {
+        Handle = CreateJobObject(IntPtr.Zero, null);
+        IntPtr buf = Marshal.AllocHGlobal(144);
+        for (int i = 0; i < 144; i++) Marshal.WriteByte(buf, i, 0);
+        Marshal.WriteInt32(buf, 16, 0x2000);
+        bool ok = SetInformationJobObject(Handle, 9, buf, 144);
+        Marshal.FreeHGlobal(buf);
+        return ok && AssignProcessToJobObject(Handle, GetCurrentProcess());
+    }
+}
+"@
+Write-Log ('start job={0} exe={1} args={2}' -f [GjJob]::Bind(), $Exe, $ArgLine)
+Set-Content -Path (Join-Path $LogDir 'voice-supervisor.pid') -Value $PID -Encoding ASCII
+
+$ParentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+$ParentStart = (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue).StartTime
+$env:PYTHONIOENCODING = 'utf-8'
+$env:GUANJIA_TTS_URL = 'http://127.0.0.1:18791/tts'
+$env:GUANJIA_VOICE_MODEL = ''
+Set-Location $Repo
+
+function Test-ParentAlive {
+    $p = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
+    return [bool]($p -and $p.StartTime -eq $ParentStart)  # 比对启动时间，防 PID 被复用
+}
+
+function Test-Port([int]$Port) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try { return ($c.ConnectAsync('127.0.0.1', $Port).Wait(1000) -and $c.Connected) } catch { return $false } finally { $c.Close() }
+}
+
+function Test-Http([string]$Url) {
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($Url)
+        $req.Proxy = $null  # 不走系统代理（Clash）
+        $req.Timeout = 2000
+        $resp = $req.GetResponse()
+        $ok = [int]$resp.StatusCode -eq 200
+        $resp.Close()
+        return $ok
+    } catch { return $false }
+}
+
+function Wait-Deps {
+    if ($SkipDeps) { return }
+    $t0 = Get-Date
+    while ($true) {
+        $gw = Test-Port 18789
+        $tts = Test-Http 'http://127.0.0.1:18791/health'
+        if ($gw -and $tts) { Write-Log 'deps ready (gateway, tts)'; return }
+        $waited = [int]((Get-Date) - $t0).TotalSeconds
+        if ($waited -ge $DepsTimeoutSec) { Write-Log ('deps not ready after {0}s (gateway={1} tts={2}), starting anyway' -f $waited, $gw, $tts); return }
+        if (-not (Test-ParentAlive)) { Write-Log 'parent gone while waiting deps, exit'; exit 0 }
+        Start-Sleep -Seconds 3
+    }
+}
+
+$backoff = $BackoffStartSec
+while ($true) {
+    Wait-Deps
+    $t0 = Get-Date
+    $p = Start-Process -FilePath $Exe -ArgumentList $ArgLine -WorkingDirectory $Repo -NoNewWindow -PassThru -RedirectStandardError (Join-Path $LogDir 'voice-stderr.txt')
+    $null = $p.Handle  # 先取句柄：PowerShell 5.1 不取句柄的话进程退出后 ExitCode 读出来是空
+    Write-Log "voice started pid=$($p.Id)"
+    while (-not $p.WaitForExit(2000)) {
+        if (-not (Test-ParentAlive)) { Write-Log 'parent gone (task ended), exit; job closes and takes python with it'; exit 0 }
+    }
+    $code = $p.ExitCode
+    $ran = [int]((Get-Date) - $t0).TotalSeconds
+    Write-Log "voice exited code=$code after ${ran}s"
+    if ($code -eq 0) { Write-Log 'quit requested (tray), supervisor exit'; break }
+    if ($code -eq 3) { Write-Log 'restart requested (tray)'; $backoff = $BackoffStartSec; continue }
+    if ($ran -ge 300) { $backoff = $BackoffStartSec }
+    Write-Log "restart in ${backoff}s"
+    Start-Sleep -Seconds $backoff
+    $backoff = [Math]::Min($backoff * 2, $BackoffMaxSec)
+}
+$mutex.ReleaseMutex()
