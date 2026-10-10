@@ -6,11 +6,13 @@
   客户端断开连接会让网关取消这一轮（连同等着的审批），所以这里绝不 break、绝不 close 网关流。
 - 每句没念出来的都记进 TurnResult.unspoken（被打断 / TTS 失败），"有字不出声"从此有据可查。
 - /say 的内容（SayItem）不进网关，直接切句合成。
+- on_event(名字, 数据) 给调试面板报进度：first_token / sentence / tts_start / tts_done / tts_fail / enqueued / stream_end。
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
@@ -25,6 +27,14 @@ log = logging.getLogger("guanjia.turns")
 class SayItem:
     """主程序经控制口 /say 让电脑念的一段话（不进网关，直接合成播放）。"""
     text: str
+    uid: str | None = None  # 调试面板的记录 id
+
+
+@dataclass
+class Heard:
+    """识别出、已放行的一句话，带上调试面板的记录 id。"""
+    text: str
+    uid: str | None = None
 
 
 @dataclass
@@ -42,29 +52,45 @@ class TurnRunner:
 
     def __init__(self, open_stream: Callable[[str], Iterator[str]], synth: Callable[[str], tuple[np.ndarray, int]],
                  enqueue: Callable[[int, np.ndarray, int], None], current_gen: Callable[[], int], *,
-                 first_max_chars: int = 20, max_tts_fails: int = 2) -> None:
+                 first_max_chars: int = 20, max_tts_fails: int = 2, first_soft_min: int = 8,
+                 on_event: Callable[[str, dict], None] | None = None) -> None:
         self.open_stream = open_stream  # 文本 -> 网关回复增量（生成器）
         self.synth = synth  # 一句 -> (PCM, 采样率)，失败抛异常
         self.enqueue = enqueue  # (代次, PCM, 采样率) -> 进播放队列
         self.current_gen = current_gen  # 当前播放代次；与本轮代次不同即视为被打断
         self.first_max_chars = first_max_chars
+        self.first_soft_min = first_soft_min  # 首句在逗号处最早第几个字就切：首句越短合成越快
         self.max_tts_fails = max_tts_fails
+        self.on_event = on_event
+
+    def _emit(self, name: str, **data) -> None:
+        if self.on_event is not None:
+            try:
+                self.on_event(name, data)
+            except Exception:  # noqa: BLE001  面板出错不能影响念
+                log.exception("turn on_event error")
 
     def run_reply(self, text: str, gen: int) -> TurnResult:
         """一轮语音对话：读完整个网关流，能念的按句合成入队。"""
         res = TurnResult()
-        splitter = SentenceSplitter(first_hard_max_chars=self.first_max_chars)
+        splitter = SentenceSplitter(first_hard_max_chars=self.first_max_chars, first_soft_min_chars=self.first_soft_min)
         fails = [0]  # 本轮 TTS 连续失败次数（列表便于 _speak 里修改）
+        first = True
         try:
             for piece in self.open_stream(text):  # 不 break、不 close：打断时也要读完
+                if first:
+                    first = False
+                    self._emit("first_token", t=time.time())
                 res.reply += piece
                 for sent in splitter.push(piece):
                     self._speak(sent, gen, res, fails)
             for sent in splitter.flush():
                 self._speak(sent, gen, res, fails)
+            self._emit("stream_end", t=time.time(), ok=True)
         except Exception as e:  # noqa: BLE001  网关连接/报错：这一轮结束，交给上层记错误
             res.error = f"网关：{type(e).__name__}: {e}"
             res.unspoken.extend(s for s in map(speakable, splitter.flush()) if s)  # 断流时缓冲里半句也记账
+            self._emit("stream_end", t=time.time(), ok=False, error=res.error)
         reply = res.reply.strip()
         if reply and reply.upper() != "NO_REPLY" and not (res.spoken or res.unspoken or res.error):
             res.unspoken.append(f"（整轮没有能念的内容）{reply[:60]}")  # 有字但全被过滤：也要在日志里看得见
@@ -84,6 +110,7 @@ class TurnRunner:
         s = speakable(sent)
         if not s:
             return
+        self._emit("sentence", t=time.time(), text=s)
         if gen != self.current_gen():
             res.aborted = True
             res.unspoken.append(s)
@@ -91,6 +118,8 @@ class TurnRunner:
         if fails[0] >= self.max_tts_fails:
             res.unspoken.append(s)
             return
+        t0 = time.time()
+        self._emit("tts_start", t=t0, text=s)
         try:
             pcm, sr = self.synth(s)
         except Exception as e:  # noqa: BLE001
@@ -101,7 +130,9 @@ class TurnRunner:
             fails[0] += 1
             res.error = f"TTS：{type(e).__name__}: {e}"
             log.error("tts error (%d/%d): %s", fails[0], self.max_tts_fails, e)
+            self._emit("tts_fail", t=time.time(), text=s, error=res.error)
             return
+        self._emit("tts_done", t=time.time(), text=s, ms=round((time.time() - t0) * 1000))
         fails[0] = 0
         if gen != self.current_gen():
             res.aborted = True
@@ -114,3 +145,4 @@ class TurnRunner:
             res.error = f"播放：{type(e).__name__}: {e}"
             return
         res.spoken.append(s)
+        self._emit("enqueued", t=time.time(), text=s, n=len(res.spoken))

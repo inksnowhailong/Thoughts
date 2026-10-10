@@ -62,6 +62,7 @@ class Brain:
         self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False,  # 本机网关，不走系统代理
                                     transport=transport)
         self._resp: httpx.Response | None = None  # 进行中的流式响应（仅供旧代码 abort 用，语音侧不调用）
+        self.last_run_id: str | None = None  # 最近一轮的网关 runId（chatcmpl_…），调试面板据此查网关内部耗时
 
     def _headers(self) -> dict[str, str]:
         h = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
@@ -88,6 +89,7 @@ class Brain:
 
     def stream(self, text: str, system: str | None = None) -> Iterator[str]:
         """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（网关已经结束这一轮）。"""
+        self.last_run_id = None
         with self._client.stream("POST", self.url, headers=self._headers(), json=self._body(text, system, stream=True)) as r:
             self._resp = r
             try:
@@ -102,6 +104,8 @@ class Brain:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
                         continue
+                    if self.last_run_id is None and isinstance(chunk.get("id"), str):
+                        self.last_run_id = chunk["id"]
                     err = chunk.get("error")
                     if isinstance(err, dict):
                         raise RuntimeError(f"网关报错：{err.get('message') or err.get('type') or err}")
