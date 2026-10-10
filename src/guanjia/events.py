@@ -43,6 +43,16 @@ def redact(msg: str) -> str:
     return msg
 
 
+def _redact_fields(fields: dict) -> dict:
+    """每句话记录里会推给面板、写进 utterances.jsonl 的文字字段（回复、错误、工具命令行）也过一遍脱敏。"""
+    for k, v in fields.items():
+        if isinstance(v, str):
+            fields[k] = redact(v)
+        elif isinstance(v, list):
+            fields[k] = [redact(x) if isinstance(x, str) else x for x in v]
+    return fields
+
+
 def classify_log(name: str, msg: str) -> str:
     """给一行日志归到面板的模块筛选里。"""
     if name == "httpx":
@@ -140,7 +150,7 @@ class EventHub:
         uid = f"u{datetime.fromtimestamp(now):%H%M%S}-{next(self._ids):03d}"
         rec = {"id": uid, "t0": now, "source": source, "text": "", "score": None, "verdict": "", "reason": "",
                "sent": "", "stages": {}, "timeline": [], "tools": [], "reply": "", "spoken": [], "unspoken": [],
-               "timings": {}, "done": False, **fields}
+               "timings": {}, "done": False, **_redact_fields(fields)}
         with self._lock:
             self._records[uid] = rec
             self._order.append(uid)
@@ -174,7 +184,7 @@ class EventHub:
             timings = fields.pop("timings", None)
             if timings:
                 rec["timings"].update(timings)
-            rec.update(fields)
+            rec.update(_redact_fields(fields))
             snap = self._copy(rec)
         self._emit({"type": "record", "record": snap})
 
@@ -185,7 +195,7 @@ class EventHub:
             rec = self._records.get(uid)
             if rec is None:
                 return
-            rec["tools"].append(tool)
+            rec["tools"].append(_redact_fields(dict(tool)))
             snap = self._copy(rec)
         self._emit({"type": "record", "record": snap})
 

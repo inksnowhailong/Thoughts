@@ -64,6 +64,8 @@ class PanelBackend:
             return True, to_dict(self.store.update(patch))
         except ValueError as e:
             return False, str(e)
+        except OSError as e:  # 文件被别的程序占着（杀毒、编辑器）：设置没变，告诉页面
+            return False, f"写不进设置文件：{e}"
 
     def inject(self, text: str, dry_run: bool) -> dict:
         return self._inject(text, dry_run)

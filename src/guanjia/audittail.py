@@ -1,7 +1,8 @@
 """跟随分级插件的审计文件（workspace\\guanjia\\audit.jsonl），把主线会话的工具调用实时交给面板。
 
 网关的流式回复里没有内部工具的进度，所以从审计里拿：每次工具调用分级插件都写一行
-{"ts", "tool", "level", "decision", "sessionKey", "summary", ...}。启动时从文件末尾开始，只看新写入的行。
+{"ts", "tool", "level", "decision", "sessionKey", "summary", ...}。启动时文件已存在就从末尾开始，只看新写入的行；
+启动时还没有这个文件、后来被换成新文件、或被截短，都从新内容的开头读。
 """
 
 from __future__ import annotations
@@ -24,9 +25,10 @@ DECISION_STATE = {  # 审计 decision → 面板「工具/审批」方框的状�
 }
 
 
-def tool_entry(raw: dict) -> dict | None:
+def tool_entry(raw: object) -> dict | None:
     """一行审计 → 面板用的工具记录；不是工具调用、或不是主线会话的返回 None。内层去重那行也跳过（外层已经记过）。"""
-    if raw.get("kind") != "tool" or raw.get("sessionKey") != MAIN_SESSION_KEY or not raw.get("tool"):
+    if not isinstance(raw, dict) or raw.get("kind") != "tool" or raw.get("sessionKey") != MAIN_SESSION_KEY \
+            or not raw.get("tool"):
         return None
     decision = str(raw.get("decision", ""))
     if decision == "allow-inner-dedup":
@@ -42,25 +44,33 @@ class AuditTail:
         self.on_tool = on_tool
         self.path = path
         self.interval = interval
-        self._pos: int | None = None
+        self._pos: int | None = None  # None = 还没定位过
+        self._ino: int | None = None  # 文件身份：被换成新文件时从头读
         self._buf = b""
         self._stop = threading.Event()
 
     def poll(self) -> int:
-        """读一次新增内容，返回交给回调的条数。第一次调用只定位到文件末尾。"""
+        """读一次新增内容，返回交给回调的条数。第一次调用时文件已存在就只定位到末尾。"""
         try:
-            size = self.path.stat().st_size
+            st = self.path.stat()
         except OSError:
+            if self._pos is None:
+                self._pos = 0  # 启动时还没有文件：以后出现的内容都是新的
             return 0
-        if self._pos is None or size < self._pos:  # 第一次，或文件被截断/轮转
-            self._pos, self._buf = size, b""
+        if self._pos is None:
+            self._pos, self._ino = st.st_size, st.st_ino
             return 0
-        if size == self._pos:
+        if st.st_ino != self._ino or st.st_size < self._pos:  # 换了文件 / 被截短
+            self._pos, self._ino, self._buf = 0, st.st_ino, b""
+        if st.st_size == self._pos:
             return 0
-        with self.path.open("rb") as f:
-            f.seek(self._pos)
-            chunk = f.read(size - self._pos)
-        self._pos = size
+        try:
+            with self.path.open("rb") as f:
+                f.seek(self._pos)
+                chunk = f.read(st.st_size - self._pos)
+        except OSError:
+            return 0  # 被占着：下次再读
+        self._pos += len(chunk)
         lines = (self._buf + chunk).split(b"\n")
         self._buf = lines.pop()  # 最后一段可能是写了一半的行
         n = 0
@@ -83,7 +93,10 @@ class AuditTail:
 
     def _loop(self) -> None:
         while not self._stop.wait(self.interval):
-            self.poll()
+            try:
+                self.poll()
+            except Exception:  # noqa: BLE001  跟随出错不能让面板从此看不到工具调用
+                log.exception("audit tail poll error")
 
     def stop(self) -> None:
         self._stop.set()

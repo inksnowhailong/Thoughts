@@ -71,7 +71,9 @@ check(m.strip("管家，打开记事本") == ("打开记事本", m.find("管家�
 check(m.strip("打开记事本，管家啊")[0] == "打开记事本", "strip trailing wake word and particle")
 check(m.strip("管家管家")[0] == "", "repeated wake word leaves nothing")
 m2 = WakeMatcher(("小乐",))
-check(m2.find("小月，开灯") is not None, "polyphone: 乐 also reads yue")
+check(m2.find("小了，开灯") is not None, "polyphone in heard text: 了 also reads le")
+for miss in ("关节疼怎么办", "光顾一下", "这广告真烦", "关街那边"):
+    check(m.find(miss) is None, f"rare readings of the wake word do not hit: {miss}")
 m3 = WakeMatcher(("贾维斯同学",))
 check(m3.find("假为斯同雪开灯") is not None and m3.find("今天天气") is None, "4+ chars allow one wrong char")
 m4 = WakeMatcher(("Jarvis",))

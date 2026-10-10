@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
@@ -56,6 +57,8 @@ def from_dict(data: dict, base: Settings = Settings()) -> Settings:
         cleaned = tuple(dict.fromkeys(str(w).strip() for w in words if str(w).strip()))
         if not 1 <= len(cleaned) <= 5 or any(len(w) > 8 for w in cleaned):
             raise ValueError("唤醒词要 1～5 个，每个不超过 8 个字")
+        if any(len(re.sub(r"[\s\W_]", "", w)) < 2 for w in cleaned):  # 单字按读音容错几乎句句命中；纯标点永远叫不应
+            raise ValueError("每个唤醒词至少要 2 个字（标点不算）")
         vals["wake_words"] = cleaned
     for key in ("wake_required", "earcon"):
         if key in data:
@@ -111,10 +114,12 @@ class SettingsStore:
         """从文件读；文件不存在用默认值；坏文件保留当前值。返回设置是否变了。"""
         if self.path is None or not self.path.exists():
             return False
+        mtime = None
         try:
             mtime = self.path.stat().st_mtime
             new = from_dict(json.loads(self.path.read_text(encoding="utf-8-sig")), Settings())
         except (OSError, ValueError) as e:
+            self._mtime = mtime  # 记下坏文件的时间：没再改之前不重读，免得每 2 秒打一行警告
             log.warning("voice-settings.json 读不了，保留当前设置：%s", e)
             return False
         self._mtime = mtime
@@ -147,8 +152,12 @@ class SettingsStore:
             if self.path is not None:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 tmp = self.path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(to_dict(new), ensure_ascii=False, indent=2), encoding="utf-8")
-                os.replace(tmp, self.path)
+                try:
+                    tmp.write_text(json.dumps(to_dict(new), ensure_ascii=False, indent=2), encoding="utf-8")
+                    os.replace(tmp, self.path)
+                except OSError:
+                    tmp.unlink(missing_ok=True)
+                    raise
                 self._mtime = self.path.stat().st_mtime
             self.current = new
         log.info("settings updated: %s", to_dict(new))

@@ -1,8 +1,9 @@
 """一句话要不要进主线：碎音过滤 → 声纹门槛 → 唤醒词（免喊窗口内可省）。纯逻辑，可单测。
 
 唤醒词按拼音容错匹配：识别常把"管家"写成"关家/管加/光价"，所以逐字比读音而不是比字形——
-每个字取全部读音（多音字都算），再做常见的模糊音归并（zh/ch/sh→z/c/s、n→l、后鼻音 ng→n），
-唤醒词连续每个字都对上才算命中；4 个字及以上的唤醒词允许错一个字。
+唤醒词按词语取它本来的读音（"管家"= guan jia），识别文字里的字取全部读音（识别写成的多音字都算），
+再做常见的模糊音归并（zh/ch/sh→z/c/s、n→l、后鼻音 ng→n），唤醒词连续每个字都对上才算命中；
+4 个字及以上的唤醒词允许错一个字。唤醒词那一侧不取冷僻读音：家 还读 jie/gu，取了就会让"关节/光顾/广告"误命中。
 
     "关家，打开记事本"  ──命中"管家"──> 送主线"打开记事本"
     "管家"              ──只有唤醒词──> 应答"在呢"并打开免喊窗口
@@ -11,6 +12,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -20,7 +22,7 @@ from pypinyin import Style, pinyin
 FILLER_CHARS = set("嗯啊哦呃唉哎诶欸喂嘿哈呀吧呢嘛么哼咦噢哇呵啦咯嗨额")  # 纯语气词片段不当指令
 SHORT_ANSWERS = set("好行对要是不停")  # 免喊窗口里允许的单字回答（"要我打开吗？""好"）
 _PUNCT_RE = re.compile(r"[\s\W_]+")  # 中文标点也算 \W；汉字、字母、数字是 \w
-_EDGE_RE = re.compile(r"^[\s\W_啊呀呢吧嘛哈]+|[\s\W_啊呀呢吧嘛哈]+$")  # 去掉唤醒词后两头残留的标点和语气词
+_WORD_RE = re.compile(r"[^\s\W_]+")  # 被标点、空白隔开的一段正文
 
 
 def _is_han(ch: str) -> bool:
@@ -47,6 +49,19 @@ def _readings(ch: str) -> frozenset[str]:
     return frozenset(_fuzzy(p) for p in pinyin(ch, style=Style.NORMAL, heteronym=True)[0])
 
 
+def _word_readings(word: str) -> list[frozenset[str]]:
+    """唤醒词每个字的读音：按词语取本来的读音（pypinyin 词库会处理"小乐/长江"这类多音字）。"""
+    chars = "".join(ch for ch in word if not _PUNCT_RE.fullmatch(ch))
+    pys = pinyin(chars, style=Style.NORMAL, errors=lambda s: list(s))  # 非汉字逐个成项，和 chars 一一对齐
+    return [frozenset({_fuzzy(py[0]) if _is_han(ch) else ch.lower()}) for ch, py in zip(chars, pys)]
+
+
+def _trim_edges(text: str) -> str:
+    """去掉两头的标点、空白和单独成段的语气词（「管家呀，开灯」去掉「呀」；「哈尔滨」「附近的酒吧」不动）。"""
+    runs = [m for m in _WORD_RE.finditer(text) if not all(ch in FILLER_CHARS for ch in m.group())]
+    return text[runs[0].start():runs[-1].end()] if runs else ""
+
+
 def core_text(text: str) -> str:
     """去掉标点和空白后的正文。"""
     return _PUNCT_RE.sub("", text)
@@ -71,7 +86,7 @@ class WakeHit:
 class WakeMatcher:
     def __init__(self, words: tuple[str, ...] | list[str]) -> None:
         self.words = tuple(words)
-        self._patterns = [(w, [_readings(ch) for ch in w if not ch.isspace()]) for w in self.words]
+        self._patterns = [(w, pat) for w in self.words if (pat := _word_readings(w))]
 
     def find(self, text: str) -> WakeHit | None:
         """在识别文字里找唤醒词，返回最靠前的一个；找不到返回 None。"""
@@ -91,15 +106,15 @@ class WakeMatcher:
         return best
 
     def strip(self, text: str) -> tuple[str, WakeHit | None]:
-        """去掉所有唤醒词（以及两头残留的标点、语气词），返回 (剩下的话, 第一个命中)。"""
-        first = None
-        while True:
-            hit = self.find(text)
-            if hit is None:
-                break
-            first = first or hit
-            text = (text[:hit.start] + " " + text[hit.end:]).strip()
-        return _EDGE_RE.sub("", text).strip(), first
+        """去掉第一个唤醒词，以及紧挨在两头的重复唤醒词（「管家管家」）；话中间再出现的同音词是内容，不动。
+        返回 (剩下的话, 第一个命中)。"""
+        first = self.find(text)
+        if first is None:
+            return _trim_edges(text), None
+        rest = _trim_edges(text[:first.start] + " " + text[first.end:])
+        while (hit := self.find(rest)) is not None and (not _trim_edges(rest[:hit.start]) or not _trim_edges(rest[hit.end:])):
+            rest = _trim_edges(rest[:hit.start] + " " + rest[hit.end:])
+        return rest, first
 
 
 @dataclass(frozen=True)
@@ -112,12 +127,17 @@ class GateDecision:
 
 
 def decide(text: str, score: float | None, *, threshold: float, matcher: WakeMatcher, wake_required: bool,
-           min_chars: int, in_window: bool) -> GateDecision:
-    """一句识别结果的去留。score=None 表示不过声纹（测试注入、没有声纹库）。"""
-    if is_filler(text, min_chars, in_window):
+           min_chars: int, in_window: bool, allow_short_answer: bool = True) -> GateDecision:
+    """一句识别结果的去留。score=None 表示不过声纹（测试注入、没有声纹库）。
+    含唤醒词的话不按碎音丢：最少字数调到 3 以上时，只喊「管家」也要能应答。
+    allow_short_answer=False：它还在说的时候，"好/对/是"多半是附和，不当成新的一句。"""
+    if is_filler(text, min_chars, in_window and allow_short_answer) and matcher.find(text) is None:
         return GateDecision("ignored", "filler", f"碎音/语气词「{core_text(text) or text}」", "")
     if score is not None and score < threshold:
-        return GateDecision("rejected", "speaker", f"声纹 {score:.2f} < {threshold:.2f}", "")
+        shown = f"{score:.2f}"
+        if shown == f"{threshold:.2f}":  # 0.447 四舍五入会显示成"0.45 < 0.45"，改成截到三位
+            shown = f"{math.floor(score * 1000) / 1000:.3f}"
+        return GateDecision("rejected", "speaker", f"声纹 {shown} < {threshold:.2f}", "")
     rest, hit = matcher.strip(text)
     if hit is None:
         if wake_required and not in_window:

@@ -181,6 +181,7 @@ class VoiceDaemon:
     store = SettingsStore()
     wake = WakeMatcher(Settings().wake_words)
     _turn_uid = None
+    _turn_is_say = False  # 这一轮是 /say（主程序让念）：念的时候、念完都不算免喊窗口
     _turn_gen = -1
     _turn_marks = None
     _followup_until = 0.0
@@ -376,7 +377,7 @@ class VoiceDaemon:
         in_window = self._in_followup()
         threshold = 0.0 if self.gate_mode == "log" else s.spk_threshold
         d = decide(text, score, threshold=threshold, matcher=self.wake, wake_required=s.wake_required,
-                   min_chars=s.min_chars, in_window=in_window)
+                   min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING")
         uid = self.hub.new_utterance(source, text=text, stream_text=stream_text,
                                      score=None if score is None else round(score, 3), in_window=in_window,
                                      timings={k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms)) if v is not None})
@@ -464,8 +465,8 @@ class VoiceDaemon:
         threading.Thread(target=work, name="ack-synth", daemon=True).start()
 
     def _in_followup(self) -> bool:
-        """免喊窗口：它回完最后一句后 follow_up_sec 秒内，或者一轮正在进行时。"""
-        return time.monotonic() < self._followup_until or self.state == "SPEAKING"
+        """免喊窗口：它回完最后一句后 follow_up_sec 秒内，或者一轮对话正在进行时（/say 念的不算对话）。"""
+        return time.monotonic() < self._followup_until or (self.state == "SPEAKING" and not self._turn_is_say)
 
     def _open_followup(self) -> None:
         self._followup_until = time.monotonic() + self.store.current.follow_up_sec
@@ -535,6 +536,7 @@ class VoiceDaemon:
     def _handle_item(self, item: str | Heard | SayItem) -> None:
         """一轮：放行的话进主线会话 / /say 的话直接念；等本轮播完再回到监听，然后打开免喊窗口。"""
         uid = item.uid if isinstance(item, (Heard, SayItem)) else None
+        self._turn_is_say = isinstance(item, SayItem)
         gen = self._begin_speaking()
         self._turn_first = True
         self._turn_t0 = time.monotonic()
@@ -573,7 +575,7 @@ class VoiceDaemon:
                 threading.Thread(target=self._fill_gateway_phases, args=(uid, run_id, dict(marks)), name="runtrace",
                                  daemon=True).start()
         finally:
-            self._turn_uid, self._turn_marks = None, None
+            self._turn_uid, self._turn_marks, self._turn_is_say = None, None, False
             with self._lock:
                 if gen == self._gen:
                     self.state = "LISTENING"
@@ -674,7 +676,8 @@ class VoiceDaemon:
         log.info("stop speaking (%s)", reason)
         if reason == "barge-in":
             self.hub.stage(self._turn_uid, "barge", "done", "被主人打断")
-            self._open_followup()
+            if not self._turn_is_say:
+                self._open_followup()
 
     # ---------- 控制口 / 面板 / 托盘 ----------
     def say(self, text: str) -> tuple[bool, str]:
@@ -865,7 +868,8 @@ class VoiceDaemon:
                     elif not paused and not s.active:
                         self._resume_audio(s)
                     dead = [t.name for t in threads if not t.is_alive()]
-                    if dead or (not s.active and not paused):
+                    # 托盘/面板要求退出时工作线程会跟着结束，这不是崩溃：误判成崩溃会回退出码 1，看门狗又把它拉起来
+                    if not self._stop_evt.is_set() and (dead or (not s.active and not paused)):
                         log.error("worker died: threads=%s stream_active=%s，退出等待看门狗拉起", dead, s.active)
                         failed = True
                         break

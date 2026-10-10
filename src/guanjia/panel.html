@@ -302,10 +302,12 @@ function fillSettings() {
   $("s_follow").value = s.follow_up_sec; $("s_spk").value = s.spk_threshold; $("s_barge").value = s.barge_rms_min;
   $("s_min").value = s.min_chars; $("s_earcon").checked = !!s.earcon; $("s_ack").value = s.ack_text || "";
 }
+// 空着的数字框发 null（后端拒绝），不能让 Number("") 变成 0——声纹门槛 0 等于关掉声纹
+const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
 $("btnSave").addEventListener("click", async () => {
-  const patch = { wake_words: $("s_wake").value, wake_required: $("s_req").checked, follow_up_sec: Number($("s_follow").value),
-                  spk_threshold: Number($("s_spk").value), barge_rms_min: Number($("s_barge").value),
-                  min_chars: Number($("s_min").value), earcon: $("s_earcon").checked, ack_text: $("s_ack").value };
+  const patch = { wake_words: $("s_wake").value, wake_required: $("s_req").checked, follow_up_sec: num("s_follow"),
+                  spk_threshold: num("s_spk"), barge_rms_min: num("s_barge"),
+                  min_chars: num("s_min"), earcon: $("s_earcon").checked, ack_text: $("s_ack").value };
   const r = await api("/api/settings", patch);
   $("msg").textContent = r.ok ? "已保存，立即生效" : "没保存：" + (r.data.reason || "未知错误");
   if (r.ok) { S.settings = r.data.settings; fillSettings(); }

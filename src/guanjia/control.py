@@ -31,6 +31,7 @@ CONTROL_PORT = int(os.environ.get("GUANJIA_CONTROL_PORT", "18795"))
 SAY_MAX_CHARS = 300
 SLEEP_STATES = ("awake", "sleeping", "consolidating")
 SSE_HEARTBEAT_SEC = 15.0
+SSE_WRITE_TIMEOUT_SEC = 30.0  # 页面冻住（后台标签、休眠）不读时，写阻塞这么久就断开，让出名额
 SSE_MAX_CLIENTS = 5
 _MAX_BODY = 8192
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -264,6 +265,7 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
                 sse_clients[0] += 1
             q = panel.subscribe()
             try:
+                self.connection.settimeout(SSE_WRITE_TIMEOUT_SEC)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")

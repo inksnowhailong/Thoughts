@@ -1,11 +1,10 @@
 ﻿# P2.1 面板快捷方式脚本用例：open-panel.ps1 的两条路（语音在跑 → 开网页；没跑 → 先拉起任务），install-panel-shortcut.ps1 生成快捷方式。
 # 只用 -DryRun 和临时桌面目录：不启动任务、不开浏览器、不碰真实桌面。
 # 运行：powershell -NoProfile -ExecutionPolicy Bypass -File F:\coding\guanjia\tests\test_p21_panel_scripts.ps1
-param([string]$Repo = 'F:\coding\guanjia')
+param([string]$Repo = 'F:\coding\guanjia', [string]$Py = (Join-Path $Repo '.venv\Scripts\python.exe'))
 $ErrorActionPreference = 'Stop'
 $Open = Join-Path $Repo 'scripts\open-panel.ps1'
 $Install = Join-Path $Repo 'scripts\install-panel-shortcut.ps1'
-$Py = Join-Path $Repo '.venv\Scripts\python.exe'
 
 function Check([bool]$Cond, [string]$What) {
     if ($Cond) { "PASS $What" } else { "FAIL $What"; exit 1 }
@@ -30,6 +29,12 @@ Check (Test-Path $lnk) 'shortcut created on the given desktop'
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
 Check ($s.TargetPath -match 'wscript\.exe$' -and $s.Arguments -match 'open-panel\.vbs') 'shortcut runs open-panel.vbs via wscript'
 Check (Test-Path (Join-Path $Repo 'data\guanjia.ico')) 'icon generated in data\'
+$s.Arguments = '//B C:\owner\own-choice.vbs'
+$s.Save()
+$before = (Get-Item $lnk).LastWriteTimeUtc
+$out = & powershell -NoProfile -ExecutionPolicy Bypass -File $Install -Desktop $desk -Repo $Repo -Python $Py
+$again = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+Check (($out -join ' ') -match 'left unchanged' -and $again.Arguments -eq '//B C:\owner\own-choice.vbs' -and (Get-Item $lnk).LastWriteTimeUtc -eq $before) 'existing shortcut is never overwritten'
 Remove-Item -Recurse -Force $desk
 
 'ALL PASS test_p21_panel_scripts'
