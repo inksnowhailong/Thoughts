@@ -38,6 +38,7 @@ class Tray:
         self.on_exit = on_exit
         self._icon = None
         self._shown_key = ""
+        self._lock = threading.Lock()
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="tray", daemon=True).start()
@@ -66,15 +67,16 @@ class Tray:
         """状态变化后调用：换图标颜色、提示文字，刷新菜单勾选。"""
         if not self._icon:
             return
-        v = self.view()
-        try:
-            if v.key != self._shown_key:
-                self._icon.icon = make_icon_image(v.color)
-                self._shown_key = v.key
-            self._icon.title = v.tooltip
-            self._icon.update_menu()
-        except Exception:  # noqa: BLE001
-            log.exception("tray refresh failed")
+        with self._lock:
+            v = self.view()
+            try:
+                if v.key != self._shown_key:
+                    self._icon.icon = make_icon_image(v.color)
+                    self._shown_key = v.key
+                self._icon.title = v.tooltip
+                self._icon.update_menu()
+            except Exception:  # noqa: BLE001
+                log.exception("tray refresh failed")
 
     def stop(self) -> None:
         if self._icon:

@@ -8,7 +8,8 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { createSpeakTool, stripVoiceTag, DEFAULT_SPEAK_URL, SPEAK_MAX_CHARS } from "../plugins/guanjia-guard/src/speak";
 import { classify, type LevelsFile } from "../plugins/guanjia-guard/src/levels";
-import { createGuard } from "../plugins/guanjia-guard/src/guard";
+import { createGuard, isConfirmation } from "../plugins/guanjia-guard/src/guard";
+import { onUserTurn as habitOnUserTurn } from "../plugins/guanjia-guard/src/habits";
 import { createStore } from "../plugins/guanjia-guard/src/store";
 
 const pluginDir = path.resolve(import.meta.dirname, "../plugins/guanjia-guard");
@@ -107,4 +108,34 @@ assert.equal((g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "
 assert.ok(g.onUserTurn("s9", "[语音 2026-10-10 18:05 周六] 确认"), "带语音标记的确认也算确认");
 assert.equal(g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s9" }), undefined);
 
-console.log("PASS p2 speak tool / levels / voice tag");
+// ---------- 7. 语音里像确认、其实不是的话 ----------
+const V = "[语音 2026-10-10 18:05 周六] ";
+for (const yes of ["确认", "确定", "好", "好的", "好的，删吧", "好吧", "可以", "可以的", "行", "对", "是的", "OK", "yes", "嗯，好的", "嗯好", "确认删除", "执行吧", "同意"]) {
+  assert.ok(isConfirmation(V + yes), `应算确认：${yes}`);
+}
+for (const no of ["好了好了", "好了", "嗯", "嗯，不要了", "好，不要了", "可以了，停吧", "行了，别弄了", "好吃吗", "对不对", "算了", "等等", "不", "停", "确认一下是哪个文件", "可以吗"]) {
+  assert.ok(!isConfirmation(V + no), `不应算确认：${no}`);
+}
+assert.equal((g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s10" }) as any).block, true);
+assert.equal(g.onUserTurn("s10", V + "好了好了"), undefined, "叫停的话不放行 L2");
+assert.equal((g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s10" }) as any).block, true, "叫停后同参数重试仍要确认");
+
+// ---------- 8. 习惯草案：新问题不能被当成"答应" ----------
+const hStore = createStore(fs.mkdtempSync(path.join(os.tmpdir(), "gj-p2h-")), path.join(pluginDir, "defaults"));
+const hNow = new Date(); hNow.setHours(12, 0, 0, 0);
+const hAdds: any[] = [];
+const hAdd = async (input: any) => { hAdds.push(input); return { id: "job-h" }; };
+for (const [i, text] of ["要不要带伞", "嗯，今天天气怎么样", "好了好了", "对不对"].entries()) {
+  hStore.writeJson("habit-drafts.json", { drafts: [{ key: `h${i}`, weekday: 1, time: "08:00", text: "吃药", weeks: 3, status: "asked", askedAt: hNow.toISOString() }], rejected: [] });
+  await habitOnUserTurn(hStore, text, hAdd, "Asia/Shanghai", new Date(hNow.getTime() + 1000));
+}
+assert.equal(hAdds.length, 0, "新问题/叫停不建周期提醒");
+hStore.writeJson("habit-drafts.json", { drafts: [{ key: "hy", weekday: 1, time: "08:00", text: "吃药", weeks: 3, status: "asked", askedAt: hNow.toISOString() }], rejected: [] });
+assert.match((await habitOnUserTurn(hStore, "好的", hAdd, "Asia/Shanghai", new Date(hNow.getTime() + 1000)))!, /已创建/);
+
+// ---------- 9. 守护进程排满时的提示 ----------
+r = await (createSpeakTool({ fetchImpl: fakeFetch(409, { ok: false, reason: "busy" }) }) as any).execute("c9", { text: "x" });
+assert.equal(r.details.reason, "busy");
+assert.match(r.content[0].text, /排着/);
+
+console.log("PASS p2 speak tool / levels / voice tag / confirm phrases / habit answers");

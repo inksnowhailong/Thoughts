@@ -4,7 +4,7 @@
     POST /say {"text": "..."}   -> 让电脑用管家音色念一句（走守护进程自己的播放队列，打断照样生效）
     POST /sleep-state {"state": "awake|sleeping|consolidating"} -> P4 休眠状态位（托盘显示）
 
-防护：只绑 127.0.0.1、只接受本机来源；带 Origin 头（浏览器网页发起）一律 403；POST 必须是 application/json
+防护：只绑 127.0.0.1、只接受本机来源；Host 必须是 127.0.0.1/localhost（挡 DNS 重绑定）；带 Origin 头（浏览器网页发起）一律 403；POST 必须是 application/json
 （浏览器跨站发 JSON 要先过 CORS 预检，这里不回 CORS 头，网页就发不进来）；独占端口，第二个实例绑不上。
 """
 
@@ -21,6 +21,7 @@ CONTROL_PORT = int(os.environ.get("GUANJIA_CONTROL_PORT", "18795"))
 SAY_MAX_CHARS = 300
 SLEEP_STATES = ("awake", "sleeping", "consolidating")
 _MAX_BODY = 8192
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 class ControlAPI(Protocol):
@@ -60,6 +61,10 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 self._send(403, {"ok": False, "reason": "not_local"})
                 return False
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            if host not in _LOCAL_HOSTS:  # DNS 重绑定：网页同源 GET 不带 Origin，但 Host 是攻击者的域名
+                self._send(403, {"ok": False, "reason": "bad_host"})
+                return False
             if self.headers.get("Origin"):
                 self._send(403, {"ok": False, "reason": "browser_origin"})
                 return False
@@ -69,7 +74,13 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
             if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
                 self._send(415, {"ok": False, "reason": "need_json"})
                 return None
-            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if n < 0:
+                self._send(400, {"ok": False, "reason": "bad_length"})
+                return None
             if n > _MAX_BODY:
                 self._send(413, {"ok": False, "reason": "too_large"})
                 return None

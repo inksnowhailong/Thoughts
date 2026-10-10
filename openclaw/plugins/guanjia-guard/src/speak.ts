@@ -34,6 +34,7 @@ const REASON_CN: Record<string, string> = {
   gaming: "主人在打游戏，电脑暂时不出声",
   empty: "要念的内容是空的",
   too_long: `一次最多念 ${SPEAK_MAX_CHARS} 字`,
+  busy: "电脑这会儿排着好几段要念，等念完再说",
 };
 
 function textResult(text: string, details: Record<string, unknown>) {

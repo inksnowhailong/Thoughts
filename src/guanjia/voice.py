@@ -89,6 +89,7 @@ BARGE_LOG_EVERY_MS = 1000  # 出声期间每隔这么久打一行 DEBUG barge-mo
 
 # ---- 提示音 / 健康检查 / 退出码 ----
 EARCON_ENABLED = os.environ.get("GUANJIA_EARCON", "1") != "0"  # 说完话立即放提示音
+SAY_MAX_PENDING = 3      # /say 最多排队这么多段，多了回 busy（模型循环调用 speak、微信刷屏时不至于念上几分钟）
 HEALTH_EVERY_SEC = 10.0  # 网关、TTS 在线检查周期（托盘用）
 GATEWAY_PORT = 18789
 EXIT_QUIT, EXIT_CRASH, EXIT_RESTART = 0, 1, 3  # 与 scripts/voice-supervisor.ps1 约定
@@ -250,6 +251,7 @@ class VoiceDaemon:
             filled += k
         if filled:
             self._played_gen = cur
+        voiced = filled > 0 and float(np.abs(out[:filled]).max()) > 1e-4  # 150ms 静音前导不算出声，打断底噪从真声开始学
         # 叠加保活噪声（循环取预生成缓冲）：输出流从不"纯零"，音响不会因静默进入待机
         n0 = self._noise_pos
         idx = (np.arange(n0, n0 + frames)) % len(self._noise)
@@ -257,7 +259,7 @@ class VoiceDaemon:
         self._noise_pos = (n0 + frames) % len(self._noise)
         outdata[:, 0] = out
         try:
-            self.in_q.put_nowait(Frames(mic=indata[:, 0].copy(), ref=out, playing=filled > 0))
+            self.in_q.put_nowait(Frames(mic=indata[:, 0].copy(), ref=out, playing=voiced))
         except queue.Full:
             self._dropped += 1
 
@@ -466,6 +468,8 @@ class VoiceDaemon:
             return False, "muted"
         if self._paused.is_set():
             return False, "gaming"
+        if sum(isinstance(x, SayItem) for x in list(self.text_q.queue)) >= SAY_MAX_PENDING:
+            return False, "busy"
         self.text_q.put(SayItem(text))
         log.info("say queued: %s", text)
         return True, "queued"

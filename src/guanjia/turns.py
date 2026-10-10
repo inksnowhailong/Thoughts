@@ -64,6 +64,10 @@ class TurnRunner:
                 self._speak(sent, gen, res, fails)
         except Exception as e:  # noqa: BLE001  网关连接/报错：这一轮结束，交给上层记错误
             res.error = f"网关：{type(e).__name__}: {e}"
+            res.unspoken.extend(s for s in map(speakable, splitter.flush()) if s)  # 断流时缓冲里半句也记账
+        reply = res.reply.strip()
+        if reply and reply.upper() != "NO_REPLY" and not (res.spoken or res.unspoken or res.error):
+            res.unspoken.append(f"（整轮没有能念的内容）{reply[:60]}")  # 有字但全被过滤：也要在日志里看得见
         return res
 
     def run_say(self, text: str, gen: int) -> TurnResult:
