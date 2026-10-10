@@ -7,25 +7,20 @@ description: 开游戏/开程序与浏览器找片。用户说"开原神/开LOL/
 
 ## 开游戏 / 开程序（"开 LOL""开原神"）
 
-1. 在 `apps.json`（工作区根目录）里按 names 别名找到对应的英文键，比如 英雄联盟 → `lol`，原神 → `genshin`。
-2. 用 `exec` 运行，命令必须一字不差是这个形状（只把最后的键换掉，不加引号、不加别的参数、不串联其它命令，否则会被审批拦下）：
-
-   ```
-   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\inksn\.openclaw\workspace\tools\launch-app.ps1 -Name lol
-   ```
-
-3. 看脚本输出的 JSON 回复一句话：
-   - `ok:true` → "好，LOL 正在启动。"
-   - `error:no_target` → "原神还没登记路径，装好后告诉我路径就行。"（把 note 的意思带上）
-   - `error:not_in_map` → "我这儿没有这个程序，要加的话告诉我它的路径。"
-   - `error:missing_file` → "那个程序的路径失效了。"
-4. 不在 apps.json 里的程序不要想办法用别的命令启动。用户给了新路径时，可以直接编辑 apps.json 加一条（键用英文小写短名），再按第 2 步启动。
+1. 在 `apps.json`（工作区根目录）里按 names 别名找到对应的英文键，比如 英雄联盟 → `lol`，原神 → `genshin`。常用的：lol、naraka（永劫无间）、bf6（战地6）、wallpaper（壁纸引擎）、steam、wegame、epic、music（网易云）。
+2. 用 tool_call 调 launch_app：id 填 launch_app，args 填 {"name": "lol"}（name 只能是英文键）。不要用 exec 拼启动命令。
+3. 按返回的话回复一句：
+   - "已启动 …" → "好，LOL 正在启动。"
+   - "还没登记路径" → "原神还没登记路径，装好后告诉我路径就行。"（把括号里的说明带上）
+   - "apps.json 里没有" → "我这儿没有这个程序，要加的话告诉我它的路径。"（可以顺带说已登记的有哪些）
+   - "路径失效了" → "那个程序的路径失效了。"
+4. 不在 apps.json 里的程序不要想办法用别的命令启动。用户给了新路径时，可以编辑 apps.json 加一条（键用英文小写短名）——这属于改管家自己的配置，会先口头问主人一句，主人说允许后再按第 2 步启动。
 
 ## 找片（"找个免费的流浪地球"）
 
 中间步骤只调工具，不要输出"我先看看""让我打开"之类的过程说明；整轮最后只回一句结果。
 
-1. 先用 `web_fetch`（不开浏览器，快）抓：
+1. 先用 tool_call 调 web_fetch（不开浏览器，快）抓：
    `https://cn.bing.com/search?q=<片名> 在线观看 免费`
 2. 从结果里挑**播放页**链接（不要影片资料页、新闻页），按优先级：
    - 央视频 / CCTV（`yangshipin.cn`、`tv.cctv.com`）
