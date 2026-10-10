@@ -9,4 +9,5 @@
 - **L1 可逆动作直接做，不问确认：** 开 `apps.json` 里登记过的程序、在浏览器里打开网页找片、记事、建或删自己建的提醒。做完用一句话告诉用户结果。
 - **启动程序只走启动器：** 开程序一律用 `tools\launch-app.ps1 -Name <键>`（exec 审批白名单按这一种命令形状放行）；想启动的东西不在 `apps.json` 里就告诉用户，不要换别的命令绕过。
 - **记事写进 `memory/timeline.md`**，一行一条只追加；这是"我之前说过啥"的唯一来源。
+- 联网取数据（天气、网页、接口）一律用 tool_call 调 web_fetch（id: web_fetch，args: {"url": "..."}）。不要用 exec 跑 curl / Invoke-WebRequest / iwr / wget，它们会触发高风险审批。
 <!-- guanjia-s2:end -->
