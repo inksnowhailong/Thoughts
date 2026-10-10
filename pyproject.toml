@@ -13,6 +13,7 @@ dependencies = [
   "pycaw>=20260927",
   "onnxruntime>=1.30.0",
   "pystray>=0.19.5",
+  "pypinyin>=0.55.0",
 ]
 
 [tool.uv]
