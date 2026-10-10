@@ -1,29 +1,52 @@
 /**
- * 行为分级判定（D6 / D8）。纯函数，不做 IO，方便单独测试。
+ * 行为分级判定（D6 / D8，确认策略 v2）。纯函数，不做 IO，方便单独测试。
  *
  *   overrides(未过期) → rules(首个命中) → tools(按名) → defaultLevel
  *                                   │
- *                        主动发起(cron/心跳) 再降一档
+ *                        主动发起(cron/心跳) 再降一档；v2 的分级表写了 proactiveDowngrade: false，不降
  *
+ * L0/L1 直接做；L2 先口头问一句；L3 拒绝（只给无法确定真实目标的 tool_call）。
  * 结构化工具搜索的外层 tool_call{id,args} 先用 resolveToolCallTarget 还原成真实工具，再交给 classify。
  */
 
 export type Level = "L0" | "L1" | "L2" | "L3";
 
-/** 一条按参数匹配的规则；param 为 "$derivedPaths" 时要求宿主推导出的所有路径都命中，为 "$anyDerivedPaths" 时任一路径命中即可 */
-export interface LevelRule {
-  tool: string;
+/** 先问的类别：决定提问措辞，以及能不能「以后都允许」 */
+export type AskCategory = "delete" | "system" | "power" | "kill" | "download-run" | "opaque" | "script" | "secret" | "self-config";
+
+/**
+ * 一个匹配条件。param 的特殊取值：
+ *   $path            path 或 file_path，任一命中即可
+ *   $text            参数里全部字符串值（含嵌套）用换行拼起来
+ *   $derivedPaths    宿主推导出的所有路径都命中
+ *   $anyDerivedPaths 宿主推导出的路径任一命中
+ *   不写             匹配整个参数的 JSON
+ */
+export interface Condition {
   param?: string;
   pattern?: string;
+}
+
+export interface LevelRule extends Condition {
+  tool: string;
+  /** 额外条件，必须全部命中 */
+  also?: Condition[];
   level: Level;
+  category?: AskCategory;
+  /** false 表示这类每次都问，不能「以后都允许」 */
+  remember?: boolean;
   note?: string;
 }
 
-/** D8 临时提权/降权：必须有有效期，可限定作用域（global 或 session:<key>） */
+/** D8 放行/提权：必须有有效期，可限定作用域（global 或 session:<key>）；主人口头记住的条目 source 为 remembered */
 export interface LevelOverride extends LevelRule {
   scope?: string;
   expiresAt: string;
   reason?: string;
+  id?: string;
+  createdAt?: string;
+  source?: string;
+  summary?: string;
 }
 
 export interface LevelsFile {
@@ -36,9 +59,13 @@ export interface LevelsFile {
 
 export interface Classification {
   level: Level;
-  /** 判定来源，写审计用；client 表示 tool_call 指向 client 来源工具，被强制 L3 */
+  /** 判定来源，写审计用；client 表示 tool_call 的真实目标无法确定，被强制 L3 */
   source: "override" | "rule" | "tool" | "default" | "client";
   note?: string;
+  category?: AskCategory;
+  /** 这类能不能「以后都允许」（只对 L2 有意义） */
+  rememberable: boolean;
+  overrideId?: string;
   /** 是否因主动发起被降档 */
   downgraded: boolean;
 }
@@ -69,17 +96,39 @@ export function downgrade(level: Level): Level {
   return ORDER[Math.min(ORDER.indexOf(level) + 1, 3)];
 }
 
+/** 参数里全部字符串值（含嵌套），用于扫描脚本正文、补丁内容 */
+function allStrings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) v.forEach((x) => allStrings(x, out));
+  else if (isRecord(v)) Object.values(v).forEach((x) => allStrings(x, out));
+  return out;
+}
+
+/** 判断一个条件是否命中本次调用 */
+function conditionMatches(cond: Condition, params: Record<string, unknown>, derivedPaths?: readonly string[]): boolean {
+  if (!cond.pattern) return true;
+  const re = new RegExp(cond.pattern, "i");
+  const test = (v: unknown) => typeof v === "string" && re.test(v);
+  switch (cond.param) {
+    case "$derivedPaths":
+      return !!derivedPaths && derivedPaths.length > 0 && derivedPaths.every((p) => re.test(p));
+    case "$anyDerivedPaths":
+      return !!derivedPaths && derivedPaths.some((p) => re.test(p));
+    case "$path":
+      return test(params.path) || test(params.file_path);
+    case "$text":
+      return re.test(allStrings(params).join("\n"));
+    case undefined:
+      return re.test(JSON.stringify(params));
+    default:
+      return test(params[cond.param]);
+  }
+}
+
 /** 判断一条规则是否命中本次工具调用 */
 function ruleMatches(rule: LevelRule, toolName: string, params: Record<string, unknown>, derivedPaths?: readonly string[]): boolean {
   if (rule.tool !== toolName) return false;
-  if (!rule.pattern) return true;
-  const re = new RegExp(rule.pattern, "i");
-  if (rule.param === "$derivedPaths" || rule.param === "$anyDerivedPaths") {
-    if (!derivedPaths || derivedPaths.length === 0) return false;
-    return rule.param === "$derivedPaths" ? derivedPaths.every((p) => re.test(p)) : derivedPaths.some((p) => re.test(p));
-  }
-  const value = rule.param ? params[rule.param] : JSON.stringify(params);
-  return typeof value === "string" && re.test(value);
+  return conditionMatches(rule, params, derivedPaths) && (rule.also ?? []).every((c) => conditionMatches(c, params, derivedPaths));
 }
 
 /**
@@ -101,7 +150,7 @@ export function resolveToolCallTarget(params: Record<string, unknown>): ToolCall
   const nested = params.args ?? params.input;
   let input: Record<string, unknown>;
   if (isRecord(nested) && Object.keys(nested).length > 0) input = { ...dotted, ...nested };
-  // 非对象参数不猜，按无参数定级：exec 无 command 时落到 tools.exec 的 L3，更保守
+  // 非对象参数不猜，按无参数定级
   else if (nested != null && !isRecord(nested)) input = {};
   else input = { ...dotted, ...Object.fromEntries(Object.entries(params).filter(([k]) => k !== "args" && k !== "input" && k !== key && !isDotted(k))) };
   const canonical = TOOL_NAME_ALIASES[rawName] ?? rawName;
@@ -125,13 +174,13 @@ export function classify(
 ): Classification {
   let result: Omit<Classification, "downgraded"> | undefined;
 
-  // 1) D8 覆盖规则：没有有效期或已过期的一律忽略
+  // 1) D8 放行/提权：没有有效期或已过期的一律忽略
   for (const o of levels.overrides ?? []) {
     const exp = Date.parse(o.expiresAt);
     if (!Number.isFinite(exp) || exp <= now.getTime()) continue;
     const inScope = !o.scope || o.scope === "global" || o.scope === `session:${call.sessionKey}`;
     if (inScope && ruleMatches(o, call.toolName, call.params, call.derivedPaths)) {
-      result = { level: o.level, source: "override", note: o.reason ?? o.note };
+      result = { level: o.level, source: "override", note: o.reason ?? o.note, rememberable: false, overrideId: o.id };
       break;
     }
   }
@@ -139,9 +188,9 @@ export function classify(
   // 2) 参数规则 3) 工具名 4) 默认
   if (!result) {
     const rule = levels.rules.find((r) => ruleMatches(r, call.toolName, call.params, call.derivedPaths));
-    if (rule) result = { level: rule.level, source: "rule", note: rule.note };
-    else if (levels.tools[call.toolName]) result = { level: levels.tools[call.toolName], source: "tool" };
-    else result = { level: levels.defaultLevel, source: "default" };
+    if (rule) result = { level: rule.level, source: "rule", note: rule.note, category: rule.category, rememberable: rule.remember !== false };
+    else if (levels.tools[call.toolName]) result = { level: levels.tools[call.toolName], source: "tool", rememberable: true };
+    else result = { level: levels.defaultLevel, source: "default", rememberable: true };
   }
 
   const shouldDowngrade = proactive && levels.proactiveDowngrade !== false;

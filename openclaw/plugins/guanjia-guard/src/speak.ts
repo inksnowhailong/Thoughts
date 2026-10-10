@@ -10,12 +10,17 @@
 export const DEFAULT_SPEAK_URL = "http://127.0.0.1:18795/say";
 export const SPEAK_MAX_CHARS = 300;
 export const SPEAK_TIMEOUT_MS = 3_000;
-/** 语音轮标记「[语音 2026-10-10 18:05 周六]」；前面允许再有一个网关加的 [时间] 信封 */
-export const VOICE_TAG_RE = /^\s*(?:\[[^\]]*\]\s*)?\[语音[^\]]*\]\s*/;
+/** 语音轮标记「[语音 2026-10-10 18:05 周六]」；取最后一个标记之后的话，前面的时间信封、系统事件行一并去掉 */
+export const VOICE_TAG_RE = /^[\s\S]*\[语音[^\]]*\]\s*/;
 
 /** 去掉语音轮标记，口头确认 / 习惯判断按主人说的原话做 */
 export function stripVoiceTag(text: string): string {
   return text.replace(VOICE_TAG_RE, "");
+}
+
+/** 这条用户消息是不是语音轮（写审计用） */
+export function hasVoiceTag(text: string): boolean {
+  return VOICE_TAG_RE.test(text);
 }
 
 type FetchLike = (

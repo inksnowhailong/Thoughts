@@ -17,7 +17,7 @@ const levels = JSON.parse(fs.readFileSync(path.join(pluginDir, "defaults/levels.
 const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, "openclaw.plugin.json"), "utf8"));
 
 // ---------- 1. 清单与工具形状 ----------
-assert.deepEqual(manifest.contracts?.tools, ["speak"], "清单声明 speak");
+assert.ok(manifest.contracts?.tools?.includes("speak"), "清单声明 speak");
 assert.equal(manifest.configSchema.properties.speakUrl.type, "string");
 assert.equal(DEFAULT_SPEAK_URL, "http://127.0.0.1:18795/say");
 const t0 = createSpeakTool() as any;
@@ -103,10 +103,10 @@ assert.equal(g.beforeToolCall({ toolName: "tool_call", params: { id: "speak", ar
 assert.equal(lastAudit().level, "L1");
 
 // ---------- 6. 语音轮里的口头确认 ----------
-const w = { path: "D:\\x.txt", content: "hi" };
-assert.equal((g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s9" }) as any).block, true);
+const w = { command: "Remove-Item D:\\x.txt" };
+assert.equal((g.beforeToolCall({ toolName: "exec", params: w }, { sessionKey: "s9" }) as any).block, true);
 assert.ok(g.onUserTurn("s9", "[语音 2026-10-10 18:05 周六] 确认"), "带语音标记的确认也算确认");
-assert.equal(g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s9" }), undefined);
+assert.equal(g.beforeToolCall({ toolName: "exec", params: w }, { sessionKey: "s9" }), undefined);
 
 // ---------- 7. 语音里像确认、其实不是的话 ----------
 const V = "[语音 2026-10-10 18:05 周六] ";
@@ -116,9 +116,9 @@ for (const yes of ["确认", "确定", "好", "好的", "好的，删吧", "好�
 for (const no of ["好了好了", "好了", "嗯", "嗯，不要了", "好，不要了", "可以了，停吧", "行了，别弄了", "好吃吗", "对不对", "算了", "等等", "不", "停", "确认一下是哪个文件", "可以吗"]) {
   assert.ok(!isConfirmation(V + no), `不应算确认：${no}`);
 }
-assert.equal((g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s10" }) as any).block, true);
+assert.equal((g.beforeToolCall({ toolName: "exec", params: w }, { sessionKey: "s10" }) as any).block, true);
 assert.equal(g.onUserTurn("s10", V + "好了好了"), undefined, "叫停的话不放行 L2");
-assert.equal((g.beforeToolCall({ toolName: "write", params: w }, { sessionKey: "s10" }) as any).block, true, "叫停后同参数重试仍要确认");
+assert.equal((g.beforeToolCall({ toolName: "exec", params: w }, { sessionKey: "s10" }) as any).block, true, "叫停后同参数重试仍要确认");
 
 // ---------- 8. 习惯草案：新问题不能被当成"答应" ----------
 const hStore = createStore(fs.mkdtempSync(path.join(os.tmpdir(), "gj-p2h-")), path.join(pluginDir, "defaults"));
