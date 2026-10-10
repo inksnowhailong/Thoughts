@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管家面板</title>
+<style>
+  :root { --bg:#0f1419; --card:#18202a; --line:#2a3542; --text:#d8e0e8; --dim:#8a97a6; --ok:#2ea043; --busy:#1f6feb;
+          --warn:#d29922; --bad:#da3633; --idle:#3a4654; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 "Microsoft YaHei UI","Segoe UI",sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:10px 16px; background:var(--card);
+           border-bottom:1px solid var(--line); position:sticky; top:0; z-index:2; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  .pill { padding:2px 10px; border-radius:12px; background:var(--idle); font-weight:600; }
+  .pill.listening { background:var(--ok); } .pill.busy { background:var(--busy); } .pill.error { background:var(--bad); }
+  .pill.starting { background:var(--warn); color:#111; } .pill.muted, .pill.gaming { background:#555; }
+  .dep { color:var(--dim); } .dep b.on { color:var(--ok); } .dep b.off { color:var(--bad); }
+  .spacer { flex:1; }
+  button { background:#243142; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 12px;
+           cursor:pointer; font:inherit; }
+  button:hover { border-color:#4b5d72; } button.danger { border-color:#6b2a2a; } button.danger:hover { background:#3a1d1d; }
+  main { padding:12px 16px; display:grid; gap:12px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  section h2 { font-size:14px; margin:0 0 8px; color:var(--dim); font-weight:600; }
+  #banner { display:none; background:#3a2a10; border:1px solid var(--warn); padding:8px 12px; border-radius:6px; }
+  .flow { display:flex; flex-wrap:wrap; align-items:stretch; gap:4px; }
+  .box { min-width:92px; flex:1; padding:8px; border-radius:8px; border:2px solid var(--idle); background:#121a22; }
+  .box .name { font-weight:600; } .box .note { color:var(--dim); font-size:12px; word-break:break-all; min-height:18px; }
+  .box.active { border-color:var(--warn); box-shadow:0 0 12px rgba(210,153,34,.5); animation:pulse 1s infinite; }
+  .box.done { border-color:var(--ok); } .box.blocked { border-color:var(--bad); background:#2a1414; }
+  .box.blocked .note { color:#ff8b8b; } .box.skipped { opacity:.45; }
+  .arrow { align-self:center; color:var(--dim); }
+  @keyframes pulse { 50% { box-shadow:0 0 2px rgba(210,153,34,.2); } }
+  #current { margin-top:8px; color:var(--dim); }
+  .grid2 { display:grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr); gap:12px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:#1e2935; } tr.sel { background:#22344a; }
+  .v-accept { color:var(--ok); } .v-rejected, .v-ignored { color:var(--dim); } .v-wake_only { color:var(--warn); }
+  .v-say { color:#79c0ff; }
+  .scroll { max-height:360px; overflow:auto; }
+  .kv { display:grid; grid-template-columns: 90px 1fr; gap:2px 8px; }
+  .kv div:nth-child(odd) { color:var(--dim); }
+  .bar { display:flex; height:22px; border-radius:4px; overflow:hidden; margin:6px 0 2px; background:#0c1116; }
+  .bar span { font-size:11px; line-height:22px; white-space:nowrap; overflow:hidden; padding:0 3px; color:#0b0f14; }
+  .legend { font-size:12px; color:var(--dim); }
+  .tl div { font-size:12px; font-family:Consolas,monospace; }
+  #logs { height:300px; overflow:auto; font:12px/1.45 Consolas,monospace; white-space:pre-wrap; word-break:break-all;
+          background:#0c1116; padding:6px; border-radius:6px; }
+  .l-WARNING { color:var(--warn); } .l-ERROR, .l-CRITICAL { color:#ff7b72; } .l-DEBUG { color:#6e7c8c; }
+  .filters { display:flex; flex-wrap:wrap; gap:6px 12px; margin-bottom:6px; align-items:center; }
+  .filters label { color:var(--dim); }
+  input[type=text], input[type=number] { background:#0c1116; color:var(--text); border:1px solid var(--line);
+           border-radius:5px; padding:4px 6px; font:inherit; }
+  .form { display:grid; grid-template-columns: 150px 1fr; gap:6px 10px; align-items:center; max-width:640px; }
+  .hint { color:var(--dim); font-size:12px; }
+  #msg, #injectResult { margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>管家面板</h1>
+  <span id="pill" class="pill">连接中</span>
+  <span class="dep">网关 <b id="gw">…</b></span>
+  <span class="dep">TTS <b id="tts">…</b></span>
+  <span class="dep">休眠 <b id="sleep">…</b></span>
+  <span class="dep">免喊 <b id="follow">0</b> 秒</span>
+  <span class="dep">唤醒词 <b id="wake">…</b></span>
+  <span class="spacer"></span>
+  <button id="btnMute">静音</button>
+  <button id="btnRestart">重启语音</button>
+  <button id="btnQuit" class="danger">退出语音</button>
+</header>
+<main>
+  <div id="banner"></div>
+  <section>
+    <h2>一次说话的流程（正在进行的环节闪黄，放行变绿，被拦下变红并写原因）</h2>
+    <div class="flow" id="flow"></div>
+    <div id="current">还没有人说话</div>
+  </section>
+  <div class="grid2">
+    <section>
+      <h2>每句话 <label class="hint"><input type="checkbox" id="onlyAccepted"> 只看进了主程序的</label>
+        <label class="hint"><input type="checkbox" id="followNewest" checked> 自动跟随最新一句</label></h2>
+      <div class="scroll"><table>
+        <thead><tr><th>时间</th><th>听到的</th><th>声纹</th><th>结果</th><th>首声</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table></div>
+    </section>
+    <section>
+      <h2>这句话的细节</h2>
+      <div id="detail" class="hint">点左边一行看细节</div>
+    </section>
+  </div>
+  <section>
+    <h2>实时日志</h2>
+    <div class="filters" id="modFilters"></div>
+    <div class="filters">
+      <label>级别 <select id="level"><option value="DEBUG">全部</option><option value="INFO" selected>INFO 及以上</option>
+        <option value="WARNING">只看警告和错误</option></select></label>
+      <label>搜索 <input type="text" id="search" placeholder="关键字"></label>
+      <label><input type="checkbox" id="autoscroll" checked> 自动滚到底</label>
+    </div>
+    <div id="logs"></div>
+  </section>
+  <section>
+    <h2>设置（保存后立即生效，不用重启）</h2>
+    <div class="form">
+      <label for="s_wake">唤醒词</label><div><input type="text" id="s_wake" size="30"> <span class="hint">多个用逗号隔开，按读音容错（管家/关家/管加都算）</span></div>
+      <label for="s_req">必须喊唤醒词</label><div><input type="checkbox" id="s_req"> <span class="hint">关掉就和 P2 一样，听到就答</span></div>
+      <label for="s_follow">免喊秒数</label><div><input type="number" id="s_follow" min="0" max="120" step="1"> <span class="hint">它回完最后一句后这么久内接着说不用再喊</span></div>
+      <label for="s_spk">声纹门槛</label><div><input type="number" id="s_spk" min="0" max="0.9" step="0.01"> <span class="hint">低于它的声音不理；主人清楚说话一般 0.47～0.6</span></div>
+      <label for="s_barge">打断线</label><div><input type="number" id="s_barge" min="0.001" max="0.05" step="0.001"> <span class="hint">它说话时你开口的音量超过这个就停；打不断调小，自己打断自己调大</span></div>
+      <label for="s_min">最少字数</label><div><input type="number" id="s_min" min="1" max="6" step="1"> <span class="hint">更短的片段当碎音忽略</span></div>
+      <label for="s_earcon">提示音</label><div><input type="checkbox" id="s_earcon"> <span class="hint">说完话立刻"叮咚"一声</span></div>
+      <label for="s_ack">只喊唤醒词时的应答</label><div><input type="text" id="s_ack" size="10"></div>
+      <span></span><div><button id="btnSave">保存设置</button> <span id="msg" class="hint"></span></div>
+    </div>
+    <h2 style="margin-top:14px">模拟一句话（当作听到了这段文字，看它会不会被放行）</h2>
+    <div class="filters">
+      <input type="text" id="injectText" size="40" placeholder="例如：管家，打开记事本">
+      <label><input type="checkbox" id="injectReal"> 真的执行（会发给主程序并念出来）</label>
+      <button id="btnInject">试一下</button>
+    </div>
+    <div id="injectResult" class="hint"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const TOKEN = "__GUANJIA_TOKEN__";
+const S = { status: {}, settings: {}, records: new Map(), order: [], live: {}, logs: [], selected: null,
+            stages: [], names: {}, modules: [], hidden: new Set(), lastLiveT: 0 };
+const VERDICT = { accept: "进主程序", wake_only: "只喊唤醒词", rejected: "拦下", ignored: "忽略", say: "主程序让念" };
+const STATE_CN = { active: "进行中", done: "通过", blocked: "拦下", skipped: "跳过", info: "" };
+const $ = (id) => document.getElementById(id);
+
+function el(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  if (props) for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return n;
+}
+function hhmmss(t) { const d = new Date(t * 1000); return d.toTimeString().slice(0, 8); }
+function ms(v) { return v == null ? "—" : (v >= 1000 ? (v / 1000).toFixed(1) + "s" : v + "ms"); }
+
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Guanjia-Token": TOKEN },
+                                body: JSON.stringify(body) });
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* 空回应 */ }
+  return { ok: r.ok && data.ok !== false, data };
+}
+
+// ---------- 状态栏 ----------
+function renderStatus() {
+  const st = S.status;
+  const pill = $("pill");
+  pill.className = "pill " + (st.view || "");
+  pill.textContent = st.label || "未知";
+  const dep = (id, v) => { const b = $(id); b.className = v ? "on" : (v === false ? "off" : ""); b.textContent = v ? "在线" : (v === false ? "离线" : "…"); };
+  dep("gw", st.gateway); dep("tts", st.tts);
+  $("sleep").textContent = { awake: "醒着", sleeping: "休眠中", consolidating: "整理记忆中" }[st.sleep] || st.sleep || "…";
+  $("wake").textContent = (st.wake_words || []).join(" / ") || "…";
+  $("btnMute").textContent = st.muted ? "取消静音" : "静音";
+  S.followUntil = Date.now() + (st.followup_left || 0) * 1000;
+}
+setInterval(() => { $("follow").textContent = Math.max(0, Math.round(((S.followUntil || 0) - Date.now()) / 1000)); }, 500);
+
+// ---------- 流程图 ----------
+function currentRecord() {
+  if (S.selected && !$("followNewest").checked) return S.records.get(S.selected);
+  for (let i = S.order.length - 1; i >= 0; i--) {
+    const r = S.records.get(S.order[i]);
+    if (r && r.source !== "say") return r;
+  }
+  return null;
+}
+function renderFlow() {
+  const rec = currentRecord();
+  const flow = $("flow");
+  flow.textContent = "";
+  S.stages.forEach((stage, i) => {
+    let st = rec && rec.stages[stage] ? rec.stages[stage] : null;
+    const live = S.live[stage];
+    if (live && (!rec || live.t > (st ? st.t1 || st.t0 : rec.t0))) st = live;
+    const box = el("div", { class: "box " + (st ? st.state : ""), title: STATE_CN[st && st.state] || "" },
+      el("div", { class: "name", text: S.names[stage] || stage }), el("div", { class: "note", text: st ? (st.note || STATE_CN[st.state] || "") : "" }));
+    if (stage === "barge") flow.append(el("span", { class: "arrow", text: "｜" }));
+    else if (i > 0) flow.append(el("span", { class: "arrow", text: "→" }));
+    flow.append(box);
+  });
+  $("current").textContent = rec ? `${hhmmss(rec.t0)}  「${rec.text}」  ${VERDICT[rec.verdict] || "处理中"}${rec.reason ? "：" + rec.reason : ""}` : "还没有人说话";
+}
+
+// ---------- 每句话 ----------
+function renderRows() {
+  const tb = $("rows");
+  tb.textContent = "";
+  const only = $("onlyAccepted").checked;
+  for (let i = S.order.length - 1; i >= 0; i--) {
+    const r = S.records.get(S.order[i]);
+    if (!r || (only && r.verdict !== "accept")) continue;
+    const tr = el("tr", { class: r.id === S.selected ? "sel" : "" },
+      el("td", { text: hhmmss(r.t0) }), el("td", { text: r.text || "" }),
+      el("td", { text: r.score == null ? "—" : r.score.toFixed(2) }),
+      el("td", { class: "v-" + r.verdict, text: (VERDICT[r.verdict] || "处理中") + (r.reason && r.verdict !== "accept" ? "：" + r.reason : "") }),
+      el("td", { text: ms(r.timings && r.timings.first_sound_ms) }));
+    tr.addEventListener("click", () => { S.selected = r.id; $("followNewest").checked = false; renderAll(); });
+    tb.append(tr);
+  }
+}
+const BAR = [["asr_ms", "识别", "#79c0ff"], ["speaker_ms", "声纹", "#a5d6ff"], ["queue_ms", "排队", "#8b949e"],
+             ["gateway_prep_ms", "网关准备", "#d2a8ff"], ["model_first_ms", "模型首字", "#bc8cff"],
+             ["gateway_first_ms", "网关首字", "#bc8cff"], ["first_sentence_ms", "首句成形", "#ffa657"],
+             ["tts_first_ms", "合成首句", "#7ee787"], ["play_lag_ms", "开始出声", "#56d364"]];
+function renderDetail() {
+  const box = $("detail");
+  const r = S.selected ? S.records.get(S.selected) : currentRecord();
+  box.textContent = "";
+  if (!r) { box.append(el("div", { class: "hint", text: "点左边一行看细节" })); return; }
+  const kv = el("div", { class: "kv" });
+  const add = (k, v) => kv.append(el("div", { text: k }), el("div", { text: v == null || v === "" ? "—" : String(v) }));
+  add("时间", new Date(r.t0 * 1000).toLocaleString());
+  add("来源", { mic: "麦克风", inject: "面板模拟", say: "主程序 /say" }[r.source] || r.source);
+  add("听到的", r.text); add("声纹分", r.score == null ? "—" : r.score.toFixed(3));
+  add("结果", (VERDICT[r.verdict] || "处理中") + (r.reason ? "：" + r.reason : ""));
+  add("送给主程序", r.sent); add("回复", r.reply);
+  add("念出来", (r.spoken || []).length + " 句"); add("没念出来", (r.unspoken || []).join(" / "));
+  if (r.error) add("错误", r.error);
+  box.append(kv);
+  const t = r.timings || {};
+  const parts = BAR.filter(([k]) => t[k] != null && !(k === "gateway_first_ms" && t.gateway_prep_ms != null));
+  if (parts.length) {
+    const total = parts.reduce((a, [k]) => a + Math.max(0, t[k]), 0) || 1;
+    const bar = el("div", { class: "bar" });
+    for (const [k, label, color] of parts) {
+      const s = el("span", { text: `${label} ${ms(t[k])}`, title: `${label} ${ms(t[k])}` });
+      s.style.width = (Math.max(0, t[k]) / total * 100) + "%"; s.style.background = color;
+      bar.append(s);
+    }
+    box.append(el("h2", { text: "耗时拆分（听完到出声 " + ms(t.first_sound_ms) + "）" }), bar,
+               el("div", { class: "legend", text: parts.map(([k, l]) => `${l} ${ms(t[k])}`).join("　") }));
+  }
+  if ((r.tools || []).length) {
+    const tbl = el("table", null, el("thead", null, el("tr", null, el("th", { text: "工具" }), el("th", { text: "分级" }),
+      el("th", { text: "结果" }), el("th", { text: "内容" }))));
+    const tb = el("tbody");
+    for (const x of r.tools) tb.append(el("tr", null, el("td", { text: x.tool }), el("td", { text: x.level }),
+      el("td", { text: x.decision }), el("td", { text: x.summary })));
+    tbl.append(tb);
+    box.append(el("h2", { text: "主程序调用的工具" }), tbl);
+  }
+  const tl = el("div", { class: "tl" });
+  for (const e of r.timeline || []) {
+    tl.append(el("div", { text: `+${String(Math.round((e.t - r.t0) * 1000)).padStart(6)}ms  ${(S.names[e.stage] || e.stage).padEnd(5, "　")} ${STATE_CN[e.state] || e.state}  ${e.note || ""}` }));
+  }
+  box.append(el("h2", { text: "时间线" }), tl);
+}
+
+// ---------- 日志 ----------
+const LEVELS = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50 };
+function buildFilters() {
+  const f = $("modFilters");
+  f.textContent = "";
+  f.append(el("span", { class: "hint", text: "模块：" }));
+  for (const m of S.modules) {
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = !S.hidden.has(m);
+    cb.addEventListener("change", () => { cb.checked ? S.hidden.delete(m) : S.hidden.add(m); renderLogs(); });
+    f.append(el("label", null, cb, " " + m));
+  }
+}
+function logVisible(l) {
+  const q = $("search").value.trim();
+  return !S.hidden.has(l.module) && (LEVELS[l.level] || 0) >= LEVELS[$("level").value] && (!q || l.msg.includes(q));
+}
+function logLine(l) { return el("div", { class: "l-" + l.level, text: `[${l.module}] ${l.msg}` }); }
+function renderLogs() {
+  const box = $("logs");
+  box.textContent = "";
+  for (const l of S.logs.slice(-800)) if (logVisible(l)) box.append(logLine(l));
+  if ($("autoscroll").checked) box.scrollTop = box.scrollHeight;
+}
+function pushLog(l) {
+  S.logs.push(l);
+  if (S.logs.length > 2000) S.logs.splice(0, S.logs.length - 2000);
+  if (!logVisible(l)) return;
+  const box = $("logs");
+  box.append(logLine(l));
+  while (box.childNodes.length > 800) box.removeChild(box.firstChild);
+  if ($("autoscroll").checked) box.scrollTop = box.scrollHeight;
+}
+
+// ---------- 设置 ----------
+function fillSettings() {
+  const s = S.settings;
+  $("s_wake").value = (s.wake_words || []).join("，"); $("s_req").checked = !!s.wake_required;
+  $("s_follow").value = s.follow_up_sec; $("s_spk").value = s.spk_threshold; $("s_barge").value = s.barge_rms_min;
+  $("s_min").value = s.min_chars; $("s_earcon").checked = !!s.earcon; $("s_ack").value = s.ack_text || "";
+}
+$("btnSave").addEventListener("click", async () => {
+  const patch = { wake_words: $("s_wake").value, wake_required: $("s_req").checked, follow_up_sec: Number($("s_follow").value),
+                  spk_threshold: Number($("s_spk").value), barge_rms_min: Number($("s_barge").value),
+                  min_chars: Number($("s_min").value), earcon: $("s_earcon").checked, ack_text: $("s_ack").value };
+  const r = await api("/api/settings", patch);
+  $("msg").textContent = r.ok ? "已保存，立即生效" : "没保存：" + (r.data.reason || "未知错误");
+  if (r.ok) { S.settings = r.data.settings; fillSettings(); }
+});
+$("btnInject").addEventListener("click", async () => {
+  const text = $("injectText").value.trim();
+  if (!text) return;
+  const real = $("injectReal").checked;
+  if (real && !confirm("真的执行会把这句话发给主程序，电脑会念出回答。继续吗？")) return;
+  const r = await api("/api/inject", { text, dry_run: !real });
+  const d = r.data;
+  $("injectResult").textContent = r.ok ? `${VERDICT[d.verdict] || d.verdict}：${d.reason}${d.text ? "　送给主程序「" + d.text + "」" : ""}${d.dry_run ? "（只是模拟）" : ""}`
+                                       : "失败：" + (d.reason || "未知错误");
+});
+
+// ---------- 控制 ----------
+$("btnMute").addEventListener("click", () => api("/api/control", { action: S.status.muted ? "unmute" : "mute" }));
+$("btnRestart").addEventListener("click", async () => {
+  if (!confirm("重启语音？大约 20～40 秒后回来，正在进行的那一轮会被取消。")) return;
+  const r = await api("/api/control", { action: "restart" });
+  banner(r.ok ? "正在重启语音，回来后页面会自动刷新……" : "重启失败");
+});
+$("btnQuit").addEventListener("click", async () => {
+  if (!confirm("退出语音？退出后不会自己起来，要再开请双击桌面上的「管家面板」。")) return;
+  const r = await api("/api/control", { action: "quit" });
+  banner(r.ok ? r.data.reason : "退出失败");
+});
+function banner(text) { const b = $("banner"); b.style.display = text ? "block" : "none"; b.textContent = text || ""; }
+
+// ---------- 数据流 ----------
+function upsert(rec) {
+  if (!S.records.has(rec.id)) { S.order.push(rec.id); if (S.order.length > 50) S.records.delete(S.order.shift()); }
+  S.records.set(rec.id, rec);
+}
+function renderAll() { renderStatus(); renderFlow(); renderRows(); renderDetail(); }
+let renderQueued = false;
+function scheduleRender() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderFlow(); renderRows(); renderDetail(); }); } }
+
+async function start() {
+  const r = await fetch("/api/snapshot?token=" + encodeURIComponent(TOKEN));
+  if (!r.ok) { banner("拿不到数据（" + r.status + "），请刷新页面"); return; }
+  const snap = await r.json();
+  S.status = snap.status; S.settings = snap.settings; S.live = snap.live || {}; S.stages = snap.stages; S.names = snap.stage_names;
+  S.modules = snap.log_modules; S.hidden = new Set(snap.hidden_modules);
+  for (const rec of snap.records) upsert(rec);
+  S.logs = snap.logs || [];
+  buildFilters(); fillSettings(); renderAll(); renderLogs();
+  const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
+  es.addEventListener("hello", () => banner(""));
+  es.addEventListener("status", (e) => { S.status = JSON.parse(e.data).status; renderStatus(); });
+  es.addEventListener("record", (e) => { upsert(JSON.parse(e.data).record); scheduleRender(); });
+  es.addEventListener("stage", (e) => {
+    const ev = JSON.parse(e.data);
+    if (ev.uid == null) S.live[ev.stage] = { state: ev.state, note: ev.note, t: ev.t };
+    else { const rec = S.records.get(ev.uid); if (rec) { const st = rec.stages[ev.stage] || { t0: ev.t }; Object.assign(st, { state: ev.state, note: ev.note, t1: ev.t }); rec.stages[ev.stage] = st; } }
+    scheduleRender();
+  });
+  es.addEventListener("log", (e) => pushLog(JSON.parse(e.data)));
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) { banner("和语音进程的连接断了（重启或退出了）。语音回来后会自动刷新。"); waitBack(); }
+    else banner("连接中断，正在重连……");
+  };
+}
+function waitBack() {
+  const t = setInterval(async () => {
+    try { const r = await fetch("/panel", { cache: "no-store" }); if (r.ok) { clearInterval(t); location.reload(); } } catch (e) { /* 还没回来 */ }
+  }, 3000);
+}
+for (const id of ["onlyAccepted", "followNewest"]) $(id).addEventListener("change", () => { if ($("followNewest").checked) S.selected = null; renderAll(); });
+for (const id of ["level", "search"]) $(id).addEventListener("input", renderLogs);
+start().catch((e) => { banner("面板启动失败：" + e); waitBack(); });
+</script>
+</body>
+</html>
