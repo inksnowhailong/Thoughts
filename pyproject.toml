@@ -12,6 +12,7 @@ dependencies = [
   "httpx>=0.28",
   "pycaw>=20260927",
   "onnxruntime>=1.30.0",
+  "pystray>=0.19.5",
 ]
 
 [tool.uv]
