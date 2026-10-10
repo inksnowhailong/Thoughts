@@ -1,28 +1,29 @@
-"""语音守护进程：常开监听 → 回声消除 → 增益 → VAD → 流式 ASR → 整段精识别 → 声纹放行 → OpenClaw → 按句 TTS → 播放；随时可打断。
+"""语音守护进程：常开监听 → 增益 → VAD → 流式 ASR → 整段精识别 → 声纹放行 → 主线会话 → 按句 TTS → 播放；随时可打断。
 
-线程分工（都是简单的生产者/消费者）：
-- 音频回调（sounddevice 全双工，设备原生采样率，10ms 一块，latency='low'）：把 (麦帧, 本块实际播出的帧) 放进 in_q；
-  从 play_q 取 (代次, PCM) 填给输出，旧代次的音频直接丢弃。
-- 前端线程：AEC(参考=我们自己播出的帧) → 降到 16k → VAD → 预滚 + 流式 ASR → 段结束过声纹；同时做打断判定。
-- 大脑线程：拿一句文字 → 流式调网关 → 句子切分 → TTS → 推 play_q。
+P2 起的调用链（front.py / backoffice.py 已退出调用链，文件暂留，验收通过后再删）：
 
-运行态（runtime_state.RuntimeMonitor，D25/D26）：进入 GAMING 时主循环停音频流、丢弃积压输入、释放 ASR、
-通知 TTS 服务 /unload；离开 GAMING 时重建 ASR/VAD、重开音频流、后台 /load。主动侧通过 quiet() 查询是否允许开口。
+  音频回调 ──(麦帧, 本块是否在出声)──> 前端线程 ── VAD/ASR/声纹 ──> 提示音 + text_q
+                                          └─ 打断检测 BargeDetector ──> stop_speaking()：换代 + 清播放队列
+  大脑线程：text_q ──> TurnRunner ──> 网关 /v1/chat/completions（x-openclaw-session-key: agent:main:main）
+                        流式文本 → 切句 → speakable 过滤 → TTS → play_q（按代次播放，旧代次直接丢）
+                        打断后照样把网关流读完：断开连接会让网关取消这一轮和它的待审批
+  控制口 127.0.0.1:18795：/say（主程序让电脑念一句，走同一个播放队列）、/status、/sleep-state（P4）
+  托盘：在听 / 说话中 / 静音 / 游戏中 / 出错（网关、TTS 是否在线），左键切静音，右键重启或退出
 
-打断：本轮已经出过声后，AEC 后的快速 VAD 检出人声、且平滑能量高于"回声残留自适应底噪 × 倍数"的累计时长 ≥ BARGE_MS，
-即 stop_speaking()：换代 + 清播放队列、关闭网关流与进行中的 TTS 请求。打断不看声纹分（短片段分数不可靠）。
-续说：还没出声（大脑在想）时用户又说完一整句，走整句声纹后按"用户续说"停掉当前轮并把上一句拼到新句前面。
+运行态（runtime_state.RuntimeMonitor，D25/D26）：进入 GAMING 时停音频流、丢弃积压、释放 ASR、通知 TTS /unload；离开时重建。
+退出码（scripts/voice-supervisor.ps1 据此决定）：0 = 托盘「退出语音」不再拉起；3 = 托盘「重启语音」立即拉起；其它 = 崩溃，退避后拉起。
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import os
 import queue
+import re
 import sys
 import threading
-import re
 import time
 import wave
 from collections import deque
@@ -36,81 +37,68 @@ from pyaec import Aec
 
 from guanjia.asr import StreamingASR
 from guanjia.asr_final import FinalASR
-from guanjia.backoffice import BackOffice, Task
-from guanjia.brain import Brain
-from guanjia.front import Front
+from guanjia.audio_cues import earcon
+from guanjia.barge import BargeConfig, BargeDetector
+from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
+from guanjia.control import CONTROL_PORT, start_control_server
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
 from guanjia.speaker import SpeakerGate
-from guanjia.textseg import SentenceSplitter
+from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
 from guanjia.tts_client import TTSClient
+from guanjia.turns import SayItem, TurnRunner
 from guanjia.vad import SR as SR16K
 from guanjia.vad import VAD, Downsampler
 
 log = logging.getLogger("guanjia.voice")
 
-# ---- 声纹门（原则：宁可放过不可拦人；家里只有一位主人，危险操作另有 S3 分级守卫兜底）----
-SPK_THRESHOLD = 0.30     # 整句放行阈值：实测主人 0.60~0.74，离远/带情绪掉到 0.48；噪声段 0.06~0.32（空文本段已提前丢弃，故可放到 0.30）。可用 --spk-threshold 改
+# ---- 声纹门（原则：宁可放过不可拦人；家里只有一位主人，危险操作另有分级插件兜底）----
+SPK_THRESHOLD = 0.30     # 整句放行阈值：实测主人 0.60~0.74，离远/带情绪掉到 0.48；噪声段 0.06~0.32。可用 --spk-threshold 改
 SPK_GATE_MODE = "enforce"  # enforce=低于阈值拦截；log=只记录分数不拦截（--gate-mode log）
 
 # ---- 回声消除 ----
-# speex AEC 默认关：音响一体麦自带 DSP 噪声门 + 回声消除（halfduplex 探针：播放 0.42 峰值时原始输入仅 ~1e-4），
-# 而 speex 预处理实测会伤识别（seg_eval：只过 AEC 那条链错字明显）。GUANJIA_AEC=1 或 --aec on 可重新打开
+# speex AEC 默认关：音响一体麦自带 DSP 噪声门 + 回声消除，而 speex 预处理实测会伤识别。GUANJIA_AEC=1 或 --aec on 可重新打开
 AEC_ENABLED = os.environ.get("GUANJIA_AEC", "0").lower() in ("1", "on", "true")
 
 # ---- 前端电平 ----
-MIC_GAIN = 3.0           # AEC 之后、VAD/ASR/声纹之前的软件增益：音箱一体麦电平很低（mic_check 建议 x3），远处说话 ASR 出空文本
-                         # CAM++ 对增益不敏感（实测 x3 前后向量余弦 0.993），现有声纹不必重录；--mic-gain 可调
+MIC_GAIN = 3.0           # 增益后才进 VAD/ASR/声纹：音箱一体麦电平很低（mic_check 建议 x3）；--mic-gain 可调
 
 # ---- 输出保活 / 播放记录 ----
-COMFORT_NOISE_DBFS = -70.0  # 输出流常开，空闲时也持续写这个电平的白噪声（听不见），防音响自动待机吞掉短句开头
+COMFORT_NOISE_DBFS = float(os.environ.get("GUANJIA_COMFORT_DBFS", "-70"))  # 输出流常开时持续写的白噪声（听不见），防音响待机吞句
 LEAD_SILENCE_MS = 150    # 每轮第一句前补的静音前导，给音响/驱动唤醒留余量
 
 # ---- 识别取证：落盘每段送识别的音频 ----
-SEG_DUMP_DIR = Path(__file__).resolve().parents[2] / "tmp" / "segments"  # 原始(设备采样率,AEC 前) + 处理后(AEC+增益+16k) 各一份
+SEG_DUMP_DIR = Path(__file__).resolve().parents[2] / "tmp" / "segments"  # 原始(设备采样率) + 处理后(增益+16k) 各一份
 SEG_KEEP = 50            # 只保留最近这么多段
 RAW_RING_SEC = 60        # 原始麦克风帧环形缓冲时长：要覆盖最长一段语音 + VAD 尾静音
 
-# ---- 续说 / 轮次 ----
-CONTINUE_WINDOW_SEC = 2.5  # 上一句送出后这么久内、且大脑还没回首 token，新句才算"续说"拼到上一句后面；否则中止旧轮、新句单独发
+# ---- 轮次 / TTS ----
 TTS_TIMEOUT_SEC = 12.0   # 单句 TTS 合成超时：超时放弃这句，继续下一句
-TTS_MAX_FAILS = 2        # 本轮 TTS 连续失败/超时达到此数：直接结束本轮并复位，不拖住下一轮
-
-# ---- 打断（barge-in）：只在"本轮已出声"后判定，不依赖声纹分 ----
-BARGE_MS = 180           # 快速 VAD 人声 + 能量过线的累计时长达到此值即打断（规格：开口 0.5s 内停）
-BARGE_GUARD_MS = 300     # 每次播放（重新）开始后的保护期：AEC 要重新收敛，这段只学底噪不触发
-BARGE_TAIL_MS = 300      # 参考信号归零后仍按"在播"算的尾巴（输出延迟 0.1s + 房间混响）
-BARGE_RMS_MIN = 0.003    # 能量绝对下限（约 -50 dBFS，按增益前电平计，运行时乘 MIC_GAIN）：防静音里的小毛刺
-BARGE_FLOOR_RATIO = 2.5  # 触发线 = 回声残留底噪 × 此倍数（约 +8 dB），挡住自己播放声的 AEC 残留
-BARGE_FLOOR_ALPHA = 0.05  # 底噪 EMA 系数（每 10ms，约 200ms 时间常数）；只在"没过线"的播放帧上更新
-BARGE_SMOOTH_ALPHA = 0.3  # 能量平滑 EMA 系数（约 30ms），压掉 10ms 帧 RMS 的尖峰
-BARGE_VAD_MIN_SPEECH = 0.1  # 打断专用 VAD 的最短人声（主 VAD 要 0.25s，太慢）
-BARGE_VAD_MIN_SILENCE = 0.15  # 打断专用 VAD 的最短静音：短停顿就复位累计
-BARGE_LOG_EVERY_MS = 1000  # 播放中每隔这么久打一行 DEBUG 打断监测（底噪/能量峰值/过线毫秒），用来实测标定
-PREROLL_MS = 500         # ASR 预滚：VAD 起判前这段音频先补喂 ASR，防首字丢失
-FIRST_SENT_MAX_CHARS = 20  # 首句硬上限：回复开头没标点时攒到 20 字就先合成出声（默认 60 字太慢）
+TTS_MAX_FAILS = 2        # 本轮 TTS 连续失败达到此数：剩下的句子不再合成（网关流照样读完）
+FIRST_SENT_MAX_CHARS = 20  # 首句硬上限：回复开头没标点时攒到 20 字就先合成出声
 MIN_UTT_SEC = 0.4        # 短于此的语音段不当作指令
+PREROLL_MS = 500         # ASR 预滚：VAD 起判前这段音频先补喂 ASR，防首字丢失
 STATS_EVERY_SEC = 30     # 丢帧 / 欠载计数的日志周期
-VOICE_SYS_FILE = Path(__file__).resolve().parents[2] / "tmp" / "voice_sys.txt"  # 语音入口系统提示，每轮现读，改文件即生效
-SYSTEM_PROMPT = (  # voice_sys.txt 缺失或为空时的回退提示
+
+# ---- 打断（只在我们出声时判定；不看声纹、不看 VAD，原因见 barge.py）----
+BARGE_MS = 180           # 累计过线时长达到此值即打断
+BARGE_GUARD_MS = 300     # 每次开始出声后的保护期：只学回声底噪
+BARGE_TAIL_MS = 300      # 参考信号停了以后仍按"在播"算的尾巴
+BARGE_RMS_MIN = float(os.environ.get("GUANJIA_BARGE_RMS_MIN", "0.004"))  # 触发线下限（原始输入 RMS）；验收时按 barge-mon 校准
+BARGE_FLOOR_RATIO = 3.0  # 触发线 = 回声底噪 × 此倍数
+BARGE_LOG_EVERY_MS = 1000  # 出声期间每隔这么久打一行 DEBUG barge-mon，用来校准
+
+# ---- 提示音 / 健康检查 / 退出码 ----
+EARCON_ENABLED = os.environ.get("GUANJIA_EARCON", "1") != "0"  # 说完话立即放提示音
+HEALTH_EVERY_SEC = 10.0  # 网关、TTS 在线检查周期（托盘用）
+GATEWAY_PORT = 18789
+EXIT_QUIT, EXIT_CRASH, EXIT_RESTART = 0, 1, 3  # 与 scripts/voice-supervisor.ps1 约定
+LOG_MAX_BYTES = 5_000_000  # voice.log 轮转大小（留 3 份）
+
+# 只给 pipeline_test.py 用：P2 起守护进程不再发 system 提示，语音规则在 AGENTS.md 里按「[语音 …]」前缀生效
+SYSTEM_PROMPT = (
     "你是家里的语音管家，通过音箱和用户对话。回答默认不超过两句话；内容长时先用一句话概括并问要不要展开。"
     "用户的话来自语音识别，可能有同音错字，按最合理的意思理解。不要输出表情符号、markdown 或列表。"
 )
-_WEEKDAY_CN = "一二三四五六日"
-
-
-def _system_prompt() -> str:
-    """本轮系统提示：优先 voice_sys.txt 的内容，读不到或为空回退 SYSTEM_PROMPT；末尾拼当前时间。"""
-    try:
-        text = VOICE_SYS_FILE.read_text(encoding="utf-8-sig").strip()
-    except OSError:
-        text = ""
-    return (text or SYSTEM_PROMPT) + _now_suffix()
-
-
-def _now_suffix() -> str:
-    """拼到 system 提示词末尾的当前时间说明，防止模型凭训练数据编造时间。"""
-    now = datetime.now()
-    return f"当前时间：{now:%Y-%m-%d %H:%M}（星期{_WEEKDAY_CN[now.weekday()]}）。"
 
 
 def pick_stream_rate(in_dev, out_dev) -> int:
@@ -168,10 +156,12 @@ class VoiceDaemon:
     speaker_gate: bool = True
     spk_threshold: float = SPK_THRESHOLD  # 声纹放行阈值
     gate_mode: str = SPK_GATE_MODE  # enforce / log
-    mic_gain: float = MIC_GAIN  # AEC 后软件增益
+    mic_gain: float = MIC_GAIN  # 软件增益
     aec_on: bool = AEC_ENABLED  # 是否走 speex AEC
+    tray_on: bool = True  # 托盘图标（--no-tray 关）
+    control_port: int = CONTROL_PORT  # 本机控制口
     # 运行态
-    state: str = "LISTENING"
+    state: str = "LISTENING"  # LISTENING / SPEAKING（一轮从开始到播完都算 SPEAKING）
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _stop_evt: threading.Event = field(default_factory=threading.Event)
 
@@ -180,32 +170,31 @@ class VoiceDaemon:
         self.frame = self.sr // 100
         self.in_q: queue.Queue[Frames] = queue.Queue(maxsize=500)
         self.play_q: queue.Queue[tuple[int, np.ndarray]] = queue.Queue()  # (代次, PCM)，回调按代次丢弃旧音频
-        self.text_q: queue.Queue[str] = queue.Queue()
+        self.text_q: queue.Queue[str | SayItem] = queue.Queue()  # 识别出的话（str）或 /say 要念的话（SayItem）
         self._gen = 0  # 播放代次：打断后递增，旧代次的音频一律丢弃；只有 stop_speaking 写
-        # 以下播放状态只由音频回调写，其他线程只读，不再有跨线程清空的竞态
+        # 以下播放状态只由音频回调写，其他线程只读
         self._play_buf = np.zeros(0, dtype=np.float32)  # 正在播的那一句 PCM
-        self._play_pos = 0  # _play_buf 已播到的位置（逐块取，不再整句 concatenate）
+        self._play_pos = 0  # _play_buf 已播到的位置
         self._buf_gen = 0  # _play_buf 所属代次；与 _gen 不符时回调自行清空
-        self._played_gen = -1  # 最近真正出过声的代次；用来判断打断时上一轮是否已开口
-        # 统计计数：回调里只自增，主循环周期打日志
+        self._played_gen = -1  # 最近真正出过声的代次
         # 保活噪声：预生成 1s 循环使用（回调里不做随机数生成）
         self._noise = (np.random.default_rng(0).standard_normal(self.sr) * 10 ** (COMFORT_NOISE_DBFS / 20)).astype(np.float32)
         self._noise_pos = 0
         self._play_events: deque[tuple[float, float, int]] = deque(maxlen=200)  # (墙钟, 时长秒, 代次)，回调追加、主循环打日志
         self._turn_first = False  # 本轮第一句还没入队（大脑线程读写）：第一句前补静音前导
+        self._turn_t0 = 0.0  # 本轮开始的 monotonic 时刻，记首音延迟用
         # 识别取证：原始麦克风帧环形缓冲 (该帧对应的 16k 起始样本号, 原始帧)，只有前端线程读写
         self._raw_ring: deque[tuple[int, np.ndarray]] = deque(maxlen=RAW_RING_SEC * 100)
         self._vad_pos = 0  # 已喂给主 VAD 的 16k 样本数，与 VAD 段的 start 对齐
         self._dropped = 0  # in_q 满丢掉的帧数
         self._underflows = 0  # 输出欠载次数
-        # 半句合并：上一轮还没出声就被打断，说明用户话没说完，把上一轮文本拼到下一句前面重发
-        self._last_text = ""  # 最近一次送进大脑的文本
-        self._last_text_t = 0.0  # 最近一次送进大脑的时刻（monotonic），续说窗口从这里算
-        self._carry = ""  # 待拼接到下一句前面的文本
-        self._reply_gen = -1  # 最近收到首 token 的代次：等于当前代次说明大脑已开始回复，不再允许续说拼接
-        self._tts_fails = 0  # 本轮 TTS 连续失败次数（只有大脑线程读写）
-        # 运行态：_paused 由监控回调置位/清除，主循环据此停开音频流；前端/大脑线程见到它就丢弃输入
-        self._paused = threading.Event()
+        self._paused = threading.Event()  # 游戏态：由运行态监控置位，主循环据此停开音频流
+        self._muted = threading.Event()  # 托盘静音：不听不说
+        self._front_dirty = False  # 静音期间前端丢过帧，恢复时先复位 VAD/ASR（只有前端线程读写）
+        self._exit_code: int | None = None  # 托盘要求的退出码
+        self.sleep_state = "awake"  # P4 休眠状态位，由控制口 /sleep-state 设置，托盘显示
+        self.last_error = ""  # 最近一轮的错误（网关 / TTS），托盘显示；下一轮成功出声后清空
+        self.health = Health()  # 网关、TTS 是否在线（HealthMonitor 更新）
         self.runtime = RuntimeMonitor(self._on_runtime)
 
         self.down = Downsampler(self.sr)
@@ -217,17 +206,24 @@ class VoiceDaemon:
             self.gate = None
         self.asr = StreamingASR()
         self.asr_final = FinalASR()  # 整段精识别（SenseVoice int8）：段结束后替换流式结果，失败回退流式
-        self.brain = Brain()
-        # 大脑模式：front-back=前台直连硅基说话 + 后台网关干活（默认）；legacy=旧单线网关
-        self.brain_mode = os.environ.get("GUANJIA_BRAIN_MODE", "front-back")
-        self.front = Front() if self.brain_mode != "legacy" else None
-        self.backoffice = BackOffice(on_done=self._on_task_done) if self.front else None
+        self.brain = Brain(session_key=MAIN_SESSION_KEY)  # 主线会话；流不可提前关（见 brain.py）
         self.tts = TTSClient(timeout=TTS_TIMEOUT_SEC)
+        self.runner = TurnRunner(
+            open_stream=lambda text: self.brain.stream(tag_voice_text(text)),
+            synth=self.tts.synth, enqueue=self._enqueue_pcm, current_gen=lambda: self._gen,
+            first_max_chars=FIRST_SENT_MAX_CHARS, max_tts_fails=TTS_MAX_FAILS)
+        self._earcon = earcon(self.sr)
+        self.barge = BargeDetector(BargeConfig(guard_ms=BARGE_GUARD_MS, tail_ms=BARGE_TAIL_MS, rms_min=BARGE_RMS_MIN,
+                                               floor_ratio=BARGE_FLOOR_RATIO, trigger_ms=BARGE_MS))
+        self._mon_ms, self._mon_peak = 0, 0.0  # barge-mon 日志计时与区间 RMS 峰值（只有前端线程读写）
+        self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
+                                     on_change=self._on_health, interval=HEALTH_EVERY_SEC)
+        self.tray = None  # run() 里按 tray_on 创建
+        self.control = None  # run() 里启动
         # 前端线程状态（只有前端线程读写）
         self._asr_stream = self.asr.new_stream()  # 当前这句话的 ASR 流，每段结束换新流
         self._preroll: deque[np.ndarray] = deque(maxlen=PREROLL_MS // 10)  # 最近 0.5s 的 16k 块
         self._was_speech = False  # 上一块 VAD 是否处于人声状态，用于捕捉起判沿
-        self._reset_barge()
 
     # ---------- 音频回调 ----------
     def _callback(self, indata, outdata, frames, time_info, status) -> None:
@@ -265,15 +261,15 @@ class VoiceDaemon:
         except queue.Full:
             self._dropped += 1
 
-    def _reset_barge(self) -> None:
-        """打断检测状态归零（启动 / 游戏态恢复时调用，只有前端线程读写）。"""
-        self.barge_vad = VAD(min_speech=BARGE_VAD_MIN_SPEECH, min_silence=BARGE_VAD_MIN_SILENCE)  # 只要门控，不取段
-        self._since_ref_ms = 10**9  # 距最近一帧"参考信号非零"（我们在出声）的毫秒数
-        self._play_ms = 0  # 本次连续播放已持续的毫秒数（用于保护期）
-        self._floor = BARGE_RMS_MIN * self.mic_gain  # AEC 后回声残留的自适应底噪（RMS，增益后）
-        self._energy = 0.0  # AEC 后 16k 信号的平滑 RMS
-        self._hot_ms = 0  # 当前人声里"能量过线"的累计毫秒
-        self._mon_ms, self._mon_peak, self._mon_raw = 0, 0.0, 0.0  # 监测日志计时、区间能量峰值、区间原始输入峰值
+    def _reset_frontend(self) -> None:
+        """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
+        self.vad = VAD()
+        self._vad_pos = 0
+        self._raw_ring.clear()
+        self._asr_stream = self.asr.new_stream()
+        self._preroll.clear()
+        self._was_speech = False
+        self.barge.reset()
 
     def _playing(self) -> bool:
         return self._play_pos < len(self._play_buf) or not self.play_q.empty()
@@ -287,18 +283,22 @@ class VoiceDaemon:
                 continue
             if self._paused.is_set():  # 游戏态：丢弃停流前残留的帧
                 continue
+            if self._muted.is_set():  # 静音：不听
+                self._front_dirty = True
+                continue
+            if self._front_dirty:
+                self._reset_frontend()
+                self._front_dirty = False
             try:
                 self._frontend_step(fr)
             except Exception:  # noqa: BLE001  单帧出错不能让整条听觉链"变聋"
                 log.exception("frontend error")
 
     def _frontend_step(self, fr: Frames) -> None:
-        """处理一帧：AEC → 16k → 增益 → VAD → 预滚/ASR → 打断判定 → 段结束出文字。"""
-        # 1) 回声消除（参考 = 我们刚播出的这帧）+ 2) 降采样到 16k + 软件增益（注册链 enroll 走同一条）
-        x = aec_cancel(self.aec, fr.mic, fr.ref) if self.aec else fr.mic  # AEC 关：打断底噪等也按原始输入算
+        """处理一帧：(AEC) → 16k → 增益 → VAD → 预滚/ASR → 打断判定 → 段结束出文字。"""
+        x = aec_cancel(self.aec, fr.mic, fr.ref) if self.aec else fr.mic
         y = apply_mic_gain(self.down.process(x), self.mic_gain)
         self._raw_ring.append((self._vad_pos, fr.mic))
-        # 3) VAD
         self.vad.push(y)
         self._vad_pos += len(y)
         speaking_now = self.vad.is_speech()
@@ -308,9 +308,9 @@ class VoiceDaemon:
                     self.asr.feed(self._asr_stream, c, SR16K)
             self.asr.feed(self._asr_stream, y, SR16K)
         self._preroll.append(y)
-        self._barge_step(y, fr.playing, float(np.max(np.abs(fr.mic))) if len(fr.mic) else 0.0)
+        rms = float(np.sqrt(np.mean(x * x))) if len(x) else 0.0  # 增益前的原始电平，打断阈值按它标定
+        self._barge_step(rms, fr.playing)
         self._was_speech = speaking_now
-        # 4) 语音段结束 → 声纹 → 取文字
         for seg in self.vad.pop_segments():
             stream, self._asr_stream = self._asr_stream, self.asr.new_stream()  # 每句一条新流，不带上一句残留
             if seg.duration < MIN_UTT_SEC:
@@ -318,11 +318,10 @@ class VoiceDaemon:
             self.asr.feed(stream, np.zeros(SR16K * 3 // 10, dtype=np.float32), SR16K)  # 补 0.3s 静音冲刷尾字
             self.asr.finish(stream)
             stream_text = self.asr.text(stream)  # 流式结果，留着与精识别对比
-            # 精识别：只要段够长就送（远场时流式常出空文本，精识别更抗噪）；seg.samples 已是加过增益的信号
             text = self.asr_final.transcribe(seg.samples, fallback=stream_text)
             self._dump_segment(seg, text)
             if not text:  # 精识别也为空：不过声纹、不算拒绝，直接丢
-                log.debug("丢弃空文本段 %.2fs", seg.duration)  # 流式、精识别均为空
+                log.debug("丢弃空文本段 %.2fs", seg.duration)
                 continue
             who, score = self.gate.identify(seg.samples) if self.gate else ("anyone", 1.0)
             if self.gate and who is None:
@@ -331,25 +330,15 @@ class VoiceDaemon:
                     continue
                 who = "未识别(放行)"  # log 模式：只记录不拦截
             log.info("[%s %.2f] %s  (stream: %s)", who, score, text, stream_text)
-            if self.state == "SPEAKING":
-                self._new_turn_over_old()
-            line_text = text  # 本句精识别文本（拼接前）
-            with self._lock:
-                if self._carry:
-                    text, self._carry = self._carry + text, ""
-                self._last_text, self._last_text_t = text, time.monotonic()
-            if text != line_text:
-                log.info("续说拼接后发送: %s", text)
-            self.text_q.put(text)
+            self._accept_utterance(text)
 
-    def _new_turn_over_old(self) -> None:
-        """旧轮还在进行时用户又说完一句：窗口内且大脑没开口 → 续说（拼接）；否则中止旧轮，新句单独成一轮。"""
-        in_window = time.monotonic() - self._last_text_t <= CONTINUE_WINDOW_SEC
-        replied = self._reply_gen == self._gen or self._played_gen == self._gen
-        if in_window and not replied:
-            self.stop_speaking("用户续说", carry=True)
-        else:
+    def _accept_utterance(self, text: str) -> None:
+        """一句话通过声纹：正在说就停（只停播放）；立刻放提示音；文字排进大脑队列。"""
+        if self.state == "SPEAKING":
             self.stop_speaking("新一轮")
+        if EARCON_ENABLED:
+            self.play_q.put((self._gen, self._earcon))
+        self.text_q.put(text)
 
     def _raw_for(self, seg) -> np.ndarray:
         """从原始环形缓冲取出与 VAD 段对齐的设备采样率原始音频（AEC 前、无增益）。"""
@@ -364,7 +353,7 @@ class VoiceDaemon:
         return raw[off: off + (end16 - start16) * decim]
 
     def _dump_segment(self, seg, text: str) -> None:
-        """落盘一段送识别的音频：_raw.wav（设备采样率原始）+ _proc.wav（AEC+增益+16k），只留最近 SEG_KEEP 段。"""
+        """落盘一段送识别的音频：_raw.wav（设备采样率原始）+ _proc.wav（增益+16k），只留最近 SEG_KEEP 段。"""
         try:
             SEG_DUMP_DIR.mkdir(parents=True, exist_ok=True)
             label = re.sub(r'[\\/:*?"<>|\s]', "", text)[:10] or "空"
@@ -382,99 +371,54 @@ class VoiceDaemon:
         except OSError as e:  # 取证失败不影响对话
             log.warning("segment dump failed: %s", e)
 
-    def _barge_step(self, y: np.ndarray, ref_active: bool, raw_peak: float = 0.0) -> None:
-        """打断判定（每 10ms 一帧，前端线程）：
-
-        1. 用回调标记的"本块写出了真实语音"判断我们是否在出声（帧同步；保活噪声不算），带 BARGE_TAIL_MS 尾巴；
-        2. 播放中持续学习 AEC 后回声残留的底噪（只在没过线的帧上更新，用户开口时底噪不被抬高）；
-        3. 本轮已出声 + 过了保护期 + 快速 VAD 判人声 + 平滑能量 > max(下限, 底噪×倍数)，累计 ≥ BARGE_MS 即打断。
-        还没出声时（大脑在想）一律不打断，避免"没出声就被打断"；那种情况由整句结束时的"续说"处理。
-        """
-        self.barge_vad.push(y)
-        self.barge_vad.pop_segments()  # 丢弃分段，防内部缓冲增长
-        voice = self.barge_vad.is_speech()
-        self._since_ref_ms = 0 if ref_active else self._since_ref_ms + 10
-        playing = self._since_ref_ms <= BARGE_TAIL_MS
-        rms = float(np.sqrt(np.mean(y * y))) if len(y) else 0.0
-        self._energy += BARGE_SMOOTH_ALPHA * (rms - self._energy)
-        if not playing:
-            self._play_ms, self._hot_ms, self._mon_ms, self._mon_peak, self._mon_raw = 0, 0, 0, 0.0, 0.0
-            return
-        self._play_ms += 10
-        line = max(BARGE_RMS_MIN * self.mic_gain, self._floor * BARGE_FLOOR_RATIO)
-        hot = voice and self._energy > line
-        if not hot:  # 没过线的播放帧 = 回声残留样本，更新底噪
-            self._floor += BARGE_FLOOR_ALPHA * (self._energy - self._floor)
-        self._hot_ms = self._hot_ms + 10 if hot else (self._hot_ms if voice else 0)
-        self._mon_ms += 10
-        self._mon_peak = max(self._mon_peak, self._energy)
-        self._mon_raw = max(self._mon_raw, raw_peak)  # AEC 之前的原始输入峰值：区分"硬件给零"与"AEC 抹零"
-        if self._mon_ms >= BARGE_LOG_EVERY_MS:
-            log.debug("barge-mon raw_peak=%.5f floor=%.4f line=%.4f peak=%.4f hot=%dms voice=%s", self._mon_raw,
-                      self._floor, line, self._mon_peak, self._hot_ms, voice)
-            self._mon_ms, self._mon_peak, self._mon_raw = 0, 0.0, 0.0
-        if (self.state == "SPEAKING" and self._played_gen == self._gen and self._play_ms >= BARGE_GUARD_MS
-                and self._hot_ms >= BARGE_MS):
-            log.info("barge-in: hot=%dms energy=%.4f floor=%.4f", self._hot_ms, self._energy, self._floor)
-            self._hot_ms = 0
+    def _barge_step(self, rms: float, ref_active: bool) -> None:
+        """打断判定（每 10ms 一帧，前端线程）：交给 BargeDetector；出声期间每秒打一行 barge-mon 供校准。"""
+        hit = self.barge.step(rms, ref_active)
+        if self.barge.playing:
+            self._mon_ms += 10
+            self._mon_peak = max(self._mon_peak, rms)
+            if self._mon_ms >= BARGE_LOG_EVERY_MS:
+                log.debug("barge-mon rms_peak=%.5f energy=%.5f floor=%.5f line=%.5f hot=%dms", self._mon_peak,
+                          self.barge.energy, self.barge.floor, self.barge.line, self.barge.hot_ms)
+                self._mon_ms, self._mon_peak = 0, 0.0
+        else:
+            self._mon_ms, self._mon_peak = 0, 0.0
+        if hit and self.state == "SPEAKING" and self._played_gen == self._gen:
+            log.info("barge-in: energy=%.4f floor=%.4f line=%.4f", self.barge.energy, self.barge.floor, self.barge.line)
             self.stop_speaking("barge-in")
 
     # ---------- 大脑线程 ----------
     def _brainloop(self) -> None:
         while not self._stop_evt.is_set():
             try:
-                text = self.text_q.get(timeout=0.2)
+                item = self.text_q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if self._paused.is_set():  # 游戏态：不出声，积压的话直接丢掉
+            if self._paused.is_set() or self._muted.is_set():  # 游戏态 / 静音：积压的话直接丢掉
                 continue
             try:
-                self._handle_text(text)
+                self._handle_item(item)
             except Exception:  # noqa: BLE001  一轮出错不能让大脑线程退出
                 log.exception("brain loop error")
 
-    def _handle_text(self, text: str) -> None:
-        """一轮对话：流式取回复 → 按句合成入队 → 等播完；任何时刻换代即放弃。"""
+    def _handle_item(self, item: str | SayItem) -> None:
+        """一轮：语音的话进主线会话 / /say 的话直接念；等本轮播完再回到监听（被打断时 stop_speaking 已经切了）。"""
         gen = self._begin_speaking()
-        self._tts_fails = 0
         self._turn_first = True
+        self._turn_t0 = time.monotonic()
         try:
-            splitter = SentenceSplitter(first_hard_max_chars=FIRST_SENT_MAX_CHARS)
-            reply = []
-            try:
-                stream = self._open_stream(text)
-                try:
-                    alive = True  # False = 被换代或 TTS 连续失败，放弃本轮剩余内容
-                    for piece in stream:
-                        if gen != self._gen:
-                            break
-                        self._reply_gen = gen  # 已收到首 token：之后的新句不再按续说拼接
-                        reply.append(piece)
-                        for sent in splitter.push(piece):
-                            if not self._say(sent, gen):
-                                alive = False
-                                break
-                        if not alive:
-                            break
-                    else:
-                        for sent in splitter.flush():
-                            if not self._say(sent, gen):
-                                break
-                finally:
-                    stream.close()
-            except Exception as e:  # noqa: BLE001
-                if gen == self._gen:
-                    log.error("brain error: %s", e)
-                else:
-                    log.debug("brain stream aborted by barge-in: %s", e)
-            log.info("reply: %s", "".join(reply))
-            if self.front and not isinstance(text, Task):  # 前台本轮若派了任务，交后台异步执行
-                task = self.front.take_task()
-                if task:
-                    self.backoffice.dispatch(task)  # 新任务 / 确认续跑 / 取消
-            if gen == self._gen and self._tts_fails >= TTS_MAX_FAILS:  # TTS 挂了：本轮结束并复位，不阻塞下一轮
-                self.stop_speaking("TTS 连续失败")
-            # 等播完再回到 LISTENING（打断时 stop_speaking 已经切了）
+            if isinstance(item, SayItem):
+                res = self.runner.run_say(item.text, gen)
+                log.info("say: %s", item.text)
+            else:
+                res = self.runner.run_reply(item, gen)
+                log.info("reply: %s", res.reply)
+            if res.unspoken:
+                log.warning("unspoken %d (aborted=%s): %s", len(res.unspoken), res.aborted, " / ".join(res.unspoken)[:300])
+            if res.error:
+                self._set_error(res.error)
+            elif res.spoken:
+                self._set_error("")
             while gen == self._gen and self._playing() and not self._stop_evt.is_set():
                 time.sleep(0.05)
         finally:
@@ -482,68 +426,31 @@ class VoiceDaemon:
                 if gen == self._gen:
                     self.state = "LISTENING"
 
-    def _open_stream(self, item):
-        """按模式选本轮的回复流：legacy 走网关；front-back 下用户话走前台，后台结果走前台改写。"""
-        if self.front is None:
-            return self.brain.stream(item, system=_system_prompt())
-        if isinstance(item, Task):
-            return self.front.rephrase(item.id, item.text, item.status, item.result)
-        return self.front.stream(item, active=self.backoffice.active(), awaiting=self.backoffice.awaiting())
-
-    def _on_task_done(self, t: Task) -> None:
-        """后台线程回调：结果排进大脑队列，正在播报时自然排在当前这轮之后说。"""
-        if t.reply_when_done or t.status in ("awaiting_confirm", "expired"):  # 要确认 / 作废必须说给主人
-            self.text_q.put(t)
-        else:
-            self.front.note_done(t.id, t.text, t.status, t.result)
-
-    def _say(self, sent: str, gen: int) -> bool:
-        """合成并入队一句；代次不符则放弃。返回本轮是否该继续（被换代或 TTS 连续失败达上限返回 False）。"""
-        if gen != self._gen:
-            return False
-        try:
-            pcm, sr = self.tts.synth(sent)
-        except Exception as e:  # noqa: BLE001
-            if gen != self._gen:
-                return False
-            self._tts_fails += 1
-            log.error("tts error (%d/%d): %s", self._tts_fails, TTS_MAX_FAILS, e)
-            if self._tts_fails >= TTS_MAX_FAILS:
-                log.warning("TTS 连续失败 %d 次，结束本轮：%r", self._tts_fails, sent)
-                return False
-            return True  # 放弃这一句，继续下一句
-        self._tts_fails = 0
-        if gen != self._gen:
-            return False
+    def _enqueue_pcm(self, gen: int, pcm: np.ndarray, sr: int) -> None:
+        """TurnRunner 的入队回调：重采样到流采样率；本轮第一句前补静音前导并记首音延迟。"""
         if sr != self.sr:
             x_old = np.linspace(0, 1, len(pcm), endpoint=False)
             x_new = np.linspace(0, 1, int(len(pcm) * self.sr / sr), endpoint=False)
             pcm = np.interp(x_new, x_old, pcm).astype(np.float32)
-        if self._turn_first:  # 本轮第一句：补静音前导
+        if self._turn_first:
             pcm = np.concatenate([np.zeros(self.sr * LEAD_SILENCE_MS // 1000, dtype=np.float32), pcm])
             self._turn_first = False
+            log.info("first audio %.2fs after turn start", time.monotonic() - self._turn_t0)
         self.play_q.put((gen, pcm))  # 即使此刻恰好被打断，回调也会按代次丢掉它
-        return True
 
     def _begin_speaking(self) -> int:
         with self._lock:
             self.state = "SPEAKING"
             return self._gen
 
-    def stop_speaking(self, reason: str, carry: bool = False) -> None:
-        """打断：换代（回调自行丢弃旧代音频）、关闭进行中的网关流和 TTS 请求、清播放队列、回到监听。
+    def stop_speaking(self, reason: str) -> None:
+        """打断：换代（回调自行丢弃旧代音频）、断开进行中的 TTS 请求、清播放队列、回到监听。
 
-        carry=True 仅用于续说：把上一句存进 _carry，由前端拼到新句前面重发。
+        不碰网关流：断开连接会让网关取消这一轮（连同它等着的审批）；大脑线程会把流读完，只是不再合成。
         """
         with self._lock:
             self._gen += 1
             self.state = "LISTENING"
-            if carry and self._last_text:
-                self._carry = self._last_text
-            # 在锁内关闭：_begin_speaking 也取锁，保证只关到旧代次的请求
-            self.brain.abort()
-            if self.front:
-                self.front.abort()  # 只停前台流；后台任务不受打断影响
             self.tts.abort()
         while True:  # 清播放队列（回调也会按代次丢弃，这里立即清掉省得积压）
             try:
@@ -551,6 +458,68 @@ class VoiceDaemon:
             except queue.Empty:
                 break
         log.info("stop speaking (%s)", reason)
+
+    # ---------- 控制口 / 托盘 ----------
+    def say(self, text: str) -> tuple[bool, str]:
+        """控制口 /say：静音或游戏中拒绝，否则排进大脑队列（与语音轮按顺序念，不会叠在一起）。"""
+        if self._muted.is_set():
+            return False, "muted"
+        if self._paused.is_set():
+            return False, "gaming"
+        self.text_q.put(SayItem(text))
+        log.info("say queued: %s", text)
+        return True, "queued"
+
+    def status(self) -> dict:
+        """控制口 /status：托盘同款状态。"""
+        v = self.view()
+        return {"view": v.key, "label": v.label, "state": self.state, "muted": self._muted.is_set(),
+                "gaming": self._paused.is_set(), "runtime": self.runtime.state, "gateway": self.health.gateway,
+                "tts": self.health.tts, "error": self.last_error, "sleep": self.sleep_state, "pending": self.text_q.qsize()}
+
+    def set_sleep_state(self, state: str) -> bool:
+        """控制口 /sleep-state：P4 休眠状态位，只做显示。"""
+        self.sleep_state = state
+        self._refresh_tray()
+        return True
+
+    def view(self) -> TrayView:
+        return tray_view(muted=self._muted.is_set(), gaming=self._paused.is_set(), busy=self.state == "SPEAKING",
+                         health=self.health, last_error=self.last_error, sleep_state=self.sleep_state)
+
+    def toggle_mute(self) -> None:
+        """托盘左键：静音（不听不说，立即停播）/ 取消静音。"""
+        if self._muted.is_set():
+            self._muted.clear()
+            log.info("unmuted")
+        else:
+            self._muted.set()
+            self.stop_speaking("静音")
+            log.info("muted")
+        self._refresh_tray()
+
+    def request_exit(self, code: int) -> None:
+        """托盘菜单：退出语音（0，看门狗不再拉起）/ 重启语音（3，看门狗立即拉起）。"""
+        log.info("exit requested from tray: code=%d", code)
+        self._exit_code = code
+        self._stop_evt.set()
+
+    def _set_error(self, msg: str) -> None:
+        msg = msg[:120]
+        if msg != self.last_error:
+            self.last_error = msg
+            if msg:
+                log.warning("error: %s", msg)
+            self._refresh_tray()
+
+    def _on_health(self, h: Health) -> None:
+        self.health = h
+        log.info("health: gateway=%s tts=%s", h.gateway, h.tts)
+        self._refresh_tray()
+
+    def _refresh_tray(self) -> None:
+        if self.tray:
+            self.tray.refresh()
 
     # ---------- 运行态 ----------
     def _on_runtime(self, old: str, new: str) -> None:
@@ -564,7 +533,7 @@ class VoiceDaemon:
             self._paused.clear()
 
     def quiet(self) -> bool:
-        """主动侧（S3）查询：游戏中或开机/游戏后 5 分钟静默期内返回 True，不许主动开口。"""
+        """主动侧查询：游戏中或开机/游戏后 5 分钟静默期内返回 True，不许主动开口。"""
         return self.runtime.is_quiet()
 
     @property
@@ -591,33 +560,43 @@ class VoiceDaemon:
         """离开游戏态：重建 ASR/VAD 与前端状态，重开音频流，后台让 TTS 预加载。主循环调用。"""
         self.asr = StreamingASR()
         self.asr_final = FinalASR()
-        self.vad = VAD()
-        self._vad_pos = 0
-        self._raw_ring.clear()
-        self._asr_stream = self.asr.new_stream()
-        self._preroll.clear()
-        self._was_speech = False
-        self._reset_barge()
+        self._reset_frontend()
         s.start()
         threading.Thread(target=self.tts.control, args=("load",), name="tts-load", daemon=True).start()
         log.info("gaming 结束: 音频流已恢复")
 
     # ---------- 主循环 ----------
     def run(self) -> None:
-        log.info("device rate %d, in=%s out=%s, speakers=%s(%s), gate=%s@%.2f, mic_gain=%.1f, aec=%s, barge=%dms guard=%dms ratio=%.1f, "
-                 "tts_timeout=%.0fs", self.sr, self.in_dev, self.out_dev, self.gate.names() if self.gate else "off",
-                 self.gate.model.stem if self.gate else "-", self.gate_mode, self.spk_threshold, self.mic_gain, "on" if self.aec else "off", BARGE_MS, BARGE_GUARD_MS, BARGE_FLOOR_RATIO,
-                 TTS_TIMEOUT_SEC)
+        log.info("device rate %d, in=%s out=%s, speakers=%s(%s), gate=%s@%.2f, mic_gain=%.1f, aec=%s, barge=%dms guard=%dms "
+                 "rms_min=%.4f ratio=%.1f, tts_timeout=%.0fs, session=%s, control=127.0.0.1:%d", self.sr, self.in_dev,
+                 self.out_dev, self.gate.names() if self.gate else "off", self.gate.model.stem if self.gate else "-",
+                 self.gate_mode, self.spk_threshold, self.mic_gain, "on" if self.aec else "off", BARGE_MS, BARGE_GUARD_MS,
+                 BARGE_RMS_MIN, BARGE_FLOOR_RATIO, TTS_TIMEOUT_SEC, MAIN_SESSION_KEY, self.control_port)
+        try:
+            self.control = start_control_server(self, self.control_port)
+        except OSError as e:
+            log.error("控制口 127.0.0.1:%d 绑不上（是不是已经有一个语音进程在跑？）：%s", self.control_port, e)
+            sys.exit(EXIT_CRASH)
         threads = [threading.Thread(target=self._frontend, name="frontend", daemon=True),
                    threading.Thread(target=self._brainloop, name="brain", daemon=True)]
         for t in threads:
             t.start()
+        self.monitor.start()
+        if self.tray_on:
+            from guanjia.tray import Tray  # 延迟导入：--no-tray 时不需要 pystray/Pillow
+
+            self.tray = Tray(view=self.view, muted=self._muted.is_set, on_toggle_mute=self.toggle_mute,
+                             on_restart=lambda: self.request_exit(EXIT_RESTART),
+                             on_exit=lambda: self.request_exit(EXIT_QUIT))
+            self.tray.start()
         failed = False
+        shown = ""
         last_stats, stats = time.monotonic(), (0, 0)
         with sd.Stream(samplerate=self.sr, blocksize=self.frame, dtype="float32", channels=1, latency="low",
                        device=(self.in_dev, self.out_dev), callback=self._callback) as s:
             log.info("listening ... (latency in/out %.3f/%.3f s; output stream always-open, comfort noise %.0f dBFS, "
-                     "lead %dms, dump %s)", *s.latency, COMFORT_NOISE_DBFS, LEAD_SILENCE_MS, SEG_DUMP_DIR)
+                     "lead %dms, earcon %s, dump %s)", *s.latency, COMFORT_NOISE_DBFS, LEAD_SILENCE_MS,
+                     "on" if EARCON_ENABLED else "off", SEG_DUMP_DIR)
             self.runtime.start()  # 开机补写离线区间 + 5 分钟静默；之后每 2s 检测游戏态
             try:
                 while not self._stop_evt.is_set():
@@ -629,9 +608,13 @@ class VoiceDaemon:
                         self._resume_audio(s)
                     dead = [t.name for t in threads if not t.is_alive()]
                     if dead or (not s.active and not paused):
-                        log.error("worker died: threads=%s stream_active=%s，退出等待自启拉起", dead, s.active)
+                        log.error("worker died: threads=%s stream_active=%s，退出等待看门狗拉起", dead, s.active)
                         failed = True
                         break
+                    key = self.view().key
+                    if key != shown:  # 说话中 ↔ 在听 等状态变化同步到托盘
+                        shown = key
+                        self._refresh_tray()
                     while self._play_events:  # 回调记下的"真正写入输出流"的时刻与时长
                         t0, dur, g = self._play_events.popleft()
                         log.info("play: start=%s dur=%.2fs gen=%d", datetime.fromtimestamp(t0).strftime("%H:%M:%S.%f")[:-3],
@@ -642,11 +625,16 @@ class VoiceDaemon:
                             stats = (self._dropped, self._underflows)
                             log.warning("累计丢帧 %d，输出欠载 %d", *stats)
             except KeyboardInterrupt:
-                pass
+                self._exit_code = EXIT_QUIT
         self._stop_evt.set()
         self.runtime.stop()  # 最后一次心跳，下次开机据此算离线区间
-        if failed:
-            sys.exit(1)
+        self.monitor.stop()
+        if self.tray:
+            self.tray.stop()
+        self.control.shutdown()
+        code = EXIT_CRASH if failed else (EXIT_QUIT if self._exit_code is None else self._exit_code)
+        log.info("voice daemon exit code=%d", code)
+        sys.exit(code)
 
 
 def main() -> None:
@@ -656,17 +644,24 @@ def main() -> None:
     ap.add_argument("--no-gate", action="store_true", help="关闭声纹放行（调试用）")
     ap.add_argument("--spk-threshold", type=float, default=SPK_THRESHOLD, help="声纹放行阈值")
     ap.add_argument("--gate-mode", choices=("enforce", "log"), default=SPK_GATE_MODE, help="log=只记录声纹分不拦截")
-    ap.add_argument("--mic-gain", type=float, default=MIC_GAIN, help="AEC 后软件增益（tanh 软限幅）")
+    ap.add_argument("--mic-gain", type=float, default=MIC_GAIN, help="软件增益（tanh 软限幅）")
     ap.add_argument("--aec", choices=("on", "off"), default="on" if AEC_ENABLED else "off", help="speex AEC 开关（默认关）")
+    ap.add_argument("--no-tray", action="store_true", help="不显示托盘图标（调试用）")
+    ap.add_argument("--control-port", type=int, default=CONTROL_PORT, help="本机控制口端口（/say、/status）")
     ap.add_argument("-v", action="store_true")
-    ap.add_argument("--log-file", default=None, help="同时把日志写到这个文件（控制台照常输出）")
+    ap.add_argument("--log-file", default=None, help="同时把日志写到这个文件（按 5MB 轮转，留 3 份）")
     a = ap.parse_args()
-    handlers = [logging.StreamHandler(sys.stdout)]  # 走 stdout，避免 PowerShell 把 stderr 日志当成红色错误
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]  # 走 stdout，避免 PowerShell 把 stderr 当错误
     if a.log_file:
-        handlers.append(logging.FileHandler(a.log_file, encoding="utf-8"))
-    logging.basicConfig(level=logging.DEBUG if a.v else logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
+        handlers.append(logging.handlers.RotatingFileHandler(a.log_file, maxBytes=LOG_MAX_BYTES, backupCount=3,
+                                                             encoding="utf-8"))
+    logging.basicConfig(level=logging.DEBUG if a.v else logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                        handlers=handlers)
+    for noisy in ("httpcore", "PIL"):  # 这两个的 DEBUG 太吵
+        logging.getLogger(noisy).setLevel(logging.INFO)
     VoiceDaemon(in_dev=a.in_dev, out_dev=a.out_dev, speaker_gate=not a.no_gate, spk_threshold=a.spk_threshold,
-                gate_mode=a.gate_mode, mic_gain=a.mic_gain, aec_on=a.aec == "on").run()
+                gate_mode=a.gate_mode, mic_gain=a.mic_gain, aec_on=a.aec == "on", tray_on=not a.no_tray,
+                control_port=a.control_port).run()
 
 
 if __name__ == "__main__":
@@ -674,6 +669,6 @@ if __name__ == "__main__":
 
 # ---------- 评审未修项（voice-review.md 编号）----------
 # P2-10 MIN_UTT_SEC 过滤无效：段内回看/尾静音的实际占比需实录测量后再定判据，盲调会误伤"开灯"这类短指令。
-# P2-11 identify 仍在前端线程同步执行：长段 CAM++ 会短暂阻塞打断判定；已加丢帧计数日志，移到独立线程待实测确有积压再做。
-# P2-15 TTS 仍用线性插值重采样：resample_poly 需要 scipy，本次约束不引入新依赖；手写多相滤波超出顺手修范围。
-# P1-4 余项：latency='low' 已设，但 AEC 对齐需在家用真实 TTS wav 重跑 aec_probe 实测；BARGE_FLOOR_RATIO / BARGE_RMS_MIN 按 barge-mon 日志实测标定。
+# P2-11 identify 仍在前端线程同步执行：长段 CAM++ 会短暂阻塞打断判定；已加丢帧计数日志，确有积压再移到独立线程。
+# P2-15 TTS 仍用线性插值重采样：resample_poly 需要 scipy，本次不引入新依赖。
+# P2（本期）打断阈值 BARGE_RMS_MIN 按 10-01 日志推算，验收时按 barge-mon 实测再定；TTS 服务端不会因客户端断开而中止合成。
