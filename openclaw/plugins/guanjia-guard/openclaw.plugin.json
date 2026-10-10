@@ -3,7 +3,7 @@
   "name": "Guanjia Guard",
   "description": "L0-L3 tool gating, cloud redaction proxy, habit confirmation flow.",
   "activation": { "onStartup": true },
-  "contracts": { "tools": ["speak"] },
+  "contracts": { "tools": ["speak", "launch_app", "get_location", "get_weather"] },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

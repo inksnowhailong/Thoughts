@@ -8,14 +8,15 @@ import { createGuard } from "./src/guard";
 import { startRedactProxy } from "./src/redact";
 import { onUserTurn as habitOnUserTurn } from "./src/habits";
 import { createSpeakTool, stripVoiceTag } from "./src/speak";
+import { createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
 import type { LevelsFile } from "./src/levels";
 
 /**
  * 管家插件入口。四件事：
- *   1. before_tool_call    → 分级中间层（guard.ts）
+ *   1. before_tool_call    → 分级中间层（guard.ts）：默认直接做，少数先口头问
  *   2. 网关服务            → 上云脱敏代理（redact.ts）
- *   3. before_prompt_build → L2 口头确认 + 习惯草案发问（guard.ts / habits.ts）；语音轮的「[语音 …]」标记先剥掉
- *   4. speak 工具          → 让家里电脑用管家音色念一句（speak.ts，调本机语音守护进程，分级 L1）
+ *   3. before_prompt_build → 口头确认 / 「以后都允许」+ 习惯草案发问（guard.ts / habits.ts）；语音轮的「[语音 …]」标记先剥掉
+ *   4. 工具                → speak（念一句）、launch_app（开程序）、get_location（定位）、get_weather（天气）
  * 所有状态落在 workspace/guanjia/，审计写 workspace/guanjia/audit.jsonl。
  */
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -43,7 +44,7 @@ export default definePluginEntry({
     // 1) 工具调用分级
     api.on("before_tool_call", (event: any, ctx: any) => guard.beforeToolCall(event, ctx), { priority: 100 });
 
-    // 3) 用户开口：登记触发来源 → L2 确认优先 → 否则看要不要问习惯草案
+    // 3) 用户开口：登记触发来源 → 口头确认优先 → 否则看要不要问习惯草案
     const handledMessages = new Set<string>();
     api.on("before_prompt_build", async (event: any, ctx: any) => {
       guard.noteRun(ctx?.runId, ctx?.trigger);
@@ -55,17 +56,22 @@ export default definePluginEntry({
       handledMessages.add(msgId);
       if (handledMessages.size > 500) handledMessages.delete(handledMessages.values().next().value!);
 
-      const userText: string = stripVoiceTag(event.currentUserMessage ?? event.prompt ?? "");
+      // HTTP 语音轮走嵌入式运行器，没有 currentUserMessage，prompt 就是「[语音 …] 原话」
+      const rawText: string = event.currentUserMessage ?? event.prompt ?? "";
+      const userText = stripVoiceTag(rawText);
       if (!userText.trim()) return;
-      const confirmNote = guard.onUserTurn(ctx?.sessionKey, userText);
+      const confirmNote = guard.onUserTurn(ctx?.sessionKey, rawText);
       if (confirmNote) return { appendContext: confirmNote };
       const cron = getCron?.();
       const habitNote = await habitOnUserTurn(store, userText, cron ? (input) => cron.add(input) : undefined, cfg.habitTz ?? "Asia/Shanghai");
       if (habitNote) return { appendContext: habitNote };
     });
 
-    // 4) 让电脑念出来（清单 contracts.tools 里已声明 speak）
+    // 4) 工具（清单 contracts.tools 里逐个声明）
     api.registerTool(createSpeakTool({ url: cfg.speakUrl }));
+    api.registerTool(createLaunchAppTool({ workspaceDir }));
+    api.registerTool(createGetLocationTool({ workspaceDir }));
+    api.registerTool(createGetWeatherTool({ workspaceDir }));
 
     // 2) 脱敏代理随网关起停
     let stopProxy: (() => Promise<void>) | undefined;
