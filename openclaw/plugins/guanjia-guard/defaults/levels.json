@@ -21,6 +21,7 @@
     "ask_user": "L0",
     "progress_card": "L1",
     "tts": "L1",
+    "speak": "L1",
     "browser": "L1",
     "cron": "L1",
     "automations": "L1",

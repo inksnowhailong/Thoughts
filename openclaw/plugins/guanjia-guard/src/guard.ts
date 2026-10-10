@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { classify, resolveToolCallTarget, type Classification, type Level, type LevelsFile } from "./levels";
 import type { Store } from "./store";
+import { stripVoiceTag } from "./speak";
 
 /**
  * 分级中间层（D6）：before_tool_call 里定级并放行 / 拦截 / 走审批。
@@ -115,7 +116,7 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     if (!sessionKey) return undefined;
     const p = pending.get(sessionKey);
     if (!p || p.expiresAt < Date.now()) return undefined;
-    if (!CONFIRM_RE.test(userText.trim())) {
+    if (!CONFIRM_RE.test(stripVoiceTag(userText).trim())) {
       pending.delete(sessionKey);
       store.audit({ kind: "tool", decision: "l2-dropped", sessionKey, summary: p.summary });
       return undefined;

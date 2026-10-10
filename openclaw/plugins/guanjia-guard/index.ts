@@ -7,13 +7,15 @@ import { createStore } from "./src/store";
 import { createGuard } from "./src/guard";
 import { startRedactProxy } from "./src/redact";
 import { onUserTurn as habitOnUserTurn } from "./src/habits";
+import { createSpeakTool, stripVoiceTag } from "./src/speak";
 import type { LevelsFile } from "./src/levels";
 
 /**
- * 管家 S3 插件入口。三件事：
- *   1. before_tool_call  → 分级中间层（guard.ts）
- *   2. 网关服务          → 上云脱敏代理（redact.ts）
- *   3. before_prompt_build → L2 口头确认 + 习惯草案发问（guard.ts / habits.ts）
+ * 管家插件入口。四件事：
+ *   1. before_tool_call    → 分级中间层（guard.ts）
+ *   2. 网关服务            → 上云脱敏代理（redact.ts）
+ *   3. before_prompt_build → L2 口头确认 + 习惯草案发问（guard.ts / habits.ts）；语音轮的「[语音 …]」标记先剥掉
+ *   4. speak 工具          → 让家里电脑用管家音色念一句（speak.ts，调本机语音守护进程，分级 L1）
  * 所有状态落在 workspace/guanjia/，审计写 workspace/guanjia/audit.jsonl。
  */
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +30,7 @@ export default definePluginEntry({
       workspaceDir?: string;
       proxy?: { enabled?: boolean; port?: number; upstreamOrigin?: string };
       habitTz?: string;
+      speakUrl?: string;
     };
     const workspaceDir = cfg.workspaceDir ?? path.join(os.homedir(), ".openclaw", "workspace");
     const store = createStore(workspaceDir, defaultsDir);
@@ -52,7 +55,7 @@ export default definePluginEntry({
       handledMessages.add(msgId);
       if (handledMessages.size > 500) handledMessages.delete(handledMessages.values().next().value!);
 
-      const userText: string = event.currentUserMessage ?? event.prompt ?? "";
+      const userText: string = stripVoiceTag(event.currentUserMessage ?? event.prompt ?? "");
       if (!userText.trim()) return;
       const confirmNote = guard.onUserTurn(ctx?.sessionKey, userText);
       if (confirmNote) return { appendContext: confirmNote };
@@ -60,6 +63,9 @@ export default definePluginEntry({
       const habitNote = await habitOnUserTurn(store, userText, cron ? (input) => cron.add(input) : undefined, cfg.habitTz ?? "Asia/Shanghai");
       if (habitNote) return { appendContext: habitNote };
     });
+
+    // 4) 让电脑念出来（清单 contracts.tools 里已声明 speak）
+    api.registerTool(createSpeakTool({ url: cfg.speakUrl }));
 
     // 2) 脱敏代理随网关起停
     let stopProxy: (() => Promise<void>) | undefined;
