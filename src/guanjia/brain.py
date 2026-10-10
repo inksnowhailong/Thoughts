@@ -1,8 +1,12 @@
 """大脑客户端：把识别出的文字交给 OpenClaw 网关（OpenAI 兼容的 /v1/chat/completions），流式收回回复文本。
 
 - token 从 ~/.openclaw/openclaw.json 读（gateway.auth.token），也可用环境变量 GUANJIA_GATEWAY_TOKEN 覆盖；
-- `stream(text)` 是同步生成器，逐段 yield 回复文本；调用方随时 `close()` 生成器即视为打断，底层连接随之关闭；
-- 会话由网关按 user 字段隔离；这里固定一个 user，保证语音入口是同一条会话。
+- 语音（P2 起）：带 x-openclaw-session-key: agent:main:main 进主线会话，不带 user、不带 system、默认不换模型
+  （走网关默认 DeepSeek-V4-Flash）；每句话前加「[语音 时间]」标记，AGENTS.md 据此只在语音轮简短作答。
+  标记放在用户消息里而不是 system：system 每轮变化会打掉网关的提示缓存，首字更慢；
+- stream(text) 是同步生成器，逐段 yield 回复文本。语音侧不得提前关闭它：网关把客户端断开当作取消本轮
+  （连同这一轮里等着的审批），所以打断只停播放，流要读到 [DONE]；读超时同样会断开，故设得很长；
+- user 会话方式（backoffice 用）保留兼容。
 """
 
 from __future__ import annotations
@@ -10,16 +14,29 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 
 DEFAULT_URL = "http://127.0.0.1:18789/v1/chat/completions"
-# 语音入口指定的网关模型（x-openclaw-model 头，写法 siliconflow/<SiliconFlow 模型 id>）：
-# Qwen3.8-27B 实测首 token 0.43~0.58s，口语质量优于 Qwen3.6 与 DeepSeek-V4-Flash。
-# 环境变量 GUANJIA_VOICE_MODEL 可改；设为空串则不加头，走网关默认模型
-VOICE_MODEL = os.environ.get("GUANJIA_VOICE_MODEL", "siliconflow/Qwen/Qwen3.8-27B")
-VOICE_USER = "voice-desktop"
+MAIN_SESSION_KEY = "agent:main:main"  # 主线会话：主人的语音 + 微信共用
+# 语音入口指定的网关模型（x-openclaw-model 头）；空串 = 不加头，走网关默认模型（DeepSeek-V4-Flash）
+VOICE_MODEL = os.environ.get("GUANJIA_VOICE_MODEL", "")
+# 流式读超时：要远长于 L3 审批（120 秒）和慢工具。读超时会断开连接 = 取消本轮，宁可多等
+STREAM_READ_TIMEOUT_SEC = 900.0
+_WEEKDAY_CN = "一二三四五六日"
+
+
+def voice_tag(now: datetime | None = None) -> str:
+    """语音轮标记，例如「[语音 2026-10-10 18:05 周六]」；AGENTS.md 的语音规则和分级插件都认这个前缀。"""
+    now = now or datetime.now()
+    return f"[语音 {now:%Y-%m-%d %H:%M} 周{_WEEKDAY_CN[now.weekday()]}]"
+
+
+def tag_voice_text(text: str, now: datetime | None = None) -> str:
+    """给识别出的一句话加上语音轮标记。"""
+    return f"{voice_tag(now)} {text}"
 
 
 def load_gateway_token() -> str:
@@ -34,35 +51,44 @@ def load_gateway_token() -> str:
 class Brain:
     """OpenClaw 网关的最小客户端。"""
 
-    def __init__(self, url: str = DEFAULT_URL, token: str | None = None, timeout: float = 120.0,
-                 model: str | None = None, user: str = VOICE_USER) -> None:
+    def __init__(self, url: str = DEFAULT_URL, token: str | None = None, timeout: float = STREAM_READ_TIMEOUT_SEC,
+                 model: str | None = None, user: str | None = None, session_key: str | None = None,
+                 transport: httpx.BaseTransport | None = None) -> None:
         self.url = url
-        self.model = VOICE_MODEL if model is None else model  # x-openclaw-model 头；后台可指定别的模型
-        self.user = user  # 网关会话隔离键
+        self.model = VOICE_MODEL if model is None else model  # x-openclaw-model 头；空串不加
+        self.user = user  # 旧方式：网关按 user 派生会话（只在没有 session_key 时发送）
+        self.session_key = session_key  # 新方式：显式会话键，例如 agent:main:main
         self.token = token or load_gateway_token()
-        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False)  # 本机网关，不走系统代理
-        self._resp: httpx.Response | None = None  # 进行中的流式响应，供 abort() 从别的线程关闭
+        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False,  # 本机网关，不走系统代理
+                                    transport=transport)
+        self._resp: httpx.Response | None = None  # 进行中的流式响应（仅供旧代码 abort 用，语音侧不调用）
 
     def _headers(self) -> dict[str, str]:
         h = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         if self.model:
             h["x-openclaw-model"] = self.model
+        if self.session_key:
+            h["x-openclaw-session-key"] = self.session_key
         return h
+
+    def _body(self, text: str, system: str | None, stream: bool) -> dict:
+        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": text}]
+        body: dict = {"model": "openclaw", "messages": msgs}
+        if stream:
+            body["stream"] = True
+        if self.user and not self.session_key:
+            body["user"] = self.user
+        return body
 
     def ask(self, text: str, system: str | None = None) -> str:
         """非流式：整句回复（后台任务用）。"""
-        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": text}]
-        r = self._client.post(self.url, headers=self._headers(), json={
-            "model": "openclaw", "user": self.user, "messages": msgs,
-        })
+        r = self._client.post(self.url, headers=self._headers(), json=self._body(text, system, stream=False))
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
     def stream(self, text: str, system: str | None = None) -> Iterator[str]:
-        """流式：逐段 yield 回复文本。生成器被 close() 时中断请求（打断用）。system 为语音入口的附加约束。"""
-        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": text}]
-        body = {"model": "openclaw", "user": self.user, "stream": True, "messages": msgs}
-        with self._client.stream("POST", self.url, headers=self._headers(), json=body) as r:
+        """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（网关已经结束这一轮）。"""
+        with self._client.stream("POST", self.url, headers=self._headers(), json=self._body(text, system, stream=True)) as r:
             self._resp = r
             try:
                 r.raise_for_status()
@@ -76,34 +102,20 @@ class Brain:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+                    err = chunk.get("error")
+                    if isinstance(err, dict):
+                        raise RuntimeError(f"网关报错：{err.get('message') or err.get('type') or err}")
+                    delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
                     if delta:
                         yield delta
             finally:
                 self._resp = None
 
     def abort(self) -> None:
-        """从其他线程关闭当前流式响应（打断用）：阻塞在 iter_lines 里的读会立即抛异常退出，服务端随连接断开停止生成。"""
+        """旧代码用的强制关闭；语音守护进程自 P2 起不调用（关闭连接会让网关取消本轮）。"""
         r = self._resp
         if r is not None:
             r.close()
 
     def close(self) -> None:
         self._client.close()
-
-
-if __name__ == "__main__":
-    import sys
-    import time
-
-    b = Brain()
-    q = " ".join(sys.argv[1:]) or "用一句话说你是谁"
-    t0 = time.perf_counter()
-    first = None
-    out = []
-    for piece in b.stream(q):
-        if first is None:
-            first = time.perf_counter() - t0
-        out.append(piece)
-    print("".join(out))
-    print(f"[first token {first:.2f}s, total {time.perf_counter() - t0:.2f}s]")
