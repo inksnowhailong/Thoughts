@@ -26,7 +26,19 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 function Write-Log([string]$Message) {
     $line = '{0:yyyy-MM-dd HH:mm:ss} [{1}] {2}' -f (Get-Date), $PID, $Message
-    Add-Content -Path $LogPath -Value $line -Encoding UTF8
+    try { Add-Content -Path $LogPath -Value $line -Encoding UTF8 } catch {}  # 日志被占用时写不进也不能让看门狗退出
+}
+
+# 调参：tmp\voice.env 里的 GUANJIA_XXX=值 每次拉起 python 前重读，改完点托盘「重启语音」即生效（不用改本脚本、仓库不变脏）
+function Import-VoiceEnv {
+    $f = Join-Path $LogDir 'voice.env'
+    if (-not (Test-Path $f)) { return }
+    foreach ($l in Get-Content $f -Encoding UTF8) {
+        if ($l -match '^\s*(GUANJIA_[A-Z0-9_]+)\s*=\s*(.*?)\s*$') {
+            Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2]
+            Write-Log "env $($Matches[1])=$($Matches[2])"
+        }
+    }
 }
 
 $created = $false
@@ -106,8 +118,16 @@ function Wait-Deps {
 $backoff = $BackoffStartSec
 while ($true) {
     Wait-Deps
+    Import-VoiceEnv
     $t0 = Get-Date
-    $p = Start-Process -FilePath $Exe -ArgumentList $ArgLine -WorkingDirectory $Repo -NoNewWindow -PassThru -RedirectStandardError (Join-Path $LogDir 'voice-stderr.txt')
+    try {
+        $p = Start-Process -FilePath $Exe -ArgumentList $ArgLine -WorkingDirectory $Repo -NoNewWindow -PassThru -RedirectStandardError (Join-Path $LogDir 'voice-stderr.txt')
+    } catch {
+        Write-Log "start failed: $($_.Exception.Message); retry in ${backoff}s"
+        Start-Sleep -Seconds $backoff
+        $backoff = [Math]::Min($backoff * 2, $BackoffMaxSec)
+        continue
+    }
     $null = $p.Handle  # 先取句柄：PowerShell 5.1 不取句柄的话进程退出后 ExitCode 读出来是空
     Write-Log "voice started pid=$($p.Id)"
     while (-not $p.WaitForExit(2000)) {

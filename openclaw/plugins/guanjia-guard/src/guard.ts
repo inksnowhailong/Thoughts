@@ -46,7 +46,15 @@ const PENDING_TTL_MS = 3 * 60_000;
 const OUTER_GRANT_TTL_MS = 60_000;
 /** L3 带外审批等待时长；OpenClaw 默认 120 秒、上限 600 秒 */
 export const L3_APPROVAL_TIMEOUT_MS = 120_000;
-const CONFIRM_RE = /^(确认|确定|好|好的|可以|行|执行|同意|是的|对|嗯|ok|yes)/i;
+/** 开头是确认词；"好/对/行"这类单字后面只能跟标点或语气词，挡住"好了好了""好吃吗" */
+const CONFIRM_RE = /^(?:嗯|啊|哦|呃)?[，,。\s]*(?:确认|确定|执行|同意|(?:好的|好|可以|行|是的|对|ok|yes)(?=$|[\s，,。.!！~～、的吧啊呀嘞哒]))/i;
+/** 语音里叫停、反悔、反问常以"好/嗯/可以"开头（"好了好了""嗯，不要了""可以吗"），出现这些就不算确认 */
+const DENY_RE = /不|别|算了|取消|等等|等一下|一下|停|吗|\?|？/;
+
+export function isConfirmation(userText: string): boolean {
+  const t = stripVoiceTag(userText).trim();
+  return CONFIRM_RE.test(t) && !DENY_RE.test(t);
+}
 
 /** 决定"是不是同一件事"的目标参数，按优先级取第一个存在的 */
 const TARGET_KEYS = ["command", "path", "file_path", "url", "to", "action"];
@@ -116,7 +124,7 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     if (!sessionKey) return undefined;
     const p = pending.get(sessionKey);
     if (!p || p.expiresAt < Date.now()) return undefined;
-    if (!CONFIRM_RE.test(stripVoiceTag(userText).trim())) {
+    if (!isConfirmation(userText)) {
       pending.delete(sessionKey);
       store.audit({ kind: "tool", decision: "l2-dropped", sessionKey, summary: p.summary });
       return undefined;

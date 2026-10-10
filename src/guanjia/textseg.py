@@ -13,6 +13,7 @@ SOFT = set("，,、：:")
 
 _SILENT_RE = re.compile(r"^\s*NO_REPLY\s*$", re.IGNORECASE)  # OpenClaw 的静默回复标记，整句就是它时不念
 _URL_RE = re.compile(r"https?://\S+")
+_RANGE_RE = re.compile(r"(\d)\s*[~～]\s*(?=\d)")
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
 _BULLET_RE = re.compile(r"^\s*(?:[•·]\s*|[-*]\s+|\d+[.、)）]\s+)")  # 行首列表符号；"1.5 度"这类小数不算
 _MD_RE = re.compile(r"[*#`>|_~\[\]]+")
@@ -54,11 +55,23 @@ class SentenceSplitter:
         for i, ch in enumerate(self._buf):
             if ch in END:
                 return i + 1
-            if ch in SOFT and i + 1 >= soft_min:
+            if ch in SOFT and i + 1 >= soft_min and not self._glued(i):
                 return i + 1
             if i + 1 >= hard_max:
                 return i + 1
         return None
+
+    def _glued(self, i: int) -> bool:
+        """ASCII 冒号/逗号夹在 9:30、1,000、https:// 中间时不切；它是缓冲里最后一个字时先等下一段。"""
+        if self._buf[i] not in ":,":
+            return False
+        prev = self._buf[i - 1] if i else ""
+        if not (prev.isascii() and prev.isalnum()):
+            return False
+        if i + 1 >= len(self._buf):
+            return True
+        nxt = self._buf[i + 1]
+        return nxt.isdigit() or nxt == "/"
 
 
 def speakable(sent: str) -> str:
@@ -66,6 +79,7 @@ def speakable(sent: str) -> str:
     if _SILENT_RE.match(sent):
         return ""
     s = _URL_RE.sub("", sent)
+    s = _RANGE_RE.sub(r"\1到", s)  # 18~25度：下面去 Markdown 时 ~ 会被删成"1825度"
     s = _EMOJI_RE.sub("", s)
     s = _BULLET_RE.sub("", s)
     s = _MD_RE.sub("", s)
