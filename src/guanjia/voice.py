@@ -56,6 +56,7 @@ from guanjia.panel import PANEL_URL, PanelBackend
 from guanjia.prompts import PromptService
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
 from guanjia.runtrace import run_summary
+from guanjia.seg_filter import is_hollow_segment, is_unconfirmed_by_stream
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
@@ -382,8 +383,17 @@ class VoiceDaemon:
             self.asr.feed(stream, np.zeros(SR16K * 3 // 10, dtype=np.float32), SR16K)  # 补 0.3s 静音冲刷尾字
             self.asr.finish(stream)
             stream_text = self.asr.text(stream)  # 流式结果，留着与精识别对比
+            # 注册模式的段在上面已被 _enroll_take 拿走，不会走到这里：掏空的段由注册自己的质量检查拒收，这两个过滤只管识别链路
+            raw = self._raw_for(seg)
+            if is_hollow_segment(seg.samples, raw):  # 噪声门掏空的假触发：不做二次识别（2024 版 SenseVoice 在静音段爱编句子）
+                self._drop_segment(seg, "hollow", "噪声门掏空的假触发，丢弃", "hollow", stream_text=stream_text,
+                                   zero_frac=round(float(np.mean(raw == 0)), 2) if len(raw) else None)
+                continue
             text = self.asr_final.transcribe(seg.samples, fallback=stream_text)
             asr_ms = round((time.monotonic() - t_asr) * 1000)
+            if is_unconfirmed_by_stream(text, stream_text):  # 流式一个字没出、二次识别却出了中文：疑似幻觉，当没识别出字
+                self._drop_segment(seg, "unconfirmed", "没识别出字（流式没出字，疑似幻觉）", text, text=text, stream_text=stream_text)
+                continue
             self._dump_segment(seg, text)
             if not text:  # 精识别也为空：不过声纹、不记录，直接丢
                 self.hub.stage(None, "asr", "done", "没识别出字")
@@ -395,6 +405,13 @@ class VoiceDaemon:
             spk_ms = round((time.monotonic() - t_spk) * 1000)
             self._on_heard(text, score, source="mic", stream_text=stream_text, seg_sec=seg.duration,
                            asr_ms=asr_ms, spk_ms=spk_ms)
+
+    def _drop_segment(self, seg, why: str, note: str, dump_label: str, **data) -> None:
+        """识别链路上直接丢掉一段（不判定、不进主线）：面板写原因、取证保留音频、记一条 seg.drop 事件。"""
+        self.hub.stage(None, "asr", "done", note)
+        self._dump_segment(seg, dump_label)
+        log.info("丢弃 %s 段 %.2fs %s", why, seg.duration, {k: v for k, v in data.items() if v not in (None, "")})
+        elog.emit("asr", "seg.drop", note, why=why, sec=round(seg.duration, 2), **data)
 
     def _enroll_take(self, seg) -> bool:
         """注册模式：同一条链路的段只拿来注册，不识别、不判定、不送主线，返回 True。
@@ -430,7 +447,8 @@ class VoiceDaemon:
         in_window = self._in_followup()
         threshold = 0.0 if self.gate_mode == "log" else s.spk_threshold
         d = decide(text, score, threshold=threshold, matcher=self.wake, wake_required=s.wake_required,
-                   min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING")
+                   min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING",
+                   alt_text=stream_text or None)  # 二次识别漏掉唤醒词、流式识别抓到了：靠流式结果救回
         uid = self.hub.new_utterance(source, text=text, stream_text=stream_text,
                                      score=None if score is None else round(score, 3), in_window=in_window,
                                      timings={k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms)) if v is not None})

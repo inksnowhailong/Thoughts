@@ -179,6 +179,7 @@ check(d._speaker_action({"action": "commit"})[0] == 409 and d.enroll is None, "a
 heard = []
 d = make(g)
 d.aec, d.down, d.mic_gain = None, SimpleNamespace(process=lambda x: x), 1.0
+d.sr = 16000  # _raw_for 取证用（噪声门掏空过滤要对齐原始帧）
 d._raw_ring, d._vad_pos, d._was_speech, d._preroll = deque(maxlen=10), 0, False, deque(maxlen=50)
 d._play_buf, d._play_pos, d.play_q = np.zeros(0, dtype=np.float32), 0, queue.Queue()
 seg = SimpleNamespace(duration=2.0, samples=loud, start=100.0)
