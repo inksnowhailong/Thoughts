@@ -50,7 +50,7 @@ from guanjia.audittail import AuditTail, PendingConfirm
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.control import CONTROL_PORT, start_control_server
-from guanjia.enroll_session import EnrollSession
+from guanjia.enroll_session import (MAX_ZERO_RATIO, MIN_EFFECTIVE_SEC, MIN_PEAK, MIN_SELF_SIM, MIN_TOTAL, EnrollSession)
 from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
 from guanjia.prompts import PromptService
@@ -402,10 +402,24 @@ class VoiceDaemon:
         if sess is None:
             return False
         overlap = seg.start < self._last_play_t + PLAY_OVERLAP_GUARD_SEC
-        r = sess.feed(seg.samples, playing=self._playing() or overlap)
+        playing = self._playing()
+        old_state = sess.state
+        r = sess.feed(seg.samples, playing=playing or overlap)
         self.hub.stage(None, "speaker", "done" if r.get("ok") else "blocked",
                        "注册：收下" if r.get("ok") else f"注册：{r.get('reason')}")
+        # 每一段都留证据：收下 / 为什么拒（有效语音秒数、零值占比、峰值、是否和播放重叠），声纹录不上时靠它定位
+        self._enroll_seg_event(r, seg, playing, overlap)
+        if sess.state != old_state:
+            elog.emit("enroll", "enroll.state", f"{old_state} -> {sess.state}", old=old_state, new=sess.state, total=r.get("total"))
         return True
+
+    def _enroll_seg_event(self, r: dict, seg, playing: bool, overlap: bool) -> None:
+        """注册模式下一段的结果 → enroll.seg 事件（info 里的 sec / effective_sec / zero_ratio / peak 直接并入 data）。"""
+        ok = bool(r.get("ok"))
+        gap = None if self._last_play_t < 0 else round(getattr(seg, "start", 0.0) - self._last_play_t, 2)  # 段开始距最后一次出声多久（VAD 时间轴）
+        elog.emit("enroll", "enroll.seg", "收下" if ok else str(r.get("reason")), level="info" if ok else "warn", ok=ok,
+                  group=r.get("group"), total=r.get("total"), self_score=r.get("self_score"), playing=playing, overlap=overlap,
+                  play_gap=gap, **(r.get("info") or {}))
 
     def _on_heard(self, text: str, score: float | None, *, source: str, stream_text: str = "",
                   seg_sec: float | None = None, asr_ms: int | None = None, spk_ms: int | None = None,
@@ -880,6 +894,8 @@ class VoiceDaemon:
             if self.enroll is sess:
                 self.enroll = None
                 log.info("enroll timeout, cancelled")
+                elog.emit("enroll", "enroll.abort", "10 分钟没人收尾，注册超时取消", level="warn", reason="timeout", total=len(sess.samples),
+                          state=sess.state, last=sess.last)
             return None
         return sess
 
@@ -927,8 +943,12 @@ class VoiceDaemon:
                 return 409, {"ok": False, "reason": "正在回话，等它说完再开始"}
             name = str(body.get("name") or "我").strip()[:8] or "我"
             gate = self._ensure_gate()
-            self.enroll = EnrollSession(name, gate.embed, old_refs=gate.refs(name))
+            old_refs = gate.refs(name)
+            self.enroll = EnrollSession(name, gate.embed, old_refs=old_refs)
             log.info("enroll start: %s", name)
+            elog.emit("enroll", "enroll.start", name, name=name, old_refs=0 if old_refs is None else len(old_refs),
+                      min_effective_sec=MIN_EFFECTIVE_SEC, max_zero_ratio=MAX_ZERO_RATIO, min_peak=MIN_PEAK, min_self_sim=MIN_SELF_SIM,
+                      min_total=MIN_TOTAL)
             return 200, {"ok": True, "session": self.enroll.snapshot()}
         if action == "rollback":
             if sess is not None:
@@ -943,18 +963,23 @@ class VoiceDaemon:
                 gate.threshold = self.store.current.spk_threshold
                 self.gate = gate
             log.warning("speaker store rolled back to %s", backup_path(STORE).name)
+            elog.emit("enroll", "enroll.rollback", "声纹库回滚到注册前", level="warn", backup=backup_path(STORE).name)
             return 200, {"ok": True, "people": gate.counts(), "legacy": gate.legacy}
         if sess is None:
             return 409, {"ok": False, "reason": "没有在注册"}
         if action == "cancel":
             self.enroll = None
             log.info("enroll cancelled")
+            elog.emit("enroll", "enroll.abort", "主人取消注册", level="warn", reason="cancelled", total=len(sess.samples), state=sess.state,
+                      last=sess.last)
             return 200, {"ok": True}
         if action == "discard_last":
             sess.discard_last()
+            elog.emit("enroll", "enroll.discard", "撤销上一段", total=len(sess.samples))
         elif action == "enough":
             if not sess.to_testing():
                 return 409, {"ok": False, "reason": "至少要 8 段才能自测"}
+            elog.emit("enroll", "enroll.state", "recording -> testing（主人点了够了）", old="recording", new="testing", total=len(sess.samples))
         elif action == "commit":
             if sess.state != "ready":
                 return 409, {"ok": False, "reason": "先说一句自测"}
@@ -965,6 +990,7 @@ class VoiceDaemon:
                 return 409, {"ok": False, "reason": str(e)}
             except OSError as e:  # 写盘失败（权限、被占用、磁盘满）：库和内存都没变，会话保留可重试
                 log.error("enroll save failed: %s", e)
+                elog.emit("enroll", "enroll.save_failed", "写声纹库失败", level="error", error=str(e), n=len(sess.samples))
                 return 500, {"ok": False, "reason": f"写声纹库失败：{e}。库没有变化，可以再点一次保存"}
             if self.gate is None:
                 gate.threshold = self.store.current.spk_threshold
@@ -972,6 +998,8 @@ class VoiceDaemon:
             self.enroll = None
             log.info("enroll saved: %s n=%d test=%.3f old=%s backup=%s", sess.name, len(sess.samples), sess.test_score,
                      sess.test_old_score, backup.name if backup else "-")
+            elog.emit("enroll", "enroll.save", sess.name, name=sess.name, n=len(sess.samples), test_score=sess.test_score,
+                      test_old_score=sess.test_old_score, backup=backup.name if backup else None)
             return 200, {"ok": True, "people": gate.counts(), "test_score": sess.test_score,
                          "test_old_score": sess.test_old_score}
         else:
@@ -1055,6 +1083,17 @@ class VoiceDaemon:
     def _on_health(self, h: Health) -> None:
         self.health = h
         log.info("health: gateway=%s tts=%s", h.gateway, h.tts)
+        # 只记变化（轮询成功不记）：TTS 没起来、网关掉线都在这里留下时间点；第一次是启动时的初始状态
+        now = {"gateway": bool(h.gateway), "tts": bool(h.tts)}
+        prev, self._last_health = self._last_health, now
+        if prev is None:
+            elog.emit("health", "dep.change", f"启动时 gateway={'up' if now['gateway'] else 'DOWN'} tts={'up' if now['tts'] else 'DOWN'}",
+                      level="info" if all(now.values()) else "warn", initial=True, **now)
+        else:
+            for dep in ("gateway", "tts"):
+                if prev[dep] != now[dep]:
+                    elog.emit("health", "dep.change", f"{dep} {'恢复' if now[dep] else '掉线'}", level="info" if now[dep] else "warn",
+                              dep=dep, up=now[dep], **now)
         if h.tts:
             self._prepare_ack()
         self._refresh_tray()

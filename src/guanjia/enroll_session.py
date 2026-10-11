@@ -85,34 +85,36 @@ class EnrollSession:
     def feed(self, samples: np.ndarray, *, playing: bool = False) -> dict:
         with self._lock:
             if self.state not in ("recording", "testing"):
-                return {"ok": False, "reason": "not_active"}
-            if playing:
-                self.last = {"ok": False, "reason": "电脑正在出声，这段不算"}
-                return self.last
+                return {"ok": False, "reason": "not_active", "group": None, "total": len(self.samples)}
             g = self._group() if self.state == "recording" else None
+            gkey = g[0] if g else "test"  # 当前要录的组；自测阶段记 test。每个返回都带 group / total，注册事件日志据此逐段记录
             ok, reason, info = quality(samples, min_effective=MIN_EFFECTIVE_BY_GROUP.get(g[0], MIN_EFFECTIVE_SEC) if g else MIN_EFFECTIVE_SEC)
+            if playing:  # 判据顺序不变：正在出声直接拒；质量信息照算，只为让日志看清这段本来质量如何
+                self.last = {"ok": False, "reason": "电脑正在出声，这段不算", "info": info, "group": gkey, "total": len(self.samples)}
+                return self.last
             if not ok:
-                self.last = {"ok": False, "reason": reason, "info": info}
+                self.last = {"ok": False, "reason": reason, "info": info, "group": gkey, "total": len(self.samples)}
                 return self.last
             v = self._embed(samples)
             if self.state == "recording" and len(self.samples) >= SELF_CHECK_AFTER:
                 sim = score_against(v, self.embs())
                 if sim < MIN_SELF_SIM:  # 旁人插话、电视声混进来的段，别污染库
                     self.last = {"ok": False, "reason": f"这段不像同一个人（{sim:.2f}），没收，请再说一遍",
-                                 "info": info, "self_score": round(sim, 3)}
+                                 "info": info, "self_score": round(sim, 3), "group": gkey, "total": len(self.samples)}
                     return self.last
             if self.state == "recording":
                 g = self._group()
                 self.samples.append(Sample(g[0], v, info))
                 if self._group() is None:
                     self.state = "testing"
-                self.last = {"ok": True, "group": g[0], "info": info}
+                self.last = {"ok": True, "group": g[0], "info": info, "total": len(self.samples)}
             else:
                 self.test_score = round(score_against(v, self.embs()), 3)
                 if self._old is not None:
                     self.test_old_score = round(score_against(v, self._old), 3)
                 self.state = "ready"
-                self.last = {"ok": True, "group": "test", "info": info}
+                self.last = {"ok": True, "group": "test", "info": info, "total": len(self.samples),
+                             "test_score": self.test_score, "test_old_score": self.test_old_score}
             return self.last
 
     def discard_last(self) -> bool:
