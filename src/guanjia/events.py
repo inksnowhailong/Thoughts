@@ -29,6 +29,11 @@ LOG_MODULES = ("asr", "gate", "brain", "tools", "tts", "play", "barge", "barge-m
 RECORDS_FILE = Path(__file__).resolve().parents[2] / "tmp" / "utterances.jsonl"
 RECORDS_FILE_MAX = 5_000_000  # 超过就改名成 .1 重新写
 
+# 统一事件流（elog）：环节名 → 事件的 comp；这几环 blocked 是异常（升为 warn），声纹/唤醒拦下是正常过滤
+STAGE_COMP = {"mic": "voice", "vad": "vad", "asr": "asr", "speaker": "speaker", "wake": "wake",
+              "gateway": "brain", "tools": "tool", "tts": "tts", "play": "play", "barge": "play"}
+WARN_BLOCKED = ("gateway", "tools", "tts", "play")
+
 _REDACT = [
     (re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.I), r"\1***"),
     (re.compile(r"\bsk-[A-Za-z0-9]{8,}"), "sk-***"),
@@ -79,11 +84,22 @@ def classify_log(name: str, msg: str) -> str:
     return "other"
 
 
+def turn_summary(rec: dict) -> dict:
+    """一轮的摘要（统一事件日志的 turn.end 用）：不含 stages / timeline 这两份重复的全量。
+    run_id 由网关侧异步补进记录，通常晚于 finish，这里多半没有；uid ↔ run 的关联看 brain.run / gateway.run 事件。"""
+    return {"source": rec.get("source"), "verdict": rec.get("verdict") or "", "reason": rec.get("reason") or None,
+            "text": (rec.get("text") or "")[:60], "reply": (rec.get("reply") or "")[:160],
+            "spoken": len(rec.get("spoken") or []), "unspoken": len(rec.get("unspoken") or []),
+            "tools": [f"{t.get('tool')}:{t.get('decision')}" for t in rec.get("tools") or []] or None,
+            "timings": rec.get("timings") or None, "error": rec.get("error") or None, "run_id": rec.get("run_id")}
+
+
 class EventHub:
     """事件总线 + 每句话记录。所有方法线程安全。"""
 
     def __init__(self, keep_events: int = 2000, keep_records: int = 50, keep_logs: int = 2000,
-                 records_file: Path | None = None, clock=time.time) -> None:
+                 records_file: Path | None = None, clock=time.time, elog=None) -> None:
+        self.elog = elog  # 统一事件日志（guanjia.elog.EventLog）；None 不派生事件。events 不 import elog，避免循环导入
         self._lock = threading.RLock()
         self._seq = itertools.count(1)
         self._events: deque[dict] = deque(maxlen=keep_events)
@@ -96,6 +112,14 @@ class EventHub:
         self.records_file = records_file
         self.clock = clock
         self.live: dict[str, dict] = {}  # 不属于某句话的实时环节状态（人声检测、识别中）
+
+    def _e(self, comp: str, ev: str, msg: str = "", **kw) -> None:
+        """派生一条统一事件日志；日志出任何问题都不能影响面板和对话。"""
+        if self.elog is not None:
+            try:
+                self.elog.emit(comp, ev, msg, **kw)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---------- 事件 ----------
     def _emit(self, ev: dict) -> dict:
@@ -157,6 +181,8 @@ class EventHub:
             while len(self._order) > self._keep_records:
                 self._records.pop(self._order.popleft(), None)
         self._emit({"type": "record", "record": self._copy(rec)})
+        self._e("voice", "utt.new", (fields.get("text") or "")[:60], uid=uid, source=source, score=fields.get("score"),
+                in_window=fields.get("in_window"))
         return uid
 
     def stage(self, uid: str | None, stage: str, state: str, note: str = "", **data) -> None:
@@ -173,6 +199,11 @@ class EventHub:
                     st.update({"state": state, "note": item["note"], "t1": now})
                     rec["timeline"].append({"t": now, **item})
         self._emit({"type": "stage", "uid": uid, **item})
+        if uid is None:  # 实时环节（人声检测中、识别中）很吵，只在 debug 级别落盘
+            level = "debug"
+        else:
+            level = "warn" if state == "blocked" and stage in WARN_BLOCKED else "info"
+        self._e(STAGE_COMP.get(stage, stage), f"{stage}.{state}", item["note"], level=level, uid=uid, **data)
 
     def update(self, uid: str | None, **fields) -> None:
         if uid is None:
@@ -207,6 +238,10 @@ class EventHub:
         rec = self.record(uid)
         if rec is not None and self.records_file is not None:
             self._persist(rec)
+        if rec is not None:
+            s = turn_summary(rec)
+            level = "error" if s["error"] else ("warn" if s["unspoken"] else "info")
+            self._e("voice", "turn.end", f"{s['verdict']} 「{s['text'][:24]}」→「{s['reply'][:30]}」", level=level, uid=uid, **s)
 
     def _persist(self, rec: dict) -> None:
         try:

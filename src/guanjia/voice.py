@@ -42,6 +42,7 @@ import numpy as np
 import sounddevice as sd
 from pyaec import Aec
 
+from guanjia import elog
 from guanjia.asr import StreamingASR
 from guanjia.asr_final import FinalASR
 from guanjia.audio_cues import earcon
@@ -67,6 +68,7 @@ from guanjia.wake import WakeMatcher, decide
 from guanjia.wsfiles import WorkspaceFiles
 
 log = logging.getLogger("guanjia.voice")
+_PROC_T0 = time.monotonic()  # 进程（本模块被导入）的起点，voice.ready 的 boot_ms 据此计算
 
 # ---- 声纹门（门槛在 data\voice-settings.json 的 spk_threshold，面板可调）----
 SPK_GATE_MODE = "enforce"  # enforce=低于门槛拦截；log=只记录分数不拦截（--gate-mode log）
@@ -197,6 +199,7 @@ class VoiceDaemon:
     _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
     _last_play_t = -1.0  # 前端线程：最近一次真正出声时的 VAD 时间轴（秒），用来判断一段话有没有和播放重叠
     _turn_marks = None
+    _last_health: dict | None = None  # 上一次记过的依赖状态（B4 dep.change 只记变化）
     _followup_until = 0.0
     _ack_pcm = None
 
@@ -233,7 +236,7 @@ class VoiceDaemon:
         self.runtime = RuntimeMonitor(self._on_runtime)
 
         self.store = SettingsStore(SETTINGS_PATH)
-        self.hub = EventHub(records_file=RECORDS_FILE)
+        self.hub = EventHub(records_file=RECORDS_FILE, elog=elog.get())  # 面板记录的每次变化同时派生统一事件日志
         s = self.store.current
         self.wake = WakeMatcher(s.wake_words)
         self.down = Downsampler(self.sr)
@@ -635,31 +638,56 @@ class VoiceDaemon:
                 if gen == self._gen:
                     self.state = "LISTENING"
         if nudge:
-            self._send_nudge(nudge)
+            self._send_nudge(nudge, uid)
 
     def _nudge_allowed(self, res: TurnResult) -> bool:
         """追问的共同前提：没被打断没出错；主人已排了新话、静音、游戏中也不追。"""
         return not (res.aborted or res.error or self._muted.is_set() or self._paused.is_set() or not self.text_q.empty())
 
+    def _nudge_block_reason(self, res: TurnResult) -> str:
+        """_nudge_allowed 为假时的原因（只给 nudge.check 事件看，判定仍由 _nudge_allowed 决定）。"""
+        if res.aborted:
+            return "aborted"
+        if res.error:
+            return "error"
+        if self._muted.is_set():
+            return "muted"
+        if self._paused.is_set():
+            return "gaming"
+        return "queued"
+
+    def _nudge_check(self, kind: str, decision: bool, why: str, res: TurnResult) -> bool:
+        """记一条 nudge.check 事件（只在回复含承诺词 / 声称被拦时才会走到这里，不是每轮都记），原样返回判定。"""
+        elog.emit("nudge", "nudge.check", f"{kind} -> {'追问' if decision else '不追'}（{why}）", uid=self._turn_uid,
+                  kind=kind, decision=decision, why=why, tools=self._turn_tools, gate=sorted(self._turn_gate) or None,
+                  reply=res.reply[:80])
+        return decision
+
     def _should_nudge(self, res: TurnResult) -> bool:
         """本轮是否「只说没做」：回复含承诺词、零工具调用、没被打断没出错；主人已排了新话、静音、游戏中也不追。"""
-        if not self._nudge_allowed(res) or not has_promise(res.reply):
+        if not has_promise(res.reply):
             return False
+        if not self._nudge_allowed(res):
+            return self._nudge_check("promise", False, self._nudge_block_reason(res), res)
         time.sleep(AUDIT_LAG_SEC)  # 审计跟随有 0.5 秒轮询延迟，等一下再数工具调用
-        return needs_nudge(res.reply, self._turn_tools, aborted=res.aborted, error=res.error)
+        ok = needs_nudge(res.reply, self._turn_tools, aborted=res.aborted, error=res.error)
+        return self._nudge_check("promise", ok, "nudge" if ok else "has_tools", res)
 
     def _should_nudge_fake_block(self, res: TurnResult) -> bool:
         """本轮是否「编造拦截」：回复声称被拦 / 要审批 / 要放行 / 要确认，而本轮审计里没有拦截或确认记录、
         也没有一件还在等主人确认的事（上一轮真拦下、这一轮主人只是嗯了一声，模型再问一次是正常的）。"""
-        if not self._nudge_allowed(res) or not claims_blocked(res.reply):
+        if not claims_blocked(res.reply):
             return False
+        if not self._nudge_allowed(res):
+            return self._nudge_check("fake-block", False, self._nudge_block_reason(res), res)
         time.sleep(AUDIT_LAG_SEC)  # 拦截记录也是从审计文件跟随来的，同样可能比回复结束晚到
-        return needs_fake_block_nudge(res.reply, bool(self._turn_gate) or bool(self.pending.current()),
-                                      aborted=res.aborted, error=res.error)
+        ok = needs_fake_block_nudge(res.reply, bool(self._turn_gate) or bool(self.pending.current()),
+                                    aborted=res.aborted, error=res.error)
+        return self._nudge_check("fake-block", ok, "nudge" if ok else "gate_seen", res)
 
-    def _send_nudge(self, kind: str = "promise") -> None:
+    def _send_nudge(self, kind: str = "promise", parent_uid: str | None = None) -> None:
         """在同一会话追发一条语音标记的话（只说没做 → 让模型把说过的事做完；编造拦截 → 告诉它没有任何东西拦着）；
-        它的回复照常念出来，面板上单独一条记录。"""
+        它的回复照常念出来，面板上单独一条记录。parent_uid 是被追问的那一轮，记进 nudge.sent 方便 logq 串起来。"""
         if kind == "fake-block":
             text, reason = NUDGE_TEXT_FAKE_BLOCK, "称被拦但没有拦截记录，自动追问一次"
             log.info("nudge sent: fake-block")
@@ -667,6 +695,7 @@ class VoiceDaemon:
             text, reason = NUDGE_TEXT, "只说没做，自动追问一次"
             log.info("nudge sent: 只说没做，追问一次")
         uid = self.hub.new_utterance("nudge", text=text, verdict="accept", reason=reason, sent=text)
+        elog.emit("nudge", "nudge.sent", reason, uid=uid, kind=kind, parent=parent_uid, child=uid)
         self._handle_item(Heard(text, uid), nudged=True)
 
     def _turn_timings(self, uid: str | None, m: dict) -> dict:
@@ -726,6 +755,10 @@ class VoiceDaemon:
         if self._turn_marks is not None:  # 有进行中的一轮：先计数（不依赖面板记录 id）
             self._turn_tools += 1
         uid = self._turn_uid
+        # 注意：emit 的 level 是日志级别，审计的分级（L1/L2…）放进 data.tool_level，避免撞名
+        elog.emit("tool", "tool.audit", f"{entry['tool']} {entry['level']} {entry['decision']}", uid=uid,
+                  level="warn" if entry["state"] == "blocked" else "info", tool=entry["tool"],
+                  tool_level=entry["level"], decision=entry["decision"], summary=entry["summary"], audit_ts=entry.get("ts"))
         if uid:
             self.hub.add_tool(uid, entry)
             note = f"{entry['tool']} {entry['level']} {entry['decision']}"
@@ -739,14 +772,19 @@ class VoiceDaemon:
         if self._turn_marks is not None:
             self._turn_gate = self._turn_gate | {ev["decision"]}
         change = self.pending.feed(ev)
+        elog.emit("tool", "tool.gate", f"{ev['decision']} {ev['summary'][:60]}", uid=self._turn_uid, decision=ev["decision"],
+                  summary=ev["summary"], pending=change or None)
         if change == "opened":
             summary = self.pending.current()
             gaming = self._paused.is_set()
             log.info("pending confirm: %s%s", summary, "（游戏中，只变色不弹气泡）" if gaming else "")
+            elog.emit("tool", "pending.open", summary, level="warn", uid=self._turn_uid, decision=ev["decision"],
+                      gaming=gaming or None)
             if self.tray and not gaming:
                 self.tray.notify(f"管家在等你确认：{summary}")
         elif change == "closed":
             log.info("pending confirm cleared (%s)", ev["decision"])
+            elog.emit("tool", "pending.close", ev["decision"], uid=self._turn_uid, decision=ev["decision"])
         if change:
             self._refresh_tray()
             self.hub.status(self.status())
@@ -943,9 +981,11 @@ class VoiceDaemon:
         self._refresh_tray()
         self.hub.status(self.status())
 
-    def request_exit(self, code: int) -> None:
-        """托盘/面板：退出语音（0，看门狗不再拉起）/ 重启语音（3，看门狗立即拉起）。"""
+    def request_exit(self, code: int, reason: str = "") -> None:
+        """托盘/面板：退出语音（0，看门狗不再拉起）/ 重启语音（3，看门狗立即拉起）。reason 记进 voice.exit 事件（tray / panel）。"""
         log.info("exit requested: code=%d", code)
+        elog.emit("voice", "voice.exit", f"请求退出 code={code}", level="info" if code in (EXIT_QUIT, EXIT_RESTART) else "warn",
+                  code=code, reason=reason or None)
         self._exit_code = code
         self._stop_evt.set()
 
@@ -956,7 +996,7 @@ class VoiceDaemon:
                 self.toggle_mute()
             return True, "已静音" if action == "mute" else "已取消静音"
         code = EXIT_RESTART if action == "restart" else EXIT_QUIT
-        threading.Timer(0.5, self.request_exit, args=(code,)).start()
+        threading.Timer(0.5, self.request_exit, args=(code, "panel")).start()
         return True, "正在重启语音" if action == "restart" else "语音已退出，看门狗不会再拉起（双击桌面「管家面板」可重新打开）"
 
     def open_panel(self) -> None:
@@ -1042,6 +1082,10 @@ class VoiceDaemon:
     def run(self) -> None:
         logging.getLogger().addHandler(HubLogHandler(self.hub))
         s = self.store.current
+        elog.emit("voice", "voice.start", f"pid {os.getpid()}", pid=os.getpid(), argv=sys.argv[1:], in_dev=self.in_dev,
+                  out_dev=self.out_dev, rate=self.sr, gate_mode=self.gate_mode, gate=bool(self.gate), aec=self.aec_on,
+                  mic_gain=self.mic_gain, control_port=self.control_port,
+                  settings={k: getattr(s, k) for k in ("spk_threshold", "wake_required", "min_chars", "follow_up_sec", "earcon")})
         log.info("device rate %d, in=%s out=%s, speakers=%s(%s) legacy=%s n=%s, gate=%s@%.2f, wake=%s(required=%s) followup=%.0fs, "
                  "mic_gain=%.1f, aec=%s, barge=%dms guard=%dms rms_min=%.4f ratio=%.1f, tts_timeout=%.0fs, session=%s, "
                  "control=127.0.0.1:%d", self.sr, self.in_dev, self.out_dev, self.gate.names() if self.gate else "off",
@@ -1053,6 +1097,8 @@ class VoiceDaemon:
             self.control = start_control_server(self, self.control_port, panel=self.panel)
         except OSError as e:
             log.error("控制口 127.0.0.1:%d 绑不上（是不是已经有一个语音进程在跑？）：%s", self.control_port, e)
+            elog.emit("voice", "voice.exit", "控制口绑不上", level="error", code=EXIT_CRASH, reason="control_port_busy",
+                      port=self.control_port, error=str(e))
             sys.exit(EXIT_CRASH)
         threads = [threading.Thread(target=self._frontend, name="frontend", daemon=True),
                    threading.Thread(target=self._brainloop, name="brain", daemon=True)]
@@ -1064,8 +1110,8 @@ class VoiceDaemon:
             from guanjia.tray import Tray  # 延迟导入：--no-tray 时不需要 pystray/Pillow
 
             self.tray = Tray(view=self.view, muted=self._muted.is_set, on_toggle_mute=self.toggle_mute,
-                             on_restart=lambda: self.request_exit(EXIT_RESTART),
-                             on_exit=lambda: self.request_exit(EXIT_QUIT), on_open_panel=self.open_panel)
+                             on_restart=lambda: self.request_exit(EXIT_RESTART, "tray"),
+                             on_exit=lambda: self.request_exit(EXIT_QUIT, "tray"), on_open_panel=self.open_panel)
             self.tray.start()
         failed = False
         shown = ""
@@ -1077,6 +1123,9 @@ class VoiceDaemon:
                      "lead %dms, panel %s, dump %s)", *s.latency, COMFORT_NOISE_DBFS, LEAD_SILENCE_MS, PANEL_URL,
                      SEG_DUMP_DIR)
             self.hub.stage(None, "mic", "active", "在听")
+            elog.emit("voice", "voice.ready", f"监听中，启动 {round((time.monotonic() - _PROC_T0) * 1000)}ms",
+                      boot_ms=round((time.monotonic() - _PROC_T0) * 1000), latency_in=round(s.latency[0], 3),
+                      latency_out=round(s.latency[1], 3))
             self.runtime.start()  # 开机补写离线区间 + 5 分钟静默；之后每 2s 检测游戏态
             try:
                 while not self._stop_evt.is_set():
@@ -1090,6 +1139,8 @@ class VoiceDaemon:
                     # 托盘/面板要求退出时工作线程会跟着结束，这不是崩溃：误判成崩溃会回退出码 1，看门狗又把它拉起来
                     if not self._stop_evt.is_set() and (dead or (not s.active and not paused)):
                         log.error("worker died: threads=%s stream_active=%s，退出等待看门狗拉起", dead, s.active)
+                        elog.emit("voice", "voice.exit", "工作线程/音频流死了", level="error", code=EXIT_CRASH,
+                                  reason="worker_died", threads=dead, stream_active=s.active)
                         failed = True
                         break
                     key = self.view().key
@@ -1142,7 +1193,8 @@ def main() -> None:
     ap.add_argument("-v", action="store_true")
     ap.add_argument("--log-file", default=None, help="同时把日志写到这个文件（按 5MB 轮转，留 3 份）")
     a = ap.parse_args()
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]  # 走 stdout，避免 PowerShell 把 stderr 当错误
+    log_ev = elog.init("voice")  # 统一事件日志（tmp\logs\events-voice-<日期>.jsonl），先于 VoiceDaemon 创建，EventHub 才拿得到
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout), elog.LogBridge(log_ev)]  # stdout：避免 PowerShell 把 stderr 当错误；LogBridge：WARNING 以上同步进事件流
     if a.log_file:
         handlers.append(logging.handlers.RotatingFileHandler(a.log_file, maxBytes=LOG_MAX_BYTES, backupCount=3,
                                                              encoding="utf-8"))
