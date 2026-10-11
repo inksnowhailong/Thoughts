@@ -12,6 +12,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from guanjia.events import LOG_MODULES, STAGE_CN, STAGES, EventHub
+from guanjia.params import describe
+from guanjia.prompts import PromptService
 from guanjia.settings import SettingsStore, to_dict
 
 PANEL_HTML = Path(__file__).with_name("panel.html")
@@ -47,6 +49,13 @@ class PanelBackend:
             return fn(arg)
         except ValueError as e:
             return 400, {"ok": False, "reason": str(e)}
+
+    def attach_prompts(self, svc: PromptService, consts: Callable[[], dict[str, tuple]]) -> None:
+        """B2：参数表和提示词编辑接口。consts() 返回只读常量 {key: (当前值, 默认值)}，每次请求现取。"""
+        self.register_get("/api/params", lambda q: (200, {"ok": True, "items": describe(self.store.current, consts())}))
+        self.register_get("/api/prompts", svc.list_all)
+        self.register_get("/api/prompt", svc.get)
+        self.register_post("/api/prompt", svc.post)
 
     def route_get(self, path: str, query: dict) -> tuple[int, dict] | None:
         """query 已拍平成 {键: 第一个值}。没注册这条路径返回 None。"""

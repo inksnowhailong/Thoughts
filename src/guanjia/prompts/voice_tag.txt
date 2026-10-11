@@ -1,0 +1,1 @@
+[语音 {{DATE}} {{TIME}} 周{{WEEKDAY}}]

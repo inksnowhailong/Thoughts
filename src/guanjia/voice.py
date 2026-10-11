@@ -22,6 +22,7 @@ P2.1 起的调用链：
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import logging.handlers
 import os
@@ -51,6 +52,7 @@ from guanjia.control import CONTROL_PORT, start_control_server
 from guanjia.enroll_session import EnrollSession
 from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
+from guanjia.prompts import PromptService
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
 from guanjia.runtrace import run_phases
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
@@ -61,6 +63,7 @@ from guanjia.turns import Heard, SayItem, TurnRunner
 from guanjia.vad import SR as SR16K
 from guanjia.vad import VAD, Downsampler
 from guanjia.wake import WakeMatcher, decide
+from guanjia.wsfiles import WorkspaceFiles
 
 log = logging.getLogger("guanjia.voice")
 
@@ -255,6 +258,7 @@ class VoiceDaemon:
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
         self.panel.register_get("/api/speaker", self._speaker_info)
         self.panel.register_post("/api/speaker", self._speaker_action)
+        self.panel.attach_prompts(PromptService(WorkspaceFiles()), self._param_consts)  # B2：参数表 + 提示词编辑
         self.audit = AuditTail(self._on_tool)
         self.store.subscribe(self._apply_settings)
         self.tray = None  # run() 里按 tray_on 创建
@@ -745,6 +749,16 @@ class VoiceDaemon:
         if self._spare_gate is None:
             self._spare_gate = SpeakerGate(threshold=self.store.current.spk_threshold)
         return self._spare_gate
+
+    def _param_consts(self) -> dict[str, tuple]:
+        """面板参数表里的只读常量：{key: (当前值, 默认值)}。代码常量、环境变量、命令行参数，改了要重启语音。"""
+        vad = inspect.signature(VAD.__init__).parameters  # 守护进程直接用 VAD()，所以当前值就是默认值
+        same = lambda v: (v, v)  # noqa: E731
+        return {"MIC_GAIN": (self.mic_gain, MIC_GAIN), "AEC_ENABLED": (self.aec_on, AEC_ENABLED),
+                "VAD_THRESHOLD": same(vad["threshold"].default), "VAD_MIN_SILENCE": same(vad["min_silence"].default),
+                "VAD_MIN_SPEECH": same(vad["min_speech"].default), "MIN_UTT_SEC": same(MIN_UTT_SEC),
+                "FIRST_SENT_MAX_CHARS": same(FIRST_SENT_MAX_CHARS), "FIRST_SENT_SOFT_MIN": same(FIRST_SENT_SOFT_MIN),
+                "BARGE_MS": same(BARGE_MS), "BARGE_GUARD_MS": same(BARGE_GUARD_MS)}
 
     def _speaker_info(self, query: dict) -> tuple[int, dict]:
         g = self.gate or self._spare_gate

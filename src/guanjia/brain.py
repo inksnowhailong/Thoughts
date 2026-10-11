@@ -19,19 +19,20 @@ from pathlib import Path
 
 import httpx
 
+from guanjia.prompts import render_voice_tag
+
 DEFAULT_URL = "http://127.0.0.1:18789/v1/chat/completions"
 MAIN_SESSION_KEY = "agent:main:main"  # 主线会话：主人的语音 + 微信共用
 # 语音入口指定的网关模型（x-openclaw-model 头）；空串 = 不加头，走网关默认模型（DeepSeek-V4-Flash）
 VOICE_MODEL = os.environ.get("GUANJIA_VOICE_MODEL", "")
 # 流式读超时：要远长于 L3 审批（120 秒）和慢工具。读超时会断开连接 = 取消本轮，宁可多等
 STREAM_READ_TIMEOUT_SEC = 900.0
-_WEEKDAY_CN = "一二三四五六日"
 
 
 def voice_tag(now: datetime | None = None) -> str:
-    """语音轮标记，例如「[语音 2026-10-10 18:05 周六]」；AGENTS.md 的语音规则和分级插件都认这个前缀。"""
-    now = now or datetime.now()
-    return f"[语音 {now:%Y-%m-%d %H:%M} 周{_WEEKDAY_CN[now.weekday()]}]"
+    """语音轮标记，例如「[语音 2026-10-10 18:05 周六]」；AGENTS.md 的语音规则和分级插件都认这个前缀。
+    格式来自可在面板编辑的模板（prompts.render_voice_tag），默认与原来逐字节一致，模板不合格时回退内置格式。"""
+    return render_voice_tag(now)
 
 
 def tag_voice_text(text: str, now: datetime | None = None) -> str:

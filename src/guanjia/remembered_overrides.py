@@ -13,14 +13,12 @@ C:\\Users\\inksn\\.openclaw\\workspace\\guanjia\\levels.json 的 overrides 里�
 from __future__ import annotations
 
 import json
-import os
-import time
 from pathlib import Path
+
+from guanjia.fsutil import atomic_write_text
 
 LEVELS_PATH = Path.home() / ".openclaw" / "workspace" / "guanjia" / "levels.json"
 REMEMBERED = "remembered"
-_REPLACE_RETRIES = 5
-
 
 def load_levels(path: Path = LEVELS_PATH) -> dict:
     """读分级表；文件缺失或损坏时抛 ValueError（不能拿空表覆盖主人的文件）。"""
@@ -62,22 +60,8 @@ def format_levels(levels: dict) -> str:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """同目录临时文件 + os.replace。临时文件名带 pid 和时间，不会和插件的临时文件撞名。
-    Windows 上插件恰好在读这个文件时 os.replace 可能 PermissionError，短暂重试。"""
-    tmp = path.with_name(f"{path.name}.panel-{os.getpid()}-{time.time_ns()}.tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    try:
-        for i in range(_REPLACE_RETRIES):
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:
-                if i == _REPLACE_RETRIES - 1:
-                    raise
-                time.sleep(0.05)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
+    """同目录临时文件 + os.replace（实现搬到了 fsutil，行为不变）。"""
+    atomic_write_text(path, text)
 
 
 def list_remembered(path: Path = LEVELS_PATH) -> list[dict]:

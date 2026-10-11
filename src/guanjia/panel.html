@@ -63,7 +63,27 @@
   .spk-track { height:10px; border-radius:5px; background:#0c1116; overflow:hidden; }
   .spk-fill { height:100%; background:var(--busy); } .spk-fill.full { background:var(--ok); }
   .spk-ok { color:var(--ok); } .spk-bad { color:#ff8b8b; } .spk-warn { color:var(--warn); }
-  .box.clickable { cursor:pointer; }
+  .box.clickable { cursor:pointer; } .box.clickable:hover { border-color:#4b5d72; }
+  .box.picked { outline:2px solid var(--busy); outline-offset:2px; }
+  #drawer { border-color:#2f4a6b; } #drawerTitle { margin:0; } .tip { margin-top:4px; }
+  #drawer h3 { font-size:13px; margin:12px 0 6px; color:var(--dim); }
+  .drawer-head { display:flex; align-items:center; gap:10px; }
+  .badge { display:inline-block; padding:0 8px; margin-right:4px; border-radius:10px; background:#243142; color:var(--dim); font-size:12px; white-space:nowrap; }
+  .badge.diff { background:#4a3a10; color:#f0c050; } .badge.warn { background:#3a2a10; color:var(--warn); }
+  .badge.over { background:#3a1d1d; color:#ff8b8b; } .badge.ro { background:#1d2a3a; color:#79c0ff; }
+  tr.prow { cursor:pointer; } tr.prow:hover { background:#1e2935; } tr.prow.nopick { cursor:default; }
+  input.narrow { width:90px; }
+  .budget { display:inline-block; width:90px; height:8px; border-radius:4px; background:#0c1116; overflow:hidden; vertical-align:middle; }
+  .budget i { display:block; height:100%; background:var(--busy); } .budget i.over { background:var(--bad); }
+  .ed-grid { display:grid; grid-template-columns: minmax(300px, 1.7fr) minmax(220px, 1fr); gap:10px; margin:8px 0; }
+  @media (max-width: 900px) { .ed-grid { grid-template-columns: 1fr; } }
+  #edText { width:100%; min-height:340px; resize:vertical; background:#0c1116; color:var(--text); border:1px solid var(--line);
+            border-radius:6px; padding:8px; font:13px/1.5 Consolas,"Microsoft YaHei UI",monospace; }
+  #edText[readonly] { opacity:.8; }
+  .ed-box { background:#0c1116; border:1px solid var(--line); border-radius:6px; padding:8px; white-space:pre-wrap; word-break:break-all; font:12px/1.5 Consolas,monospace; }
+  .ed-warn { background:#3a2a10; border:1px solid var(--warn); border-radius:6px; padding:8px; margin:6px 0; }
+  .hist-list { max-height:180px; overflow:auto; margin:4px 0; }
+  .hist-list div { cursor:pointer; padding:2px 6px; font:12px Consolas,monospace; } .hist-list div:hover { background:#1e2935; }
 </style>
 </head>
 <body>
@@ -86,6 +106,49 @@
     <h2>一次说话的流程（正在进行的环节闪黄，放行变绿，被拦下变红并写原因）</h2>
     <div class="flow" id="flow"></div>
     <div id="current">还没有人说话</div>
+    <div class="hint tip">点任意一个环节：看它的参数、改提示词（再点一次收起）</div>
+  </section>
+  <section id="drawer" data-alt="node-drawer" hidden>
+    <div class="drawer-head">
+      <h2 id="drawerTitle"></h2>
+      <span class="spacer"></span>
+      <button id="btnDrawerClose" data-alt="drawer-close">收起</button>
+    </div>
+    <h3>参数</h3>
+    <div id="drawerParams" data-alt="drawer-params"></div>
+    <div id="spkSlot" data-alt="speaker-slot"></div>
+    <h3>提示词</h3>
+    <div id="drawerPrompts" data-alt="drawer-prompts"></div>
+    <div id="editor" data-alt="prompt-editor" hidden>
+      <h3 id="edTitle"></h3>
+      <div id="edBadges"></div>
+      <div id="edNote" class="hint"></div>
+      <div class="ed-grid">
+        <textarea id="edText" data-alt="prompt-text" spellcheck="false"></textarea>
+        <div id="edSide" data-alt="prompt-side"></div>
+      </div>
+      <div id="edConflict" class="ed-warn" data-alt="prompt-conflict" hidden>
+        <div id="edConflictText"></div>
+        <div class="filters">
+          <button id="btnEdReload">重新载入（放弃我的修改）</button>
+          <button id="btnEdForce">用我的覆盖</button>
+        </div>
+      </div>
+      <div class="filters">
+        <button id="btnEdSave">保存</button>
+        <button id="btnEdReset">恢复默认</button>
+        <button id="btnEdHist">历史</button>
+        <button id="btnEdClose">关闭编辑器</button>
+        <span id="edMsg" class="hint"></span>
+      </div>
+      <div id="edHistory" data-alt="prompt-history" hidden>
+        <div class="hist-list" id="edHistList"></div>
+        <div id="edHistView" hidden>
+          <div class="ed-box" id="edHistText"></div>
+          <div class="filters"><button id="btnEdRestore">恢复这一版</button></div>
+        </div>
+      </div>
+    </div>
   </section>
   <div class="grid2">
     <section>
@@ -112,6 +175,7 @@
     </div>
     <div id="logs"></div>
   </section>
+  <div id="spkHome" data-alt="speaker-home">
   <section id="spkCard" data-alt="speaker-card">
     <h2>声纹（让它认得出是你的声音）</h2>
     <div id="spkIdle" data-alt="speaker-idle">
@@ -139,6 +203,7 @@
       </div>
     </div>
   </section>
+  </div>
   <section>
     <h2>设置（保存后立即生效，不用重启）</h2>
     <div class="form">
@@ -186,7 +251,7 @@ async function api(path, body) {
                                 body: JSON.stringify(body) });
   let data = {};
   try { data = await r.json(); } catch (e) { /* 空回应 */ }
-  return { ok: r.ok && data.ok !== false, data };
+  return { ok: r.ok && data.ok !== false, data, status: r.status };
 }
 
 // ---------- 状态栏 ----------
@@ -221,9 +286,9 @@ function renderFlow() {
     let st = rec && rec.stages[stage] ? rec.stages[stage] : null;
     const live = S.live[stage];
     if (live && (!rec || live.t > (st ? st.t1 || st.t0 : rec.t0))) st = live;
-    const box = el("div", { class: "box " + (st ? st.state : "") + (stage === "speaker" ? " clickable" : ""), title: STATE_CN[st && st.state] || "" },
+    const box = el("div", { class: "box clickable " + (st ? st.state : "") + (stage === D.node ? " picked" : ""), title: STATE_CN[st && st.state] || "" },
       el("div", { class: "name", text: S.names[stage] || stage }), el("div", { class: "note", text: st ? (st.note || STATE_CN[st.state] || "") : "" }));
-    if (stage === "speaker") box.addEventListener("click", () => $("spkCard").scrollIntoView({ behavior: "smooth" }));
+    box.addEventListener("click", () => openNode(stage));
     if (stage === "barge") flow.append(el("span", { class: "arrow", text: "｜" }));
     else if (i > 0) flow.append(el("span", { class: "arrow", text: "→" }));
     flow.append(box);
@@ -363,8 +428,9 @@ const GROUP_CN = { near: "近处", far: "远处（2～3 米）", loud: "大声 /
 let spkTimer = null;
 let spkBusy = false;  // 有请求在路上：保存、回滚等按钮一律禁用，防止连点
 let spkLastInfo = null;
-async function getJson(path) {
-  const r = await fetch(path + "?token=" + encodeURIComponent(TOKEN), { cache: "no-store" });
+async function getJson(path, query) {
+  const extra = query ? "&" + new URLSearchParams(query).toString() : "";
+  const r = await fetch(path + "?token=" + encodeURIComponent(TOKEN) + extra, { cache: "no-store" });
   let data = {};
   try { data = await r.json(); } catch (e) { /* 空回应 */ }
   return { ok: r.ok && data.ok !== false, data };
@@ -450,6 +516,261 @@ $("btnEnrollCancel").addEventListener("click", () => speakerAction({ action: "ca
 $("btnEnrollCommit").addEventListener("click", async () => {
   const r = await speakerAction({ action: "commit" });
   if (r.ok) spkSay(`已保存。自测：新库 ${r.data.test_score}${r.data.test_old_score == null ? "" : " ／ 旧库 " + r.data.test_old_score}`, "spk-ok");
+});
+
+// ---------- 节点抽屉：参数 + 提示词编辑 ----------
+const D = { node: null, params: [], prompts: [], flash: {} };  // 当前打开的环节、参数表、提示词清单、行内提示
+const E = { id: null, detail: null, sha: "", orig: "", preview: null, timer: null, histVersion: null };  // 编辑器状态
+const HARD_MAX = 20000;
+const KIND_CN = { workspace: "工作区文件", block: "AGENTS.md 里的一段", template: "模板", readonly: "只读", setting: "在参数里改" };
+
+function fmtVal(v) {
+  if (Array.isArray(v)) return v.join("，");
+  if (typeof v === "boolean") return v ? "开" : "关";
+  return v == null || v === "" ? "—" : String(v);
+}
+function editorDirty() { return !$("editor").hidden && !$("edText").readOnly && $("edText").value !== E.orig; }
+function leaveOk() { return !editorDirty() || confirm("编辑框里有没保存的修改，放弃吗？"); }
+
+async function loadDrawerData() {
+  const [p, q] = await Promise.all([getJson("/api/params"), getJson("/api/prompts")]);
+  if (p.ok) D.params = p.data.items;
+  if (q.ok) D.prompts = q.data.items;
+  if (D.node) { renderParams(); renderPromptList(); }
+}
+function openNode(stage) {
+  if (D.node === stage) return closeDrawer();  // 再点一次收起
+  if (!leaveOk()) return;
+  closeEditor();
+  D.node = stage;
+  renderDrawer();
+  renderFlow();
+  loadDrawerData();
+  $("drawer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function closeDrawer() {
+  if (!leaveOk()) return;
+  closeEditor();
+  D.node = null;
+  renderDrawer();
+  renderFlow();
+}
+function renderDrawer() {
+  const open = D.node != null;
+  $("drawer").hidden = !open;
+  // 声纹卡片：「声纹」环节打开时搬进抽屉，其余时候放回原位
+  ($("drawer").hidden || D.node !== "speaker" ? $("spkHome") : $("spkSlot")).append($("spkCard"));
+  if (!open) return;
+  $("drawerTitle").textContent = `${S.names[D.node] || D.node}：参数与提示词`;
+  renderParams();
+  renderPromptList();
+}
+
+function paramRow(p) {
+  const tr = el("tr", { "data-alt": "param-" + p.key });
+  tr.append(el("td", { text: p.label + (p.unit ? `（${p.unit}）` : "") }));
+  const cur = el("td");
+  let input = null;
+  if (p.editable) {
+    if (typeof p.default === "boolean") { input = el("input", { type: "checkbox" }); input.checked = !!p.current; }
+    else if (typeof p.default === "number") { input = el("input", { type: "number", step: "any", class: "narrow" }); input.value = p.current; }
+    else { input = el("input", { type: "text", size: "16" }); input.value = Array.isArray(p.current) ? p.current.join("，") : p.current; }
+    cur.append(input);
+  } else cur.append(fmtVal(p.current));
+  const state = el("td", null, p.overridden ? el("span", { class: "badge diff", text: "已改" }) : el("span", { class: "badge", text: "默认" }),
+                   el("span", { class: "badge " + (p.editable ? "" : "warn"), text: p.effect }));
+  const act = el("td");
+  if (p.editable) {
+    const save = async (value) => {
+      const r = await api("/api/settings", { [p.key]: value });
+      D.flash[p.key] = r.ok ? "已保存，立即生效" : "没保存：" + (r.data.reason || "未知错误");
+      if (r.ok) { S.settings = r.data.settings; fillSettings(); await loadDrawerData(); } else renderParams();
+    };
+    const read = () => (input.type === "checkbox" ? input.checked : input.type === "number" ? num2(input) : input.value);
+    const saveBtn = el("button", { text: "保存" });
+    saveBtn.addEventListener("click", () => save(read()));
+    act.append(saveBtn);
+    if (p.overridden) {
+      const resetBtn = el("button", { text: "恢复默认" });
+      resetBtn.addEventListener("click", () => save(p.default));
+      act.append(" ", resetBtn);
+    }
+    if (D.flash[p.key]) act.append(el("span", { class: "hint", text: " " + D.flash[p.key] }));
+  }
+  tr.append(cur, el("td", { text: fmtVal(p.default) }), state, act, el("td", { class: "hint", text: p.source }));
+  return tr;
+}
+// 空数字框发 null（后端拒绝），不能变成 0
+function num2(input) { const v = input.value.trim(); return v === "" ? null : Number(v); }
+function renderParams() {
+  const box = $("drawerParams");
+  box.textContent = "";
+  const rows = D.params.filter((p) => p.node === D.node);
+  if (!rows.length) { box.append(el("div", { class: "hint", text: "这个环节没有可调参数" })); return; }
+  const tb = el("tbody");
+  for (const p of rows) tb.append(paramRow(p));
+  box.append(el("table", null, el("thead", null, el("tr", null, ...["名称", "当前值", "默认值", "状态 / 生效", "操作", "来源"].map((t) => el("th", { text: t })))), tb));
+}
+
+function budgetBar(chars, budget) {
+  const over = chars > budget;
+  const fill = el("i", { class: over ? "over" : "" });
+  fill.style.width = Math.min(100, chars / budget * 100) + "%";
+  return el("span", { class: "budget" }, fill);
+}
+function renderPromptList() {
+  const box = $("drawerPrompts");
+  box.textContent = "";
+  const rows = D.prompts.filter((p) => p.node === D.node);
+  if (!rows.length) { box.append(el("div", { class: "hint", text: "这个环节没有提示词" })); return; }
+  const tb = el("tbody");
+  for (const p of rows) {
+    const pickable = p.kind !== "setting";
+    const over = p.budget && p.chars > p.budget;
+    const badges = el("td", null, el("span", { class: "badge " + (p.effect === "下一轮" || p.effect === "立即" ? "" : "warn"), text: p.effect }),
+      p.differs_from_default ? el("span", { class: "badge diff", text: "与默认不同" }) : null,
+      p.kind === "readonly" ? el("span", { class: "badge ro", text: "只读" }) : null,
+      p.exists === false ? el("span", { class: "badge", text: "还没有这个文件" }) : null,
+      p.error ? el("span", { class: "badge over", text: p.error }) : null);
+    const size = el("td", null, p.chars == null ? "" : `${p.chars} 字`);
+    if (p.budget && p.chars != null) size.append(" ", budgetBar(p.chars, p.budget), ` / ${p.budget}`);
+    if (over) size.append(" ", el("span", { class: "badge over", text: "超预算" }));
+    const tr = el("tr", { class: "prow" + (pickable ? "" : " nopick") + (p.id === E.id ? " sel" : ""), "data-alt": "prompt-" + p.id },
+      el("td", { text: p.title }), el("td", { class: "hint", text: KIND_CN[p.kind] || p.kind }), size, badges);
+    if (pickable) tr.addEventListener("click", () => openEditor(p.id));
+    tb.append(tr);
+  }
+  box.append(el("table", null, el("thead", null, el("tr", null, ...["提示词", "类型", "字数", "状态 / 生效"].map((t) => el("th", { text: t })))), tb));
+}
+
+// ----- 编辑器 -----
+function edSay(text, cls) { const m = $("edMsg"); m.className = "hint " + (cls || ""); m.textContent = text || ""; }
+function closeEditor() {
+  $("editor").hidden = true;
+  E.id = null; E.detail = null; E.histVersion = null;
+  clearTimeout(E.timer);
+}
+function fmtVersion(id) { return `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)} ${id.slice(9, 11)}:${id.slice(11, 13)}:${id.slice(13, 15)}`; }
+function fillEditor(d) {
+  E.id = d.id; E.detail = d; E.sha = d.sha; E.orig = d.text; E.histVersion = null;
+  $("edTitle").textContent = d.title;
+  const b = $("edBadges");
+  b.textContent = "";
+  b.append(el("span", { class: "badge " + (d.effect === "下一轮" || d.effect === "立即" ? "" : "warn"), text: "生效：" + d.effect }));
+  if (d.differs_from_default) b.append(el("span", { class: "badge diff", text: "与默认不同" }));
+  if (d.kind === "template" && d.overridden) b.append(el("span", { class: "badge diff", text: "已用覆盖版" }));
+  if (!d.editable) b.append(el("span", { class: "badge ro", text: "只读" }));
+  $("edNote").textContent = (d.rel ? `文件：${d.rel}　` : "") + (d.note || "");
+  const ta = $("edText");
+  ta.value = d.text;
+  ta.readOnly = !d.editable;
+  $("btnEdSave").hidden = !d.editable;
+  $("btnEdReset").hidden = !d.editable || d.default_text == null;
+  $("btnEdHist").hidden = !d.editable || d.kind === "template";
+  $("edConflict").hidden = true;
+  $("edHistory").hidden = true;
+  E.preview = d.kind === "template" ? { preview: d.preview, valid: d.valid, reason: d.reason, unknown: d.unknown } : null;
+  $("editor").hidden = false;
+  updateSide();
+}
+async function openEditor(id) {
+  if (!leaveOk()) return;
+  const r = await getJson("/api/prompt", { id });
+  if (!r.ok) { edSay("打不开：" + (r.data.reason || "未知错误"), "spk-bad"); $("editor").hidden = false; return; }
+  edSay("");
+  fillEditor(r.data);
+  renderPromptList();
+  $("editor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function updateSide() {
+  const d = E.detail, side = $("edSide");
+  side.textContent = "";
+  if (!d) return;
+  const n = $("edText").value.length;
+  const lim = d.budget || 0;
+  const over = (lim && n > lim) || n > HARD_MAX;
+  side.append(el("div", { class: over ? "spk-bad" : "hint", text: `${n} 字（粗估 ${Math.round(n * 0.7)} token）` + (lim ? `，预算 ${lim} 字` : "") + `，上限 ${HARD_MAX} 字` }));
+  if (lim) side.append(budgetBar(n, lim));
+  if (n > HARD_MAX) side.append(el("div", { class: "spk-bad", text: "超过上限，保存会被拒绝（OpenClaw 会截断超长启动文件）" }));
+  if (d.kind === "template" && E.preview) {
+    const pv = E.preview;
+    side.append(el("h3", { text: "渲染预览（用当前时间）" }), el("div", { class: "ed-box", text: pv.preview == null ? "" : pv.preview }));
+    if (!pv.valid) side.append(el("div", { class: "spk-bad", text: pv.reason || "模板不合格" }));
+    const ph = (d.placeholders || {});
+    side.append(el("div", { class: "hint", text: "可用占位符：" + (Object.entries(ph).map(([k, v]) => `{{${k}}} ${v}`).join("；") || "无") }));
+  }
+}
+function schedulePreview() {
+  clearTimeout(E.timer);
+  E.timer = setTimeout(async () => {
+    if (!E.detail || E.detail.kind !== "template") return;
+    const r = await api("/api/prompt", { id: E.id, action: "preview", text: $("edText").value });
+    if (r.ok) { E.preview = r.data; updateSide(); }
+  }, 300);
+}
+$("edText").addEventListener("input", () => { updateSide(); schedulePreview(); });
+
+async function saveEditor(body, okText) {
+  const r = await api("/api/prompt", { id: E.id, base_sha: E.sha, ...body });
+  if (r.ok) {
+    fillEditor(r.data);
+    edSay(okText || `已保存，${r.data.effect}生效`, "spk-ok");
+    loadDrawerData();
+    return r;
+  }
+  if (r.status === 409) {
+    $("edConflictText").textContent = (r.data.reason || "文件刚被改过") + "。你的修改还保留在编辑框里。";
+    $("edConflict").hidden = false;
+    edSay("没保存：冲突", "spk-bad");
+  } else edSay("没保存：" + (r.data.reason || "未知错误"), "spk-bad");  // 423 锁被占、400 校验不过都带中文原因
+  return r;
+}
+$("btnEdSave").addEventListener("click", () => saveEditor({ text: $("edText").value }));
+$("btnEdReset").addEventListener("click", () => {
+  if (!confirm("恢复成仓库里的默认内容？当前内容会存进历史版本（模板除外）。")) return;
+  saveEditor({ action: "reset" }, "已恢复默认");
+});
+$("btnEdReload").addEventListener("click", () => openEditorForce(E.id));
+async function openEditorForce(id) {  // 放弃本地修改，重新载入
+  const r = await getJson("/api/prompt", { id });
+  if (r.ok) { fillEditor(r.data); edSay("已重新载入"); } else edSay("打不开：" + (r.data.reason || "未知错误"), "spk-bad");
+}
+$("btnEdForce").addEventListener("click", async () => {
+  if (!confirm("用你的版本覆盖文件里现在的内容？对方（多半是模型）刚写的会存进历史版本。")) return;
+  const mine = $("edText").value;
+  const r = await getJson("/api/prompt", { id: E.id });
+  if (!r.ok) { edSay("没成功：" + (r.data.reason || "未知错误"), "spk-bad"); return; }
+  E.sha = r.data.sha;  // 拿新的 sha 再存一次，文本还是你的
+  const res = await saveEditor({ text: mine }, "已用你的版本覆盖");
+  if (!res.ok) $("edText").value = mine;
+});
+$("btnEdClose").addEventListener("click", () => { if (leaveOk()) { closeEditor(); renderPromptList(); } });
+$("btnDrawerClose").addEventListener("click", closeDrawer);
+$("btnEdHist").addEventListener("click", () => {
+  const box = $("edHistory");
+  box.hidden = !box.hidden;
+  if (box.hidden) return;
+  const list = $("edHistList");
+  list.textContent = "";
+  $("edHistView").hidden = true;
+  const hist = (E.detail && E.detail.history) || [];
+  if (!hist.length) list.append(el("div", { class: "hint", text: "还没有历史版本（每次保存前会自动备份，最多留 20 份）" }));
+  for (const h of hist) {
+    const row = el("div", { text: `${fmtVersion(h.id)}　${h.bytes} 字节` });
+    row.addEventListener("click", async () => {
+      const r = await getJson("/api/prompt", { id: E.id, version: h.id });
+      if (!r.ok) { edSay("读不了这一版：" + (r.data.reason || "未知错误"), "spk-bad"); return; }
+      E.histVersion = h.id;
+      $("edHistText").textContent = r.data.version_text;
+      $("edHistView").hidden = false;
+    });
+    list.append(row);
+  }
+});
+$("btnEdRestore").addEventListener("click", () => {
+  if (!E.histVersion) return;
+  if (!confirm("把这一版恢复回去？当前内容会先存进历史版本。")) return;
+  saveEditor({ action: "restore", version: E.histVersion }, "已恢复这一版");
 });
 
 // ---------- 控制 ----------
