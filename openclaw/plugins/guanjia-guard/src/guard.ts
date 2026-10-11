@@ -199,6 +199,14 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     const rawToolName: string = event.toolName;
     const callId: string | undefined = event.toolCallId ?? ctx?.toolCallId;
 
+    // exec 的 ask 参数：模型自己要求审批（always / on-miss）会触发 OpenClaw 自带的 exec 审批，没有聊天路由、主人也答不了，
+    // 只会表现为"等审批超时"。我们的"需要确认"一律走工具返回 + 口头确认，所以放行时把它改成不加严的 off。
+    // 宿主把钩子返回的 params 浅合并到原参数上（{ ...原参数, ...返回值 }），不能靠漏掉键来删，只能改值。
+    // 只在真正执行的那次（exec 本身，含 tool_call 的内层）改；外层 tool_call 的参数结构不同，不动。
+    const askOriginal = rawToolName === "exec" && rawParams.ask != null && rawParams.ask !== "off" ? String(rawParams.ask) : undefined;
+    const askRewrite = askOriginal === undefined ? undefined : { params: { ask: "off" } };
+    const askNote = askOriginal === undefined ? {} : { askStripped: askOriginal };
+
     const grant = takeOuterGrant(callId, rawToolName, rawParams);
     if (grant) {
       store.audit({
@@ -209,9 +217,10 @@ export function createGuard(store: Store, defaults: LevelsFile) {
         sessionKey: ctx?.sessionKey ?? grant.sessionKey,
         summary: summarize(rawToolName, rawParams),
         paramKeys: Object.keys(rawParams).sort(),
+        ...askNote,
         decision: "allow-inner-dedup",
       });
-      return;
+      return askRewrite;
     }
 
     const levels = store.readJson<LevelsFile>("levels.json", defaults);
@@ -246,8 +255,8 @@ export function createGuard(store: Store, defaults: LevelsFile) {
 
     if (c.level === "L0" || c.level === "L1") {
       grantIfOuter();
-      store.audit({ ...base, decision: "allow" });
-      return;
+      store.audit({ ...base, ...askNote, decision: "allow" });
+      return askRewrite;
     }
 
     if (c.level === "L3" && c.source === "client") {
@@ -265,8 +274,8 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     if (p && p.approved && p.fingerprint === fp && p.expiresAt > Date.now()) {
       pending.delete(sessionKey!);
       grantIfOuter();
-      store.audit({ ...base, decision: "allow-confirmed" });
-      return;
+      store.audit({ ...base, ...askNote, decision: "allow-confirmed" });
+      return askRewrite;
     }
     const what = c.category ? CATEGORY_CN[c.category] : "需要确认的操作";
     if (proactive || !sessionKey) {
