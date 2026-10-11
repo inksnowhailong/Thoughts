@@ -30,6 +30,7 @@ check(not needs_nudge("已经打开了。", 0), "plain result -> no nudge")
 check(not needs_nudge("", 0), "empty reply -> no nudge")
 check(has_promise("稍等一下哦") and has_promise("好的，马上办") and not has_promise("现在三点。"), "has_promise basics")
 check(all(w for w in PROMISE_WORDS) and "我先" in PROMISE_WORDS and "我帮你看" in PROMISE_WORDS, "promise word list constant")
+check(not has_promise("这就是今天的天气，挺暖和的。") and has_promise("好，这就去打开。"), "plain '这就是' is not a promise")
 check("工具" in NUDGE_TEXT and "如实" in NUDGE_TEXT, "nudge text asks to call tools")
 
 
