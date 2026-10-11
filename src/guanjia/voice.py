@@ -803,7 +803,7 @@ class VoiceDaemon:
                       first_ms=round((t - m["turn_start"]) * 1000))
         elif name == "shaped":  # 口语整形动过这一轮：原句数 / 字数、念出句数、省略块数
             elog.emit("voice", "speech.shaped",
-                      f"整形：原 {data.get('sentences')} 句 → 念 {data.get('spoken_sentences')} 句，省略 {data.get('omitted')} 块",
+                      f"整形：原 {data.get('sentences')} 句 → 念 {data.get('spoken_sentences')} 句，省略 {data.get('omitted')} 块，保留提问 {data.get('kept_questions')} 块",
                       uid=uid, **{k: v for k, v in data.items() if k != "t"})
         elif name == "sentence":
             m.setdefault("first_sentence", t)

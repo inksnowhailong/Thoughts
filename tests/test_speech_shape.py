@@ -7,7 +7,7 @@ import numpy as np
 
 from guanjia.events import EventHub, turn_summary
 from guanjia.settings import Settings, from_dict
-from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper, split_long, to_speech
+from guanjia.speech_shape import ASK_WORDS, SHAPED_PREFIX, SpeechShaper, split_long, to_speech
 from guanjia.textseg import SentenceSplitter
 from guanjia.turns import SayItem, TurnRunner
 
@@ -45,7 +45,7 @@ out = [sh.shape(c) for c in ["你好，", "我是管家。", "今天天气不错
 check([o[0] for o in out[:4]] == [["你好，"], ["我是管家。"], ["今天天气不错，"], ["适合出门。"]], "first two sentences (incl. comma-cut chunks) are spoken")
 check(out[4] == ([], "第三句。") and out[5] == ([], "第四句，") and out[6] == ([], "还有尾巴"), "third sentence onwards omitted and returned as text")
 st = sh.stats()
-check(st == {"sentences": 4, "chars": 32, "spoken_sentences": 2, "omitted": 3, "split": 0, "limit": 2}, f"stats: {st}")
+check(st == {"sentences": 4, "chars": 32, "spoken_sentences": 2, "omitted": 3, "kept_questions": 0, "split": 0, "limit": 2}, f"stats: {st}")
 
 sh = SpeechShaper(2)
 check(sh.shape("好的。")[0] == ["好的。"] and sh.shape("没问题。")[0] == ["没问题。"] and sh.stats() is None, "a reply within the limit is untouched (stats None)")
@@ -184,4 +184,60 @@ check(list(sp.push("第一项\n")) == ["第一项"] and sp.last_end is True and 
 sp = SentenceSplitter(first_soft_min_chars=2)
 check(list(sp.push("好的，")) == ["好的，"] and sp.last_end is False, "comma cut is not a sentence end")
 
+# ---------- 7. 句数用完后：含提问 / 确认类词的块照样念 ----------
+sh = SpeechShaper(2)
+for c in ["好的。", "我先看一下。"]:
+    sh.shape(c)
+p3, o3 = sh.shape("这条命令要审批，你确认一下放行我就能立刻跑。")
+check(p3 == ["这条命令要审批，你确认一下放行我就能立刻跑。"] and o3 == "", "3rd sentence with confirm words is read")
+check(sh.shape("跑起来大概要几分钟。") == ([], "跑起来大概要几分钟。"), "3rd/4th plain statement is still omitted")
+check(sh.shape("要我现在开始吗？")[0] == ["要我现在开始吗？"], "question mark keeps a chunk (full-width)")
+check(sh.shape("Shall I go on?")[0] == ["Shall I go on?"], "question mark keeps a chunk (ASCII)")
+for w in ASK_WORDS:
+    s_ = SpeechShaper(1)
+    s_.shape("先说这一句。")
+    check(s_.shape(f"关于这件事，{w}一下。")[0] != [], f"confirm word {w!r} keeps a chunk")
+st = sh.stats()
+check(st["kept_questions"] == 3 and st["omitted"] == 1, f"stats count kept questions: {st}")
+
+# 保留是按句的：一块因提问被保留，同一句后面的块也保留（不念半句），到句末为止；下一句重新判断
+sh = SpeechShaper(1)
+sh.shape("先说这一句。")
+a1 = sh.shape("你觉得怎么样呢，", ends=False)[0]      # 没有问号 / 确认词：省略
+a2 = sh.shape("要不要装一下，", ends=False)[0]        # 要不要：保留
+a3 = sh.shape("装好了再告诉你什么都不用管。", ends=True)[0]  # 同一句的后续：跟着保留
+a4 = sh.shape("还有别的备注，", ends=False)[0]         # 下一句重新判断：省略
+check(a1 == [] and a2 == ["要不要装一下，"] and a3 == ["装好了再告诉你什么都不用管。"] and a4 == [], "once a chunk of a sentence is kept, the rest of that sentence follows")
+
+# 额度没用完时不看关键词；限制为 0 时更不看
+sh = SpeechShaper(2)
+check(sh.shape("你好。")[0] == ["你好。"] and sh.stats() is None, "within quota nothing is 'kept' (just read)")
+
+# 超长的提问也照样切短
+sh = SpeechShaper(1)
+sh.shape("先说这一句。")
+pieces, _ = sh.shape("这个操作需要你确认一下，因为它会改动系统里的很多设置，而且改完之后需要重启，你要不要现在就放行？")
+check(len(pieces) >= 2 and all(len(x) <= 30 for x in pieces) and "".join(pieces).endswith("放行？"), f"kept question is still split at commas: {pieces}")
+
+# 经 TurnRunner：被保留的块照常合成，shaped 事件带 kept_questions
+rec = Rec()
+res = runner(rec, lambda: SpeechShaper(2), lambda r: iter(["好的。我先看一下。", "第三句是陈述。", "你确认一下可以吗？", "最后一句陈述。"])).run_reply("x", 0)
+check(rec.synth_calls == ["好的。", "我先看一下。", "你确认一下可以吗？"], f"kept question goes to TTS: {rec.synth_calls}")
+ev = [d for n, d in rec.events if n == "shaped"][0]
+check(ev["kept_questions"] == 1 and ev["omitted"] == 2, f"shaped event: {ev}")
+check([x for x in res.unspoken] == [SHAPED_PREFIX + "第三句是陈述。", SHAPED_PREFIX + "最后一句陈述。"], "only the omitted ones are in unspoken")
+
+# 真实回复 u135743-006（2026-10-11 13:57，「这大概需要多久你才能给我安装完」）：第 3 句起是审批请求，必须让主人听到
+REAL = ("我得跟你说实话，别让你干等。刚才查官方下载地址的命令被审批拦住了，一直没跑成，所以我还没真正开始下载。\n\n"
+        "**现在需要你点头：** 我要查漫步者官网找 Halo 控制软件下载链接，然后下载装到 F 盘。这条命令要审批，你确认一下\"放行\"我就能立刻跑。\n\n"
+        "跑起来的话，下载安装完成大概几分钟到十几分钟。你说声放行，我就动手。")
+rec = Rec()
+res = runner(rec, lambda: SpeechShaper(2), lambda r: iter([REAL[i:i + 4] for i in range(0, len(REAL), 4)])).run_reply("x", 0)
+check(rec.synth_calls == ["我得跟你说实话，", "别让你干等。", "刚才查官方下载地址的命令被审批拦住了，", "一直没跑成，所以我还没真正开始下载。",
+                          "这条命令要审批，你确认一下\"放行\"我就能立刻跑。", "你说声放行，我就动手。"], f"real reply: {rec.synth_calls}")
+check(res.reply == REAL and [x[len(SHAPED_PREFIX):] for x in res.unspoken] == [
+    "现在需要你点头： 我要查漫步者官网找 Halo 控制软件下载链接，", "然后下载装到 F 盘。", "跑起来的话，下载安装完成大概几分钟到十几分钟。"],
+    f"real reply: only the plain statements are omitted: {res.unspoken}")
+ev = [d for n, d in rec.events if n == "shaped"][0]
+check(ev["kept_questions"] == 2 and ev["omitted"] == 3, f"real reply shaped event: {ev}")
 print("ALL PASS test_speech_shape")
