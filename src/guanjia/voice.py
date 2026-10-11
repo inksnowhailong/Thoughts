@@ -45,7 +45,7 @@ from pyaec import Aec
 from guanjia.asr import StreamingASR
 from guanjia.asr_final import FinalASR
 from guanjia.audio_cues import earcon
-from guanjia.audittail import AuditTail
+from guanjia.audittail import AuditTail, PendingConfirm
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.control import CONTROL_PORT, start_control_server
@@ -59,7 +59,8 @@ from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
 from guanjia.tts_client import TTSClient
-from guanjia.turns import NUDGE_TEXT, Heard, SayItem, TurnRunner, has_promise, needs_nudge
+from guanjia.turns import (NUDGE_TEXT, NUDGE_TEXT_FAKE_BLOCK, Heard, SayItem, TurnRunner, claims_blocked, has_promise,
+                           needs_fake_block_nudge, needs_nudge)
 from guanjia.vad import SR as SR16K
 from guanjia.vad import VAD, Downsampler
 from guanjia.wake import WakeMatcher, decide
@@ -189,6 +190,8 @@ class VoiceDaemon:
     _turn_uid = None
     _turn_is_say = False  # 这一轮是 /say（主程序让念）：念的时候、念完都不算免喊窗口
     _turn_tools = 0  # 这一轮已见到的工具调用数（审计跟随累加），「只说没做」兜底据此判断
+    _turn_gate: frozenset = frozenset()  # 这一轮已见到的拦截 / 确认类审计 decision，「编造拦截」兜底据此判断
+    pending = PendingConfirm()  # 待确认状态（托盘变色 + 气泡）；__post_init__ 换成每个进程自己的一份
     _turn_gen = -1
     enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
     _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
@@ -261,7 +264,8 @@ class VoiceDaemon:
         self.panel.register_get("/api/speaker", self._speaker_info)
         self.panel.register_post("/api/speaker", self._speaker_action)
         self.panel.attach_prompts(PromptService(WorkspaceFiles()), self._param_consts)  # B2：参数表 + 提示词编辑
-        self.audit = AuditTail(self._on_tool)
+        self.pending = PendingConfirm()
+        self.audit = AuditTail(self._on_tool, on_gate=self._on_gate)
         self.store.subscribe(self._apply_settings)
         self.tray = None  # run() 里按 tray_on 创建
         self.control = None  # run() 里启动
@@ -573,11 +577,14 @@ class VoiceDaemon:
 
     def _handle_item(self, item: str | Heard | SayItem, nudged: bool = False) -> None:
         """一轮：放行的话进主线会话 / /say 的话直接念；等本轮播完再回到监听，然后打开免喊窗口。
-        只说没做（回复含承诺词、本轮零工具调用）时，本轮收尾后在同一会话追发一次 NUDGE_TEXT；nudged=True 是追发的那一轮，不再追。"""
+        只说没做（回复含承诺词、本轮零工具调用）时，本轮收尾后在同一会话追发一次 NUDGE_TEXT；
+        编造拦截（回复声称被拦 / 要审批，本轮审计里却没有拦截记录）时追发一次 NUDGE_TEXT_FAKE_BLOCK；
+        两种共用「每轮最多追一次」：nudged=True 是追发的那一轮，不再追。"""
         uid = item.uid if isinstance(item, (Heard, SayItem)) else None
         self._turn_is_say = isinstance(item, SayItem)
         self._turn_tools = 0
-        nudge = False
+        self._turn_gate = frozenset()
+        nudge = ""  # "" 不追 / "promise" 只说没做 / "fake-block" 编造拦截
         gen = self._begin_speaking()
         self._turn_first = True
         self._turn_t0 = time.monotonic()
@@ -604,9 +611,12 @@ class VoiceDaemon:
             if current and not isinstance(item, SayItem):  # 主程序让念的话不是在跟主人对话，不开免喊窗口
                 self._open_followup()
             if not nudged and current and not isinstance(item, SayItem):
-                nudge = self._should_nudge(res)
-                if nudge:
+                if self._should_nudge(res):
+                    nudge = "promise"
                     self.hub.stage(uid, "gateway", "done", "只说没做，已追问一次")
+                elif self._should_nudge_fake_block(res):
+                    nudge = "fake-block"
+                    self.hub.stage(uid, "gateway", "done", "称被拦但审计里没有拦截记录，已追问一次")
             if res.spoken and current:
                 self.hub.stage(uid, "play", "done", f"念完 {len(res.spoken)} 句")
             elif res.aborted or not current:
@@ -625,22 +635,39 @@ class VoiceDaemon:
                 if gen == self._gen:
                     self.state = "LISTENING"
         if nudge:
-            self._send_nudge()
+            self._send_nudge(nudge)
+
+    def _nudge_allowed(self, res: TurnResult) -> bool:
+        """追问的共同前提：没被打断没出错；主人已排了新话、静音、游戏中也不追。"""
+        return not (res.aborted or res.error or self._muted.is_set() or self._paused.is_set() or not self.text_q.empty())
 
     def _should_nudge(self, res: TurnResult) -> bool:
         """本轮是否「只说没做」：回复含承诺词、零工具调用、没被打断没出错；主人已排了新话、静音、游戏中也不追。"""
-        if res.aborted or res.error or self._muted.is_set() or self._paused.is_set() or not self.text_q.empty():
-            return False
-        if not has_promise(res.reply):
+        if not self._nudge_allowed(res) or not has_promise(res.reply):
             return False
         time.sleep(AUDIT_LAG_SEC)  # 审计跟随有 0.5 秒轮询延迟，等一下再数工具调用
         return needs_nudge(res.reply, self._turn_tools, aborted=res.aborted, error=res.error)
 
-    def _send_nudge(self) -> None:
-        """在同一会话追发一条语音标记的话，让模型把说过的事做完；它的回复照常念出来，面板上单独一条记录。"""
-        log.info("nudge sent: 只说没做，追问一次")
-        uid = self.hub.new_utterance("nudge", text=NUDGE_TEXT, verdict="accept", reason="只说没做，自动追问一次", sent=NUDGE_TEXT)
-        self._handle_item(Heard(NUDGE_TEXT, uid), nudged=True)
+    def _should_nudge_fake_block(self, res: TurnResult) -> bool:
+        """本轮是否「编造拦截」：回复声称被拦 / 要审批 / 要放行 / 要确认，而本轮审计里没有拦截或确认记录、
+        也没有一件还在等主人确认的事（上一轮真拦下、这一轮主人只是嗯了一声，模型再问一次是正常的）。"""
+        if not self._nudge_allowed(res) or not claims_blocked(res.reply):
+            return False
+        time.sleep(AUDIT_LAG_SEC)  # 拦截记录也是从审计文件跟随来的，同样可能比回复结束晚到
+        return needs_fake_block_nudge(res.reply, bool(self._turn_gate) or bool(self.pending.current()),
+                                      aborted=res.aborted, error=res.error)
+
+    def _send_nudge(self, kind: str = "promise") -> None:
+        """在同一会话追发一条语音标记的话（只说没做 → 让模型把说过的事做完；编造拦截 → 告诉它没有任何东西拦着）；
+        它的回复照常念出来，面板上单独一条记录。"""
+        if kind == "fake-block":
+            text, reason = NUDGE_TEXT_FAKE_BLOCK, "称被拦但没有拦截记录，自动追问一次"
+            log.info("nudge sent: fake-block")
+        else:
+            text, reason = NUDGE_TEXT, "只说没做，自动追问一次"
+            log.info("nudge sent: 只说没做，追问一次")
+        uid = self.hub.new_utterance("nudge", text=text, verdict="accept", reason=reason, sent=text)
+        self._handle_item(Heard(text, uid), nudged=True)
 
     def _turn_timings(self, uid: str | None, m: dict) -> dict:
         """耗时拆分（毫秒）：听完 → 排队 → 网关首字 → 首句成形 → 合成首句 → 真正出声。"""
@@ -705,6 +732,24 @@ class VoiceDaemon:
             if entry["decision"] == "approval-requested":
                 note = f"{entry['tool']} {entry['level']} 等审批"
             self.hub.stage(uid, "tools", entry["state"], note)
+
+    def _on_gate(self, ev: dict) -> None:
+        """审计跟随：拦截 / 确认类记录。记到本轮（「编造拦截」兜底的依据），并维护「待确认」状态：
+        新出现一件待确认 → 托盘变紫 + 弹气泡「管家在等你确认：…」（游戏中只变色不弹）；了结（确认 / 否认 / 超时）→ 恢复。"""
+        if self._turn_marks is not None:
+            self._turn_gate = self._turn_gate | {ev["decision"]}
+        change = self.pending.feed(ev)
+        if change == "opened":
+            summary = self.pending.current()
+            gaming = self._paused.is_set()
+            log.info("pending confirm: %s%s", summary, "（游戏中，只变色不弹气泡）" if gaming else "")
+            if self.tray and not gaming:
+                self.tray.notify(f"管家在等你确认：{summary}")
+        elif change == "closed":
+            log.info("pending confirm cleared (%s)", ev["decision"])
+        if change:
+            self._refresh_tray()
+            self.hub.status(self.status())
 
     def _enqueue_pcm(self, gen: int, pcm: np.ndarray, sr: int) -> None:
         """TurnRunner 的入队回调：重采样到流采样率；本轮第一句前补静音前导并记首音延迟。"""
@@ -883,7 +928,8 @@ class VoiceDaemon:
 
     def view(self) -> TrayView:
         return tray_view(muted=self._muted.is_set(), gaming=self._paused.is_set(), busy=self.state == "SPEAKING",
-                         health=self.health, last_error=self.last_error, sleep_state=self.sleep_state)
+                         health=self.health, last_error=self.last_error, sleep_state=self.sleep_state,
+                         pending=self.pending.current())
 
     def toggle_mute(self) -> None:
         """托盘左键 / 面板按钮：静音（不听不说，立即停播）/ 取消静音。"""
@@ -1051,7 +1097,9 @@ class VoiceDaemon:
                         shown = key
                         self._refresh_tray()
                         self.hub.status(self.status())
-                        self.hub.stage(None, "mic", "blocked" if key in ("muted", "gaming") else "active", self.view().label)
+                        # 待确认压过静音 / 游戏中的颜色，但麦克风是否在听要看真实状态，不能看图标 key
+                        mic_off = self._muted.is_set() or self._paused.is_set()
+                        self.hub.stage(None, "mic", "blocked" if mic_off else "active", self.view().label)
                     while self._play_events:  # 回调记下的"真正写入输出流"的时刻与时长
                         t0, dur, g = self._play_events.popleft()
                         marks = self._turn_marks

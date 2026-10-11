@@ -28,7 +28,7 @@ check(tray_view(muted=False, gaming=False, busy=False, health=ok, last_error="TT
 check(tray_view(muted=False, gaming=False, busy=False, health=Health()).key == "starting", "unknown health -> starting")
 check("休眠中" in tray_view(muted=False, gaming=False, busy=False, health=ok, sleep_state="sleeping").tooltip, "P4 sleep bit in tooltip")
 check(len(tray_view(muted=False, gaming=False, busy=False, health=ok, last_error="x" * 300).tooltip) <= 120, "tooltip <= 120 chars")
-check(set(COLORS) == {"listening", "busy", "muted", "gaming", "error", "starting"}, "every state has a color")
+check(set(COLORS) == {"listening", "busy", "muted", "gaming", "error", "starting", "pending"}, "every state has a color")
 
 calls: list[Health] = []
 vals = {"gateway": True, "tts": True}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,6 +26,60 @@ DECISION_STATE = {  # 审计 decision → 面板「工具/审批」方框的状�
 }
 
 
+# ---- 「待确认」状态：来自分级插件审计里的拦截 / 确认记录 ----
+# 打开：工具被拦下、等主人口头同意（v2 的 block-need-confirm；approval-requested 是 v1 遗留，v2 插件不再产生）。
+PENDING_OPEN = frozenset({"block-need-confirm", "approval-requested"})
+# 了结：主人说了允许 / 别的话、同意后重试放行、或旧审批有了结果。l2-* 这几行没有 tool 字段，tool_entry 看不到，靠 gate_event。
+PENDING_CLOSE = frozenset({
+    "l2-confirmed", "l2-dropped", "l2-remembered", "l2-remember-refused", "l2-remember-failed", "allow-confirmed",
+    "approval-allow-once", "approval-deny", "approval-timeout", "approval-cancelled",
+})
+# 拦截 / 确认类记录的全集：回复里声称「被拦、要审批」时，本轮见过其中任何一条才算有据（block-no-confirmer / block-refused 是真拦，但没人能确认，不进待确认）
+GATE_DECISIONS = PENDING_OPEN | PENDING_CLOSE | {"block-no-confirmer", "block-refused"}
+PENDING_TTL_SEC = 180.0  # 与插件 guard.ts 的 PENDING_TTL_MS（3 分钟）一致：过了这么久插件那边的待确认也作废了
+
+
+def gate_event(raw: object) -> dict | None:
+    """一行审计 → 拦截 / 确认事件 {ts, decision, summary}；不是主线会话的、或不是 GATE_DECISIONS 里的返回 None。"""
+    if not isinstance(raw, dict) or raw.get("kind") != "tool" or raw.get("sessionKey") != MAIN_SESSION_KEY:
+        return None
+    decision = str(raw.get("decision", ""))
+    if decision not in GATE_DECISIONS:
+        return None
+    return {"ts": raw.get("ts", ""), "decision": decision, "summary": str(raw.get("summary", ""))[:160]}
+
+
+class PendingConfirm:
+    """主人有没有一件「管家在等你确认」的事：block-need-confirm 打开，确认 / 否认 / 重试放行 / 超时了结。线程安全。"""
+
+    def __init__(self, ttl: float = PENDING_TTL_SEC, clock: Callable[[], float] = time.monotonic) -> None:
+        self.ttl = ttl
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._summary = ""
+        self._since = 0.0
+
+    def feed(self, event: dict) -> str:
+        """喂一条 gate_event，返回 "opened"（新出现一件待确认）/ "closed"（刚了结）/ ""（没变化）。"""
+        decision = event["decision"]
+        with self._lock:
+            if decision in PENDING_OPEN:
+                self._summary, self._since = event.get("summary") or "有一件事", self.clock()
+                return "opened"
+            if decision in PENDING_CLOSE and self._active():
+                self._summary = ""
+                return "closed"
+        return ""
+
+    def _active(self) -> bool:
+        return bool(self._summary) and self.clock() - self._since < self.ttl
+
+    def current(self) -> str:
+        """待确认的那件事的摘要；没有、或已超时返回空串。"""
+        with self._lock:
+            return self._summary if self._active() else ""
+
+
 def tool_entry(raw: object) -> dict | None:
     """一行审计 → 面板用的工具记录；不是工具调用、或不是主线会话的返回 None。内层去重那行也跳过（外层已经记过）。"""
     if not isinstance(raw, dict) or raw.get("kind") != "tool" or raw.get("sessionKey") != MAIN_SESSION_KEY \
@@ -38,10 +93,12 @@ def tool_entry(raw: object) -> dict | None:
 
 
 class AuditTail:
-    """后台线程每 0.5 秒读一次新增行，主线会话的工具调用回调 on_tool(entry)。"""
+    """后台线程每 0.5 秒读一次新增行，主线会话的工具调用回调 on_tool(entry)；拦截 / 确认类记录另回调 on_gate(event)。"""
 
-    def __init__(self, on_tool: Callable[[dict], None], path: Path = AUDIT_PATH, interval: float = 0.5) -> None:
+    def __init__(self, on_tool: Callable[[dict], None], path: Path = AUDIT_PATH, interval: float = 0.5,
+                 on_gate: Callable[[dict], None] | None = None) -> None:
         self.on_tool = on_tool
+        self.on_gate = on_gate
         self.path = path
         self.interval = interval
         self._pos: int | None = None  # None = 还没定位过
@@ -76,9 +133,16 @@ class AuditTail:
         n = 0
         for line in lines:
             try:
-                entry = tool_entry(json.loads(line.decode("utf-8")))
+                raw = json.loads(line.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 continue
+            gate = gate_event(raw) if self.on_gate else None
+            if gate:  # 先于 on_tool：这一行同时是工具记录时，回调里的状态（待确认、本轮拦截）已经是最新的
+                try:
+                    self.on_gate(gate)
+                except Exception:  # noqa: BLE001
+                    log.exception("audit tail gate callback error")
+            entry = tool_entry(raw)
             if entry:
                 n += 1
                 try:

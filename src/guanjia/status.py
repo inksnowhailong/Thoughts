@@ -18,6 +18,7 @@ COLORS = {  # 托盘图标颜色（RGB）
     "gaming": (140, 140, 140),
     "error": (218, 54, 51),
     "starting": (210, 153, 34),
+    "pending": (163, 113, 247),  # 有一件事在等主人口头确认：紫色，和红（出错）、黄（启动中）都分得开
 }
 
 
@@ -92,14 +93,17 @@ def _mark(v: bool | None) -> str:
 
 
 def tray_view(*, muted: bool, gaming: bool, busy: bool, health: Health, last_error: str = "",
-              sleep_state: str = "awake") -> TrayView:
-    """按优先级 出错 > 静音 > 游戏中 > 启动中 > 说话中 > 在听 给出托盘状态。"""
+              sleep_state: str = "awake", pending: str = "") -> TrayView:
+    """按优先级 出错 > 待确认 > 静音 > 游戏中 > 启动中 > 说话中 > 在听 给出托盘状态。
+    待确认（pending = 在等主人确认的那件事）压过静音和游戏中：打游戏时看不到气泡，图标变色是唯一的提醒。"""
     if health.gateway is False:
         key, label = "error", "出错：网关不在线"
     elif health.tts is False:
         key, label = "error", "出错：TTS 不在线"
     elif last_error:
         key, label = "error", f"出错：{last_error}"
+    elif pending:
+        key, label = "pending", f"等你确认：{pending[:40]}"
     elif muted:
         key, label = "muted", "静音（不听不说）"
     elif gaming:

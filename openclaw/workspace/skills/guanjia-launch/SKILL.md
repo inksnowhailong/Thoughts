@@ -8,7 +8,7 @@ description: 开游戏/开程序与浏览器找片。用户说"开原神/开LOL/
 ## 开游戏 / 开程序（"开 LOL""开原神"）
 
 1. 在 `apps.json`（工作区根目录）里按 names 别名找到对应的英文键，比如 英雄联盟 → `lol`，原神 → `genshin`。常用的：lol、naraka（永劫无间）、bf6（战地6）、wallpaper（壁纸引擎）、steam、wegame、epic、music（网易云）。
-2. 用 tool_call 调 launch_app：id 填 launch_app，args 填 {"name": "lol"}（name 只能是英文键）。不要用 exec 拼启动命令。
+2. 调 launch_app，参数 {"name": "lol"}（name 只能是英文键）；工具列表里没有它时才用 tool_call（id 填 launch_app，参数放 args）。不要用 exec 拼启动命令。
 3. 按返回的话回复一句：
    - "已启动 …" → "好，LOL 正在启动。"
    - "还没登记路径" → "原神还没登记路径，装好后告诉我路径就行。"（把括号里的说明带上）

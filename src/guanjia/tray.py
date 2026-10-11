@@ -1,6 +1,7 @@
 """系统托盘图标（pystray）：颜色表示状态，左键 = 切换静音，右键菜单 = 状态 / 打开面板 / 静音 / 重启语音 / 退出语音。
 
-托盘跑在自己的线程里；菜单回调只调守护进程的线程安全方法（toggle_mute / request_exit）。不弹任何通知。
+托盘跑在自己的线程里；菜单回调只调守护进程的线程安全方法（toggle_mute / request_exit）。
+平时不弹通知；只有 notify() 会弹气泡（目前仅「管家在等你确认」，且游戏中由守护进程决定不调用）。
 pystray 的 Windows 后端在构造 Icon 时就建隐藏窗口，窗口消息只投给建它的线程，所以 Icon 必须在托盘线程里构造并 run。
 
 Windows 11 默认把新托盘图标收进「^」。系统在 HKCU\\Control Panel\\NotifyIconSettings 下给每个图标建一个子键，
@@ -159,6 +160,18 @@ class Tray:
                 self._icon.update_menu()
             except Exception:  # noqa: BLE001
                 log.exception("tray refresh failed")
+
+    def notify(self, message: str, title: str = TOOLTIP_PREFIX) -> bool:
+        """弹一条托盘气泡（Windows 通知）。图标还没建好、或系统拒绝返回 False。调用方负责「游戏中不弹」。
+        Windows 气泡标题上限 63、正文上限 255 个字符，超了会弹不出来，这里截断。"""
+        if not self._icon:
+            return False
+        try:
+            self._icon.notify(message[:250], title[:60])
+            return True
+        except Exception:  # noqa: BLE001  气泡弹不出来不影响图标变色
+            log.exception("tray notify failed")
+            return False
 
     def stop(self) -> None:
         if self._icon:

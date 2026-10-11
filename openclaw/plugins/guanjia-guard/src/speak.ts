@@ -53,6 +53,7 @@ export function createSpeakTool(opts: SpeakToolOptions = {}) {
   return {
     name: "speak",
     label: "Speak aloud",
+    catalogMode: "direct-only" as const, // 始终直接可见，不进工具搜索目录（同 ps-tools.ts 的 DIRECT_ONLY）
     description:
       "Speak a short sentence aloud on the home PC speakers in the butler's own voice (SCV). " +
       "Use when the owner asks to read or say something out loud on the computer (念一句 / 读出来 / 在电脑上说). " +

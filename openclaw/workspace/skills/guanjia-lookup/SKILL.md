@@ -20,13 +20,13 @@ description: 查资料、问天气与总结网页。用户说"查一下…/搜�
 
 ## 天气（今天/明天天气怎么样、要不要带伞）
 
-**先用 get_weather，一次就够：** 用 tool_call 调 get_weather（id: get_weather）。用户没说城市 args 填 {}（它自己用电脑定位，没定位到按北京）；说了城市 args 填 {"city": "上海"}。它直接返回一句话的天气（现在、今天、明天、要不要带伞），照着回答即可。返回"没查到「…」这个地方"就把城市换成拼音再调一次；返回"天气服务连不上"才走下面的备用步骤。
+**先用 get_weather，一次就够：** 调 get_weather（工具列表里没有时才用 tool_call，id: get_weather）。用户没说城市参数填 {}（它自己用电脑定位，没定位到按北京）；说了城市 args 填 {"city": "上海"}。它直接返回一句话的天气（现在、今天、明天、要不要带伞），照着回答即可。返回"没查到「…」这个地方"就把城市换成拼音再调一次；返回"天气服务连不上"才走下面的备用步骤。
 
 不要用任何按网络出口自动定位的地址（例如不带城市、不带坐标的 `wttr.in/`）——家里电脑常开 VPN，按出口定位会定到海外。
 
 **备用步骤（get_weather 连不上时）：**
 
-1. 用户没说城市时，先用 tool_call 调 get_location（id: get_location，args: {}）。它返回纬度、经度，以及是电脑自己定位到的还是"没定位到，按北京"。不要用 exec 跑定位脚本。
+1. 用户没说城市时，先调 get_location（参数 {}；工具列表里没有时才用 tool_call，id: get_location）。它返回纬度、经度，以及是电脑自己定位到的还是"没定位到，按北京"。不要用 exec 跑定位脚本。
 2. web_fetch 不在直接可用的工具里，必须用 tool_call 调用：id 填 web_fetch，args 填 {"url": "<下面的地址>"}。用 tool_call 调 web_fetch 按经纬度查天气，一次拿到现在、今天和明天：
    `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&current=temperature_2m,apparent_temperature,weather_code,precipitation&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FShanghai&forecast_days=2`
    - 现在看 `current`；今天看 `daily` 各数组的第 0 项，明天看第 1 项。

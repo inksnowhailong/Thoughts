@@ -31,9 +31,49 @@ PROMISE_WORDS = (
 NUDGE_TEXT = "直接调用工具把刚才说的事做完，做完用一句话说结果；做不到就如实说"
 
 
+# 「编造拦截」兜底：回复声称操作被拦 / 要审批 / 要放行 / 要确认 / 超时没批，而本轮审计里并没有对应的拦截记录，
+# 说明是模型自己编的（2026-10-11 事故：「我的命令需要审批，已经超时很多次没批下来」，实际一次都没拦过）。
+# 强词：出现即算声称被拦（带否定前缀的不算，如「不需要审批」）。
+BLOCK_CLAIM_WORDS = (
+    "需要审批", "要审批", "等审批", "等待审批", "待审批", "审批超时", "审批没", "没批下来", "没批准", "没通过审批", "超时没批", "还没批",
+    "需要批准", "要批准", "等你批准", "等批准", "需要放行", "要放行", "帮我放行", "你放行", "确认放行", "放行一下",
+    "被拦", "拦住", "拦下", "拦截了", "被阻止",
+)
+# 弱词：「需要确认」这类也是正常提问会用的说法，回复本身在问问题（含问号）时不算
+BLOCK_CLAIM_WEAK_WORDS = ("需要确认", "要确认", "要你确认", "你确认一下", "你确认下", "请你确认", "请确认")
+# 追发的话：告诉模型没有任何东西拦着它
+NUDGE_TEXT_FAKE_BLOCK = "刚才没有任何操作被拦截或需要审批，直接调用工具做完，做完用一句话说结果"
+_NEGATIONS = "不无没别免"  # 强词前两个字内出现这些字表示否定（「不需要审批」「没有要放行的」）
+
+
 def has_promise(reply: str) -> bool:
     """回复里是否含承诺词（「我先查一下」这类说要做、还没做的话）。"""
     return any(w in reply for w in PROMISE_WORDS)
+
+
+def _has_word(reply: str, words: tuple[str, ...]) -> bool:
+    """words 里任一词在回复中出现且前面没有否定字（「不需要审批」不算声称被拦；词本身以否定字开头的如「没批准」照算）。"""
+    for w in words:
+        start = reply.find(w)
+        while start != -1:
+            if w[0] in _NEGATIONS or not any(c in _NEGATIONS for c in reply[max(0, start - 2):start]):
+                return True
+            start = reply.find(w, start + 1)
+    return False
+
+
+def claims_blocked(reply: str) -> bool:
+    """回复是否声称被拦 / 要审批 / 要放行 / 要确认 / 超时没批（弱词在提问句里不算）。"""
+    if _has_word(reply, BLOCK_CLAIM_WORDS):
+        return True
+    return not ("?" in reply or "？" in reply) and _has_word(reply, BLOCK_CLAIM_WEAK_WORDS)
+
+
+def needs_fake_block_nudge(reply: str, gate_seen: bool, *, aborted: bool = False, error: str | None = None) -> bool:
+    """声称被拦、而本轮没有任何拦截 / 确认记录（gate_seen=False）：编造，要追发一次；被打断 / 已出错不追。"""
+    if aborted or error or gate_seen:
+        return False
+    return claims_blocked(reply)
 
 
 def needs_nudge(reply: str, tool_calls: int, *, aborted: bool = False, error: str | None = None) -> bool:

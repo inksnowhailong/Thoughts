@@ -9,8 +9,13 @@ import { execFile } from "node:child_process";
  *   get_weather{city?} ─ 没给城市先跑定位脚本 ─> open-meteo 预报（有城市先查 open-meteo 地名）  （L0）
  *
  * 都不经过 shell，脚本路径固定；launch_app 的 name 只许英文字母、数字、下划线、短横。
- * 工具搜索模式下它们是延期工具：模型用 tool_call（id: launch_app / get_location / get_weather）调用，AGENTS.md 里写明了。
+ * 带 catalogMode: "direct-only"：OpenClaw 工具搜索不把它们收进目录，而是和 exec 一样始终出现在模型的工具列表里，
+ * 模型直接调同名工具，不必先 tool_search 再 tool_call（2026-10-11 事故：模型卡在"先搜工具"这一步，改口说"要审批"）。
+ * 这是 OpenClaw 工具对象上的字段（官方文档只在内置工具里用到），上线后看网关日志 "tool-search: cataloged N tools" 的 N 少了 4 个才算生效。
  */
+
+/** 工具搜索不收录、始终直接可见 */
+export const DIRECT_ONLY = "direct-only" as const;
 
 export const APP_NAME_RE = /^[A-Za-z0-9_-]{1,40}$/;
 export const LAUNCH_TIMEOUT_MS = 20_000;
@@ -61,6 +66,7 @@ export function createLaunchAppTool(opts: PsToolOptions) {
   return {
     name: "launch_app",
     label: "Launch app",
+    catalogMode: DIRECT_ONLY,
     description:
       "Launch a game or program registered in apps.json on the home PC (英雄联盟/LOL, Steam, WeGame, 网易云 ...). " +
       "Input: name = the apps.json key in English, e.g. lol, naraka, bf6, steam, wegame, music. " +
@@ -105,6 +111,7 @@ export function createGetLocationTool(opts: PsToolOptions) {
   return {
     name: "get_location",
     label: "Get location",
+    catalogMode: DIRECT_ONLY,
     description:
       "Get the home PC's current latitude/longitude from the Windows location service (not IP-based, so a VPN does not move it). " +
       "Falls back to Beijing. Use for weather or 'where am I' questions.",
@@ -145,6 +152,7 @@ export function createGetWeatherTool(opts: PsToolOptions) {
   return {
     name: "get_weather",
     label: "Get weather",
+    catalogMode: DIRECT_ONLY,
     description:
       "Current weather plus today's and tomorrow's forecast (temperature, rain chance, whether to bring an umbrella). " +
       "Input: optional city name (Chinese or pinyin). Without a city it uses the home PC's own location.",
