@@ -102,4 +102,11 @@ finally:
     srv.shutdown()
     srv.server_close()
 
+# ---------- 页面静态检查：保存/回滚请求在路上时按钮禁用 ----------
+from guanjia.panel import PANEL_HTML  # noqa: E402
+
+html = PANEL_HTML.read_text(encoding="utf-8")
+check("spkBusy" in html and "btnEnrollCommit\").disabled = s.state !== \"ready\" || spkBusy" in html
+      and "btnEnrollRollback\").disabled = !info.backup || spkBusy" in html, "speaker buttons are disabled while a request is in flight")
+
 print("ALL PASS test_p22_panel_routes")

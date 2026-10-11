@@ -2,7 +2,7 @@
 
 用法：uv run python -m guanjia.enroll --name 我 --seconds 12 --in 20
 默认「替换」这个人原有的全部样本；加 --append 则在原有样本后面追加（近/远、平静/带情绪各录一次，追加最稳）。
-保存前会备份旧库（pre-reenroll 只建一次，另有 .prev）。更省事的做法是用面板「声纹」卡片引导注册。
+保存前会备份旧库（pre-reenroll 只建一次、永不覆盖，另有 .prev）。更省事的做法是用面板「声纹」卡片引导注册。
 """
 
 from __future__ import annotations
@@ -65,8 +65,11 @@ def main() -> None:
     embs = np.stack([gate.embed(s.samples) for s in segs])
     if a.append and gate.refs(a.name) is not None:
         embs = np.concatenate([gate.refs(a.name), embs])
-    backup = gate.backup()  # 整批一次写盘；旧库先备份
-    gate.set_person(a.name, embs)
+    try:
+        backup = gate.save_person(a.name, embs)  # 锁内：备份旧库 + 整批一次写盘
+    except ValueError as e:  # 现有库读不出来，不去覆盖它
+        print(f"没有保存：{e}")
+        return
     print(f"声纹模型 {gate.model.name}，库 {gate.store.name}（备份：{backup.name if backup else '无'}）")
     print(f"「{a.name}」现有 {len(embs)} 段样本（本次 {len(segs)} 段，共 {sum(s.duration for s in segs):.1f}s）；当前库：{gate.counts()}")
     print("自检：", gate.identify(np.concatenate([s.samples for s in segs])))

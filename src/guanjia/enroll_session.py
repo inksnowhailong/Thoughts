@@ -25,6 +25,8 @@ MAX_SEG_SEC = 10.0
 MIN_EFFECTIVE_SEC = 1.5
 MAX_ZERO_RATIO = 0.5
 MIN_PEAK = 0.03
+SELF_CHECK_AFTER = 3  # 已收这么多段之后，新段才做"像不像同一个人"检查
+MIN_SELF_SIM = 0.30  # 新段对已收样本的 top-3 分低于它就拒收。注册本来就要覆盖近/远/情绪，主人各句之间相似度低端约 0.44，不能设高
 SESSION_TIMEOUT_SEC = 600.0
 
 
@@ -88,6 +90,12 @@ class EnrollSession:
                 self.last = {"ok": False, "reason": reason, "info": info}
                 return self.last
             v = self._embed(samples)
+            if self.state == "recording" and len(self.samples) >= SELF_CHECK_AFTER:
+                sim = score_against(v, self.embs())
+                if sim < MIN_SELF_SIM:  # 旁人插话、电视声混进来的段，别污染库
+                    self.last = {"ok": False, "reason": f"这段不像同一个人（{sim:.2f}），没收，请再说一遍",
+                                 "info": info, "self_score": round(sim, 3)}
+                    return self.last
             if self.state == "recording":
                 g = self._group()
                 self.samples.append(Sample(g[0], v, info))

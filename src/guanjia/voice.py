@@ -88,6 +88,7 @@ TTS_TIMEOUT_SEC = 12.0   # 单句 TTS 合成超时：超时放弃这句，继续
 TTS_MAX_FAILS = 2        # 本轮 TTS 连续失败达到此数：剩下的句子不再合成（网关流照样读完）
 FIRST_SENT_MAX_CHARS = 20  # 首句硬上限：回复开头没标点时攒到 20 字就先合成出声
 FIRST_SENT_SOFT_MIN = 6  # 首句在逗号处最早第 6 个字就切（P2 是 8）：首句短一点，合成快 0.3~0.6 秒
+PLAY_OVERLAP_GUARD_SEC = 0.3  # 注册时：段开始于最后一次出声后不到这么久，当作混进了回声/播放，不收
 MIN_UTT_SEC = 0.4        # 短于此的语音段不当作指令
 PREROLL_MS = 500         # ASR 预滚：VAD 起判前这段音频先补喂 ASR，防首字丢失
 STATS_EVERY_SEC = 30     # 丢帧 / 欠载计数的日志周期
@@ -185,7 +186,8 @@ class VoiceDaemon:
     _turn_is_say = False  # 这一轮是 /say（主程序让念）：念的时候、念完都不算免喊窗口
     _turn_gen = -1
     enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
-    _spare_gate = None  # SpeakerGate | None：库为空时守护进程没建声纹门，注册用另建的这把
+    _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
+    _last_play_t = -1.0  # 前端线程：最近一次真正出声时的 VAD 时间轴（秒），用来判断一段话有没有和播放重叠
     _turn_marks = None
     _followup_until = 0.0
     _ack_pcm = None
@@ -230,9 +232,10 @@ class VoiceDaemon:
         self.aec = make_aec(self.sr) if self.aec_on else None  # 关掉时前端直接用原始输入
         self.vad = VAD()
         self.gate = SpeakerGate(threshold=s.spk_threshold) if self.speaker_gate else None
+        self._enroll_lock = threading.Lock()  # 串行化面板的声纹注册动作（控制口是多线程的）
         if self.gate and not self.gate.names():
-            log.warning("声纹库为空，默认放行所有声音；请先运行 python -m guanjia.enroll 注册")
-            self.gate = None
+            log.warning("声纹库为空，默认放行所有声音；请先用面板「声纹」卡片或 python -m guanjia.enroll 注册")
+            self._spare_gate, self.gate = self.gate, None  # 门不用，但留着给注册（省一次模型加载，也能报出读库失败的原因）
         self.asr = StreamingASR()
         self.asr_final = FinalASR()  # 整段精识别（SenseVoice int8）：段结束后替换流式结果，失败回退流式
         self.brain = Brain(session_key=MAIN_SESSION_KEY)  # 主线会话；流不可提前关（见 brain.py）
@@ -302,6 +305,7 @@ class VoiceDaemon:
         """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
         self.vad = VAD()
         self._vad_pos = 0
+        self._last_play_t = -1.0
         self._raw_ring.clear()
         self._asr_stream = self.asr.new_stream()
         self._preroll.clear()
@@ -338,6 +342,8 @@ class VoiceDaemon:
         self._raw_ring.append((self._vad_pos, fr.mic))
         self.vad.push(y)
         self._vad_pos += len(y)
+        if fr.playing:
+            self._last_play_t = self._vad_pos / SR16K
         speaking_now = self.vad.is_speech()
         if speaking_now:
             if not self._was_speech:  # 起判沿：VAD 要人声满 0.25s 才翻 true，先把预滚补喂进 ASR
@@ -355,15 +361,7 @@ class VoiceDaemon:
             stream, self._asr_stream = self._asr_stream, self.asr.new_stream()  # 每句一条新流，不带上一句残留
             if seg.duration < MIN_UTT_SEC:
                 continue
-            sess = self.enroll
-            if sess is not None:  # 注册模式：同一条链路的段只拿来注册，不识别、不判定、不送主线
-                if sess.expired():
-                    self.enroll = None
-                    log.info("enroll timeout, cancelled")
-                    continue
-                r = sess.feed(seg.samples, playing=self._playing())
-                self.hub.stage(None, "speaker", "done" if r.get("ok") else "blocked",
-                               "注册：收下" if r.get("ok") else f"注册：{r.get('reason')}")
+            if self._enroll_take(seg):
                 continue
             self.hub.stage(None, "asr", "active", "识别中")
             t_asr = time.monotonic()
@@ -383,6 +381,18 @@ class VoiceDaemon:
             spk_ms = round((time.monotonic() - t_spk) * 1000)
             self._on_heard(text, score, source="mic", stream_text=stream_text, seg_sec=seg.duration,
                            asr_ms=asr_ms, spk_ms=spk_ms)
+
+    def _enroll_take(self, seg) -> bool:
+        """注册模式：同一条链路的段只拿来注册，不识别、不判定、不送主线，返回 True。
+        没在注册（含刚超时）返回 False，这一段照常往下走。和播放重叠的段（开始时间早于最后出声 + 0.3 秒）不收。"""
+        sess = self._active_enroll()
+        if sess is None:
+            return False
+        overlap = seg.start < self._last_play_t + PLAY_OVERLAP_GUARD_SEC
+        r = sess.feed(seg.samples, playing=self._playing() or overlap)
+        self.hub.stage(None, "speaker", "done" if r.get("ok") else "blocked",
+                       "注册：收下" if r.get("ok") else f"注册：{r.get('reason')}")
+        return True
 
     def _on_heard(self, text: str, score: float | None, *, source: str, stream_text: str = "",
                   seg_sec: float | None = None, asr_ms: int | None = None, spk_ms: int | None = None,
@@ -708,7 +718,7 @@ class VoiceDaemon:
             return False, "muted"
         if self._paused.is_set():
             return False, "gaming"
-        if self.enroll is not None:  # 声纹注册中：不让电脑出声，免得盖住主人的话
+        if self._active_enroll() is not None:  # 声纹注册中：不让电脑出声，免得盖住主人的话
             return False, "enrolling"
         if sum(isinstance(x, SayItem) for x in list(self.text_q.queue)) >= SAY_MAX_PENDING:
             return False, "busy"
@@ -718,8 +728,18 @@ class VoiceDaemon:
         return True, "queued"
 
     # ---------- 声纹注册（面板「声纹」卡片） ----------
+    def _active_enroll(self) -> "EnrollSession | None":
+        """当前的注册会话；超时（10 分钟没人收尾）就清掉并记日志。say、面板接口、前端都经过这里，不靠新语音段来触发超时。"""
+        sess = self.enroll
+        if sess is not None and sess.expired():
+            if self.enroll is sess:
+                self.enroll = None
+                log.info("enroll timeout, cancelled")
+            return None
+        return sess
+
     def _ensure_gate(self) -> SpeakerGate:
-        """注册用的声纹门：平时那把；库为空时守护进程没建门，就另建一把，保存后接上。"""
+        """注册用的声纹门：平时那把；库为空/读不出时守护进程没在用门，就用留着的备用那把（没有再建），保存后接上。"""
         if self.gate is not None:
             return self.gate
         if self._spare_gate is None:
@@ -728,15 +748,21 @@ class VoiceDaemon:
 
     def _speaker_info(self, query: dict) -> tuple[int, dict]:
         g = self.gate or self._spare_gate
+        sess = self._active_enroll()
         return 200, {"ok": True, "model": SPK_MODEL.stem, "store": STORE.name, "people": g.counts() if g else {},
                      "legacy": bool(g and g.legacy), "backup": backup_path(STORE).exists(),
+                     "load_error": g.load_error if g else None,
                      "threshold": self.store.current.spk_threshold, "enabled": self.speaker_gate,
-                     "session": self.enroll.snapshot() if self.enroll else None}
+                     "session": sess.snapshot() if sess else None}
 
     def _speaker_action(self, body: dict) -> tuple[int, dict]:
-        """面板「声纹」卡片：start / discard_last / enough / cancel / commit / rollback。"""
+        """面板「声纹」卡片：start / discard_last / enough / cancel / commit / rollback。整个动作在锁内，控制口多线程也不会错乱。"""
+        with self._enroll_lock:
+            return self._speaker_action_locked(body)
+
+    def _speaker_action_locked(self, body: dict) -> tuple[int, dict]:
         action = str(body.get("action") or "")
-        sess = self.enroll
+        sess = self._active_enroll()
         if action == "start":
             if not self.speaker_gate:
                 return 400, {"ok": False, "reason": "声纹已关闭（--no-gate），不能注册"}
@@ -753,8 +779,11 @@ class VoiceDaemon:
             if sess is not None:
                 return 409, {"ok": False, "reason": "先结束当前注册"}
             gate = self._ensure_gate()
-            if not gate.rollback():
-                return 404, {"ok": False, "reason": "没有注册前的备份"}
+            try:
+                if not gate.rollback():
+                    return 404, {"ok": False, "reason": "没有注册前的备份"}
+            except OSError as e:
+                return 500, {"ok": False, "reason": f"回滚失败：{e}，库没有变化"}
             if self.gate is None and gate.names():
                 gate.threshold = self.store.current.spk_threshold
                 self.gate = gate
@@ -775,8 +804,13 @@ class VoiceDaemon:
             if sess.state != "ready":
                 return 409, {"ok": False, "reason": "先说一句自测"}
             gate = self._ensure_gate()
-            backup = gate.backup()
-            gate.set_person(sess.name, sess.embs())  # 只写盘和换字典；提取向量只在前端线程做
+            try:
+                backup = gate.save_person(sess.name, sess.embs())  # 锁内：备份 + 写盘 + 换库；提取向量只在前端线程做
+            except ValueError as e:  # 现有库读不出来：不覆盖它
+                return 409, {"ok": False, "reason": str(e)}
+            except OSError as e:  # 写盘失败（权限、被占用、磁盘满）：库和内存都没变，会话保留可重试
+                log.error("enroll save failed: %s", e)
+                return 500, {"ok": False, "reason": f"写声纹库失败：{e}。库没有变化，可以再点一次保存"}
             if self.gate is None:
                 gate.threshold = self.store.current.spk_threshold
                 self.gate = gate

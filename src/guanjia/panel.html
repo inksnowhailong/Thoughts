@@ -361,6 +361,8 @@ $("btnInject").addEventListener("click", async () => {
 // ---------- 声纹注册 ----------
 const GROUP_CN = { near: "近处", far: "远处（2～3 米）", loud: "大声 / 带情绪" };
 let spkTimer = null;
+let spkBusy = false;  // 有请求在路上：保存、回滚等按钮一律禁用，防止连点
+let spkLastInfo = null;
 async function getJson(path) {
   const r = await fetch(path + "?token=" + encodeURIComponent(TOKEN), { cache: "no-store" });
   let data = {};
@@ -373,8 +375,9 @@ function renderSpeakerIdle(info) {
   const fmt = info.legacy ? "（旧格式：每人只有 1 个向量，建议重新注册）" : "";
   $("spkInfo").textContent = info.enabled === false ? "声纹已关闭（--no-gate），不能注册"
     : `库：${people}${fmt}　门槛 ${info.threshold}（只管免喊窗口）　注册前备份：${info.backup ? "有" : "没有"}`;
-  $("btnEnrollStart").disabled = info.enabled === false;
-  $("btnEnrollRollback").disabled = !info.backup;
+  if (info.load_error) $("spkInfo").textContent += `　⚠ 声纹库读不出来：${info.load_error}（保存已被拒绝，可先「回滚到注册前」）`;
+  $("btnEnrollStart").disabled = info.enabled === false || spkBusy;
+  $("btnEnrollRollback").disabled = !info.backup || spkBusy;
 }
 function renderSession(s) {
   const bars = $("spkBars");
@@ -398,12 +401,14 @@ function renderSession(s) {
     res.className = worse ? "spk-warn" : "spk-ok";
     res.textContent = `自测分数：新库 ${s.test_score.toFixed(2)} ／ ${oldTxt}` + (worse ? "　新分数比旧库低，可以放弃重来" : "");
   }
-  $("btnEnrollDiscard").disabled = s.state !== "recording" || s.total === 0;
-  $("btnEnrollEnough").disabled = s.state !== "recording" || s.total < s.min_total;
-  $("btnEnrollCommit").disabled = s.state !== "ready";
+  $("btnEnrollDiscard").disabled = s.state !== "recording" || s.total === 0 || spkBusy;
+  $("btnEnrollEnough").disabled = s.state !== "recording" || s.total < s.min_total || spkBusy;
+  $("btnEnrollCommit").disabled = s.state !== "ready" || spkBusy;
+  $("btnEnrollCancel").disabled = spkBusy;
   $("spkLeft").textContent = `已收 ${s.total} 段（至少 ${s.min_total} 段），剩 ${s.left_sec} 秒`;
 }
 function showSpeaker(info) {
+  spkLastInfo = info;
   const live = !!info.session;
   $("spkLive").hidden = !live;
   $("spkIdle").hidden = live;
@@ -416,7 +421,11 @@ async function refreshSpeaker() {
   if (r.ok) showSpeaker(r.data);
 }
 async function speakerAction(body, okText) {
-  const r = await api("/api/speaker", body);
+  if (spkBusy) return { ok: false, data: { reason: "上一个操作还没完成" } };
+  spkBusy = true;
+  if (spkLastInfo) showSpeaker(spkLastInfo);  // 立刻按 busy 重新渲染一遍，把按钮禁用
+  let r;
+  try { r = await api("/api/speaker", body); } finally { spkBusy = false; }
   if (!r.ok) {
     const why = "没成功：" + (r.data.reason || "未知错误");
     spkSay(why, "spk-bad");
