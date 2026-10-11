@@ -111,7 +111,7 @@
       <label for="s_wake">唤醒词</label><div><input type="text" id="s_wake" size="30"> <span class="hint">多个用逗号隔开，按读音容错（管家/关家/管加都算）</span></div>
       <label for="s_req">必须喊唤醒词</label><div><input type="checkbox" id="s_req"> <span class="hint">关掉就和 P2 一样，听到就答</span></div>
       <label for="s_follow">免喊秒数</label><div><input type="number" id="s_follow" min="0" max="120" step="1"> <span class="hint">它回完最后一句后这么久内接着说不用再喊</span></div>
-      <label for="s_spk">声纹门槛</label><div><input type="number" id="s_spk" min="0" max="0.9" step="0.01"> <span class="hint">低于它的声音不理；主人清楚说话一般 0.47～0.6</span></div>
+      <label for="s_spk">声纹门槛（仅免喊时）</label><div><input type="number" id="s_spk" min="0" max="0.9" step="0.01"> <span class="hint">低于它的声音不理；主人清楚说话一般 0.47～0.6</span></div>
       <label for="s_barge">打断线</label><div><input type="number" id="s_barge" min="0.001" max="0.05" step="0.001"> <span class="hint">它说话时你开口的音量超过这个就停；打不断调小，自己打断自己调大</span></div>
       <label for="s_min">最少字数</label><div><input type="number" id="s_min" min="1" max="6" step="1"> <span class="hint">更短的片段当碎音忽略</span></div>
       <label for="s_earcon">提示音</label><div><input type="checkbox" id="s_earcon"> <span class="hint">说完话立刻"叮咚"一声</span></div>

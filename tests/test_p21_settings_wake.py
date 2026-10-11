@@ -92,11 +92,25 @@ def dd(text, score=0.6, window=False, required=True):
 
 
 r = dd("唉", 0.41)
-check(r.verdict == "ignored" and r.stage == "filler", "single grunt ignored before voiceprint")
+check(r.verdict == "ignored" and r.stage == "filler" and not r.spk_checked, "single grunt ignored before voiceprint")
 r = dd("管家打开记事本", 0.30)
-check(r.verdict == "rejected" and r.stage == "speaker" and r.reason == "声纹 0.30 < 0.45", "low voiceprint rejected with reason")
+check(r.verdict == "accept" and r.text == "打开记事本" and not r.spk_checked,
+      "wake word + low score accepted, voiceprint is not a gate")
+r = dd("管家", 0.30)
+check(r.verdict == "wake_only" and r.text == "" and not r.spk_checked, "wake word alone + low score -> wake_only")
+r = dd("开灯", 0.30, window=True)
+check(r.verdict == "rejected" and r.stage == "speaker" and r.spk_checked and r.reason == "声纹 0.30 < 0.45",
+      "in window, no wake, low score rejected by speaker")
+r = dd("开灯", 0.30, required=False)
+check(r.verdict == "rejected" and r.stage == "speaker" and r.spk_checked,
+      "wake not required, no wake word, low score rejected by speaker")
 r = dd("玩还绿吧", 0.6)
-check(r.verdict == "rejected" and r.stage == "wake" and r.reason == "没有唤醒词", "no wake word rejected")
+check(r.verdict == "rejected" and r.stage == "wake" and not r.spk_checked and r.reason == "没有唤醒词",
+      "outside window, no wake, high score rejected by wake")
+r = dd("开灯", 0.80, window=True)
+check(r.verdict == "accept" and r.reason == "免喊窗口内" and r.spk_checked, "in window, high score checks voiceprint then accepts")
+r = dd("打开记事本", None, required=False)
+check(r.verdict == "accept" and not r.spk_checked, "score None does not count as a voiceprint check")
 r = dd("关家，打开记事本")
 check(r.verdict == "accept" and r.text == "打开记事本" and r.wake == "关家", "wake accepted, wake word stripped")
 r = dd("管家")

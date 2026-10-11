@@ -2,7 +2,7 @@
 
 P2.1 起的调用链：
 
-  音频回调 ──(麦帧, 本块是否在出声)──> 前端线程 ── VAD/ASR/声纹 ──> decide()：碎音？声纹够？有唤醒词或在免喊窗口？
+  音频回调 ──(麦帧, 本块是否在出声)──> 前端线程 ── VAD/ASR/声纹 ──> decide()：碎音过滤 → 唤醒词（免喊窗口内可省）→ 声纹门槛只管没喊唤醒词的话
                                           │                          ├─ 放行 ──> 提示音 + text_q（去掉唤醒词的话）
                                           │                          ├─ 只喊了唤醒词 ──> 应答「在呢」+ 打开免喊窗口
                                           │                          └─ 不理（记一条带原因的记录）
@@ -389,11 +389,18 @@ class VoiceDaemon:
             self.hub.stage(uid, "speaker", "skipped")
         elif score is None:
             self.hub.stage(uid, "speaker", "skipped", "未过声纹（注入/无声纹库）")
-        else:
-            self.hub.stage(uid, "speaker", "blocked" if d.stage == "speaker" else "done",
-                           d.reason if d.stage == "speaker" else f"{score:.2f} ≥ {threshold:.2f}")
-        if d.stage in ("filler", "speaker"):
+        elif d.stage == "speaker":
+            self.hub.stage(uid, "speaker", "blocked", d.reason)
+        elif d.wake:  # 喊了唤醒词：分数只展示，不当门槛
+            self.hub.stage(uid, "speaker", "done", f"{score:.2f}（唤醒词放行，不作门槛）")
+        elif d.spk_checked:
+            self.hub.stage(uid, "speaker", "done", f"{score:.2f} ≥ {threshold:.2f}")
+        else:  # 没喊唤醒词，被唤醒词这环拒了：声纹没参与判定
+            self.hub.stage(uid, "speaker", "done", f"{score:.2f}")
+        if d.stage == "filler":
             self.hub.stage(uid, "wake", "skipped")
+        elif d.stage == "speaker":
+            self.hub.stage(uid, "wake", "done", "免喊窗口内" if in_window else "不需要唤醒词")
         else:
             self.hub.stage(uid, "wake", "blocked" if d.stage == "wake" else "done", d.reason)
         label = "注入" if source == "inject" else ("我" if score is not None else "未过声纹")

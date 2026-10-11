@@ -81,13 +81,27 @@ r = d._on_heard("玩还绿吧", 0.6, source="mic", stream_text="")
 check(r["verdict"] == "rejected" and r["reason"] == "没有唤醒词" and d.text_q.empty() and d.play_q.empty(),
       "no wake word: nothing queued, no earcon")
 rec = d.hub.record(r["uid"])
-check(rec["done"] and rec["stages"]["wake"]["state"] == "blocked" and rec["stages"]["speaker"]["state"] == "done",
-      "record shows wake blocked, voiceprint passed")
+check(rec["done"] and rec["stages"]["wake"]["state"] == "blocked" and rec["stages"]["speaker"]["state"] == "done"
+      and rec["stages"]["speaker"]["note"] == "0.60",
+      "outside window a high score is noted only; wake blocked")
 r = d._on_heard("唉", 0.41, source="mic")
 check(r["verdict"] == "ignored" and d.hub.record(r["uid"])["stages"]["asr"]["state"] == "blocked", "grunt ignored at recognition box")
+d._followup_until = time.monotonic() + 30
+r = d._on_heard("开灯", 0.28, source="mic")
+rec = d.hub.record(r["uid"])
+check(r["verdict"] == "rejected" and rec["stages"]["speaker"]["state"] == "blocked"
+      and rec["stages"]["speaker"]["note"] == "声纹 0.28 < 0.45",
+      "in window, no wake word: low voiceprint blocked with reason")
+check(rec["stages"]["wake"]["state"] == "done" and rec["stages"]["wake"]["note"] == "免喊窗口内",
+      "voiceprint reject inside the window still shows wake as done")
+d._followup_until = 0.0
 r = d._on_heard("管家打开记事本", 0.28, source="mic")
-check(r["verdict"] == "rejected" and d.hub.record(r["uid"])["stages"]["speaker"]["note"] == "声纹 0.28 < 0.45",
-      "low voiceprint blocked with reason")
+rec = d.hub.record(r["uid"])
+check(r["verdict"] == "accept" and rec["stages"]["speaker"]["state"] == "done"
+      and rec["stages"]["speaker"]["note"] == "0.28（唤醒词放行，不作门槛）",
+      "wake word + low score accepted; speaker note says the gate was skipped")
+drain(d.text_q)
+drain(d.play_q)
 r = d._on_heard("关家，打开记事本", 0.6, source="mic", seg_sec=1.2, asr_ms=150, spk_ms=40)
 items = drain(d.text_q)
 check(r["verdict"] == "accept" and len(items) == 1 and isinstance(items[0], Heard) and items[0].text == "打开记事本"

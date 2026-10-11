@@ -1,4 +1,4 @@
-"""一句话要不要进主线：碎音过滤 → 声纹门槛 → 唤醒词（免喊窗口内可省）。纯逻辑，可单测。
+"""一句话要不要进主线：碎音过滤 → 唤醒词（免喊窗口内可省）→ 声纹门槛只管没喊唤醒词的话。纯逻辑，可单测。
 
 唤醒词按拼音容错匹配：识别常把"管家"写成"关家/管加/光价"，所以逐字比读音而不是比字形——
 唤醒词按词语取它本来的读音（"管家"= guan jia），识别文字里的字取全部读音（识别写成的多音字都算），
@@ -124,6 +124,7 @@ class GateDecision:
     reason: str  # 给人看的原因，面板和日志用
     text: str  # 放行时送主线的话（已去掉唤醒词）
     wake: str = ""  # 原文里命中的唤醒词写法
+    spk_checked: bool = False  # 这一句真的拿声纹当了门槛（没喊唤醒词，且分数不是 None）
 
 
 def decide(text: str, score: float | None, *, threshold: float, matcher: WakeMatcher, wake_required: bool,
@@ -133,16 +134,17 @@ def decide(text: str, score: float | None, *, threshold: float, matcher: WakeMat
     allow_short_answer=False：它还在说的时候，"好/对/是"多半是附和，不当成新的一句。"""
     if is_filler(text, min_chars, in_window and allow_short_answer) and matcher.find(text) is None:
         return GateDecision("ignored", "filler", f"碎音/语气词「{core_text(text) or text}」", "")
-    if score is not None and score < threshold:
+    rest, hit = matcher.strip(text)
+    if hit is not None:  # 喊了唤醒词：声纹分数再低也不拒
+        if is_filler(rest, min_chars, True):
+            return GateDecision("wake_only", "", f"只喊了「{hit.heard}」", "", hit.heard)
+        return GateDecision("accept", "", f"唤醒词「{hit.heard}」", rest, hit.heard)
+    if wake_required and not in_window:
+        return GateDecision("rejected", "wake", "没有唤醒词", "")
+    if score is not None and score < threshold:  # 免喊窗口内，或不需要唤醒词，才用声纹当门槛
         shown = f"{score:.2f}"
         if shown == f"{threshold:.2f}":  # 0.447 四舍五入会显示成"0.45 < 0.45"，改成截到三位
             shown = f"{math.floor(score * 1000) / 1000:.3f}"
-        return GateDecision("rejected", "speaker", f"声纹 {shown} < {threshold:.2f}", "")
-    rest, hit = matcher.strip(text)
-    if hit is None:
-        if wake_required and not in_window:
-            return GateDecision("rejected", "wake", "没有唤醒词", "")
-        return GateDecision("accept", "", "免喊窗口内" if in_window else "不需要唤醒词", text)
-    if is_filler(rest, min_chars, True):
-        return GateDecision("wake_only", "", f"只喊了「{hit.heard}」", "", hit.heard)
-    return GateDecision("accept", "", f"唤醒词「{hit.heard}」", rest, hit.heard)
+        return GateDecision("rejected", "speaker", f"声纹 {shown} < {threshold:.2f}", "", spk_checked=True)
+    return GateDecision("accept", "", "免喊窗口内" if in_window else "不需要唤醒词", text,
+                        spk_checked=score is not None)
