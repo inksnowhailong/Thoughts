@@ -124,6 +124,77 @@ try:
     except ValueError:
         check(len(fs.history("MEMORY.md")) == before and fs.read("MEMORY.md")["text"] != "zzz\n", "validate can veto without side effects")
 
+    # 7b. 备份之后、替换之前模型又写了文件：再比对一次 sha，Conflict，模型写的保留
+    (ws / "USER.md").write_text("# U\nbase\n", encoding="utf-8")
+    base = fs.read("USER.md")["sha"]
+    real_backup = fs._backup
+
+    def backup_then_model_writes(rel, raw):
+        real_backup(rel, raw)
+        (ws / "USER.md").write_text("# U\nmodel wrote mid-save\n", encoding="utf-8")
+
+    fs._backup = backup_then_model_writes
+    try:
+        fs.write("USER.md", "# U\nmine\n", base)
+        check(False, "model write between backup and replace -> Conflict")
+    except wsfiles.Conflict:
+        check(True, "model write between backup and replace -> Conflict")
+    finally:
+        fs._backup = real_backup
+    check((ws / "USER.md").read_text(encoding="utf-8") == "# U\nmodel wrote mid-save\n", "mid-save conflict keeps the model's content")
+    check(not list(ws.glob("*.tmp")), "mid-save conflict leaves no temp file")
+
+    # 7c. 审计写失败：文件已替换，只记 warning，接口仍成功
+    import logging
+
+    class Cap(logging.Handler):
+        def __init__(self):
+            super().__init__(logging.WARNING)
+            self.msgs = []
+
+        def emit(self, record):
+            self.msgs.append(record.getMessage())
+
+    cap = Cap()
+    logging.getLogger("guanjia.wsfiles").addHandler(cap)
+    real_audit = fs._audit
+
+    def broken_audit(*a, **k):
+        raise OSError("disk full")
+
+    fs._audit = broken_audit
+    try:
+        cur = fs.read("USER.md")
+        r3 = fs.write("USER.md", "# U\nafter audit failure\n", cur["sha"])
+        check(r3["text"] == "# U\nafter audit failure\n" and (ws / "USER.md").read_text(encoding="utf-8") == "# U\nafter audit failure\n",
+              "audit failure does not fail the save; file is updated")
+        check(len(cap.msgs) == 1 and "审计" in cap.msgs[0], "audit failure logged as one warning")
+    finally:
+        fs._audit = real_audit
+        logging.getLogger("guanjia.wsfiles").removeHandler(cap)
+
+    # 7d. 写临时文件中途失败：不留 .tmp 残片，目标文件不变
+    from guanjia.fsutil import atomic_write_text
+
+    target = ws / "SOUL2.txt"
+    target.write_text("old", encoding="utf-8")
+    real_write_text = Path.write_text
+
+    def half_write(self, text, *a, **k):
+        real_write_text(self, text[:1], *a, **k)  # 先留下半截文件
+        raise OSError("disk full mid-write")
+
+    Path.write_text = half_write
+    try:
+        atomic_write_text(target, "new content")
+        check(False, "failed temp write raises")
+    except OSError:
+        check(True, "failed temp write raises")
+    finally:
+        Path.write_text = real_write_text
+    check(not list(ws.glob("*.tmp")), "failed temp write leaves no .tmp fragment")
+    check(target.read_text(encoding="utf-8") == "old", "failed temp write leaves target untouched")
+
     # 8. 锁：另一个进程拿着锁时，等不到就 LockBusy；它退出后能拿到
     code = ("import sys,time;sys.path.insert(0,r'%s');from guanjia.wslock import ws_lock\n"
             "from pathlib import Path\nwith ws_lock(holder='sleep', path=Path(r'%s')):\n print('HELD',flush=True);time.sleep(3)"

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from pathlib import Path
 from guanjia.fsutil import atomic_write_text
 from guanjia.wslock import ws_lock
 
+log = logging.getLogger("guanjia.wsfiles")
 WORKSPACE = Path.home() / ".openclaw" / "workspace"
 HISTORY_DIR = Path(__file__).resolve().parents[2] / "data" / "ws-history"
 HARD_MAX_CHARS = 20000  # OpenClaw 单个启动文件超出会被截断
@@ -100,8 +102,15 @@ class WorkspaceFiles:
             self._backup(rel, raw)
         out = text.replace("\n", "\r\n") if raw is not None and "\r\n" in raw else text  # 保持原文件换行风格
         p.parent.mkdir(parents=True, exist_ok=True)
+        # 备份花了点时间，模型这期间可能又写了文件：替换前最后比对一次（剩下的只有毫秒级窗口）
+        again = self._raw(p)
+        if (sha(again) if again is not None else "") != base_sha:
+            raise Conflict(rel)
         atomic_write_text(p, out)
-        self._audit(rel, actor, sha(raw) if raw is not None else "", sha(out), len(text))
+        try:  # 文件已经替换成功，审计写失败不能让接口报失败，否则主人以为没存上
+            self._audit(rel, actor, sha(raw) if raw is not None else "", sha(out), len(text))
+        except OSError as e:
+            log.warning("审计写入失败（%s 已更新）：%s", rel, e)
         return self.read(rel)
 
     def _hist_dir(self, rel: str) -> Path:

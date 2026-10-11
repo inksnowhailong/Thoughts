@@ -14,8 +14,8 @@ def atomic_write_text(path: Path, text: str) -> None:
     临时文件名带 pid 和时间，不会和别的写入方（插件、面板）撞名。
     Windows 上别的进程恰好在读目标文件时 os.replace 可能 PermissionError，短暂重试。"""
     tmp = path.with_name(f"{path.name}.panel-{os.getpid()}-{time.time_ns()}.tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
     try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")  # 写到一半失败（磁盘满等）也要清掉半截 .tmp
         for i in range(_REPLACE_RETRIES):
             try:
                 os.replace(tmp, path)

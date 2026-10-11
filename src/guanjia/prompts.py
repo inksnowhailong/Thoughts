@@ -324,6 +324,8 @@ class PromptService:
     def _write_block(self, e: PromptEntry, text: str, base_sha: str) -> None:
         """锁内重读整文件 → 只换两个标记之间的一段 → 拼回写入。base_sha 是打开时整个文件的 sha。"""
         text = _norm(text).strip("\n")
+        if not text.strip():
+            raise ValueError("内容不能为空")
         if BLOCK_BEGIN in text or BLOCK_END in text:
             raise ValueError("管家规则正文里不能出现 guanjia-s2 的开始/结束标记")
         with ws_lock(timeout=self.lock_timeout, holder="panel", path=self.fs.lock_path):
@@ -359,6 +361,8 @@ class PromptService:
             text = body.get("text")
             if not isinstance(text, str):
                 raise ValueError("缺少 text")
+            if not text.strip():  # 清空等于把提示词删了，不当成一次正常保存
+                raise ValueError("内容不能为空")
             self._write(e, text, base_sha)
         elif action == "reset":
             if e.kind == "template":

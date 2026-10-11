@@ -235,6 +235,15 @@ try:
     code, resp = svc.post({"id": "identity", "text": "x", "base_sha": "stale"})
     check(code == 409, "workspace file stale sha -> 409")
 
+    # 6f2. 空内容 / 纯空白：400 且文件字节不变
+    for pid, rel in (("soul", "SOUL.md"), ("rules", "AGENTS.md"), ("skill_notes", "skills/guanjia-notes/SKILL.md")):
+        for blank in ("", "   ", "\n\t \r\n"):
+            code, cur = get(pid)
+            before = (ws / rel).read_bytes()
+            code, resp = svc.post({"id": pid, "text": blank, "base_sha": cur["sha"]})
+            check(code == 400 and "不能为空" in resp["reason"] and (ws / rel).read_bytes() == before,
+                  f"blank save rejected, file unchanged: {pid} {blank!r}")
+
     # 6g. 锁被占：423
     code, r = get("soul")
     with ws_lock(path=fs.lock_path, holder="sleep"):
