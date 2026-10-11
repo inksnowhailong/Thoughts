@@ -46,6 +46,7 @@ from guanjia import elog
 from guanjia.asr import StreamingASR
 from guanjia.asr_final import FinalASR
 from guanjia.audio_cues import earcon
+from guanjia.audio_watchdog import InputWatchdog, StreamGuard
 from guanjia.audittail import AuditTail, PendingConfirm
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
@@ -114,6 +115,7 @@ BARGE_LOG_EVERY_MS = 1000  # 出声期间每隔这么久打一行 DEBUG barge-mo
 SAY_MAX_PENDING = 3      # /say 最多排队这么多段，多了回 busy（模型循环调用 speak、微信刷屏时不至于念上几分钟）
 HEALTH_EVERY_SEC = 10.0  # 网关、TTS 在线检查周期（托盘用）
 SETTINGS_POLL_SEC = 2.0  # 手工改 voice-settings.json 的发现周期
+LAUNCH_SELFCHECK_SEC = 15.0  # launch_app 启动游戏后过这么久自检一次输入流（2026-10-11 事故：拉起 WeGame 后音频输入悄悄断了）
 GATEWAY_PORT = 18789
 EXIT_QUIT, EXIT_CRASH, EXIT_RESTART = 0, 1, 3  # 与 scripts/voice-supervisor.ps1 约定
 LOG_MAX_BYTES = 5_000_000  # voice.log 轮转大小（留 3 份）
@@ -197,6 +199,9 @@ class VoiceDaemon:
     _turn_tools = 0  # 这一轮已见到的工具调用数（审计跟随累加），「只说没做」兜底据此判断
     _turn_gate: frozenset = frozenset()  # 这一轮已见到的拦截 / 确认类审计 decision，「编造拦截」兜底据此判断
     pending = PendingConfirm()  # 待确认状态（托盘变色 + 气泡）；__post_init__ 换成每个进程自己的一份
+    watchdog = None  # InputWatchdog | None：run() 里创建；回调往里喂心跳
+    guard = None  # StreamGuard | None：run() 里创建，拥有音频流，流死了就重开
+    _audio_suspended = False  # 游戏态已停流（只有主循环线程读写）
     _turn_gen = -1
     enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
     _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
@@ -309,6 +314,9 @@ class VoiceDaemon:
         if filled:
             self._played_gen = cur
         voiced = filled > 0 and float(np.abs(out[:filled]).max()) > 1e-4  # 150ms 静音前导不算出声，打断底噪从真声开始学
+        wd = self.watchdog
+        if wd is not None:  # 喂输入流看门狗：回调还在来 / 输入有没有非零样本 / 本块是否出了真语音
+            wd.beat(bool(indata.any()), voiced)
         # 叠加保活噪声（循环取预生成缓冲）：输出流从不"纯零"，音响不会因静默进入待机
         n0 = self._noise_pos
         idx = (np.arange(n0, n0 + frames)) % len(self._noise)
@@ -831,6 +839,8 @@ class VoiceDaemon:
     def _on_tool(self, entry: dict) -> None:
         """审计跟随：主线会话的工具调用记到当前这一轮上（没有进行中的语音轮就只打日志）。"""
         log.info("tool %s %s %s: %s", entry["tool"], entry["level"], entry["decision"], entry["summary"])
+        if entry["tool"] == "launch_app" and self.guard is not None:  # 拉起游戏会动音频：过一会儿主动自检输入流
+            self.guard.request_selfcheck("launch_app", LAUNCH_SELFCHECK_SEC)
         if self._turn_marks is not None:  # 有进行中的一轮：先计数（不依赖面板记录 id）
             self._turn_tools += 1
         uid = self._turn_uid
@@ -1048,7 +1058,8 @@ class VoiceDaemon:
                 "gaming": self._paused.is_set(), "runtime": self.runtime.state, "gateway": self.health.gateway,
                 "tts": self.health.tts, "error": self.last_error, "sleep": self.sleep_state, "pending": self.text_q.qsize(),
                 "followup_left": max(0.0, round(self._followup_until - time.monotonic(), 1)),
-                "wake_words": list(self.store.current.wake_words), "panel": PANEL_URL}
+                "wake_words": list(self.store.current.wake_words), "panel": PANEL_URL,
+                "audio": self.guard.info() if self.guard else None}  # 输入流看门狗：累计重开次数 + 最近一次故障
 
     def set_sleep_state(self, state: str) -> bool:
         """控制口 /sleep-state：P4 休眠状态位，只做显示。"""
@@ -1164,6 +1175,9 @@ class VoiceDaemon:
 
     def _suspend_audio(self, s: sd.Stream) -> None:
         """进入游戏态：停流、清空积压、释放 ASR（CPU 内存）、通知 TTS 服务释放显存。主循环调用。"""
+        if self.watchdog is not None:
+            self.watchdog.disarm()  # 停流期间没有回调是正常的
+        self._audio_suspended = True
         s.stop()
         for q in (self.in_q, self.text_q):
             while not q.empty():
@@ -1179,8 +1193,43 @@ class VoiceDaemon:
         self.asr_final = FinalASR()
         self._reset_frontend()
         s.start()
+        self._audio_suspended = False
+        if self.watchdog is not None:
+            self.watchdog.arm()  # 从重新启动那刻起重新计时
         threading.Thread(target=self.tts.control, args=("load",), name="tts-load", daemon=True).start()
         log.info("gaming 结束: 音频流已恢复")
+
+    # ---------- 输入流看门狗（StreamGuard 的三个钩子）----------
+    def _make_stream(self) -> sd.Stream:
+        """开一条全双工流（首次打开和看门狗重开共用）。"""
+        return sd.Stream(samplerate=self.sr, blocksize=self.frame, dtype="float32", channels=1, latency="low",
+                         device=(self.in_dev, self.out_dev), callback=self._callback)
+
+    def _audio_devices(self) -> dict:
+        """当前输入 / 输出设备名，随 audio.* 事件一起记（知道故障时用的是哪个设备）；查不到不影响重开。"""
+        try:
+            din = sd.query_devices(self.in_dev if self.in_dev is not None else sd.default.device[0])
+            dout = sd.query_devices(self.out_dev if self.out_dev is not None else sd.default.device[1])
+            return {"in_name": din["name"], "out_name": dout["name"], "rate": self.sr}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _refresh_audio(self) -> None:
+        """旧流正常关掉后、重开前：让 PortAudio 重新枚举设备（默认设备变了就能跟上）。
+        采样率和启动时选的不一样就抛错——降采样器 / VAD 都按启动时的采样率建的，交给上层整进程重启。"""
+        sd._terminate()  # noqa: SLF001  sounddevice 没有公开的"重新枚举"，文档建议热插拔后就这样刷新
+        sd._initialize()  # noqa: SLF001
+        rate = pick_stream_rate(self.in_dev, self.out_dev)
+        if rate != self.sr:
+            raise RuntimeError(f"设备采样率从 {self.sr} 变成了 {rate}")
+
+    def _on_audio_event(self, kind: str, data: dict) -> None:
+        """看门狗事件 → 托盘 / 面板可见：重开后托盘显示一条（下一轮成功出声自动清掉）。"""
+        if kind == "reopened":
+            self._set_error("麦克风流曾停住，已自动重开")
+        elif kind == "failed":
+            self._set_error("麦克风流重开失败，正在重启语音")
+        self.hub.status(self.status())
 
     # ---------- 主循环 ----------
     def run(self) -> None:
@@ -1221,8 +1270,11 @@ class VoiceDaemon:
         shown = ""
         last_stats, stats = time.monotonic(), (0, 0)
         last_settings_poll = time.monotonic()
-        with sd.Stream(samplerate=self.sr, blocksize=self.frame, dtype="float32", channels=1, latency="low",
-                       device=(self.in_dev, self.out_dev), callback=self._callback) as s:
+        self.watchdog = InputWatchdog()
+        self.guard = StreamGuard(self._make_stream, self.watchdog, emit=elog.emit, describe=self._audio_devices,
+                                 refresh=self._refresh_audio, on_event=self._on_audio_event)
+        with self.guard as g:  # 进入 = 开流并开始计时；流死了由 g.tick() 重开，所以后面一律取 g.stream，不缓存
+            s = g.stream
             log.info("listening ... (latency in/out %.3f/%.3f s; output stream always-open, comfort noise %.0f dBFS, "
                      "lead %dms, panel %s, dump %s)", *s.latency, COMFORT_NOISE_DBFS, LEAD_SILENCE_MS, PANEL_URL,
                      SEG_DUMP_DIR)
@@ -1235,17 +1287,25 @@ class VoiceDaemon:
                 while not self._stop_evt.is_set():
                     time.sleep(0.5)
                     paused = self._paused.is_set()  # 本轮只读一次，防监控线程中途翻转导致误判"流死了"
-                    if paused and s.active:
+                    s = g.stream  # 看门狗可能刚重开过流
+                    if paused and not self._audio_suspended:
                         self._suspend_audio(s)
-                    elif not paused and not s.active:
+                    elif not paused and self._audio_suspended:
                         self._resume_audio(s)
                     dead = [t.name for t in threads if not t.is_alive()]
                     # 托盘/面板要求退出时工作线程会跟着结束，这不是崩溃：误判成崩溃会回退出码 1，看门狗又把它拉起来
-                    if not self._stop_evt.is_set() and (dead or (not s.active and not paused)):
+                    if not self._stop_evt.is_set() and dead:
                         log.error("worker died: threads=%s stream_active=%s，退出等待看门狗拉起", dead, s.active)
-                        elog.emit("voice", "voice.exit", "工作线程/音频流死了", level="error", code=EXIT_CRASH,
+                        elog.emit("voice", "voice.exit", "工作线程死了", level="error", code=EXIT_CRASH,
                                   reason="worker_died", threads=dead, stream_active=s.active)
                         failed = True
+                        break
+                    # 输入流看门狗：回调停了 / 流不活跃 / 出声时输入恒零 → 重开；重开失败（或频繁重开仍不行）就以重启码退出，让看门狗拉起整个进程
+                    if not self._stop_evt.is_set() and g.tick(self._audio_suspended, self._playing()) == "failed":
+                        log.error("audio stream reopen failed，退出码 %d 等待看门狗拉起", EXIT_RESTART)
+                        elog.emit("voice", "voice.exit", "输入流重开失败，请求重启", level="error", code=EXIT_RESTART,
+                                  reason="audio_reopen_failed")
+                        self._exit_code = EXIT_RESTART
                         break
                     key = self.view().key
                     if key != shown:  # 说话中 ↔ 在听 等状态变化同步到托盘和面板
@@ -1267,6 +1327,9 @@ class VoiceDaemon:
                         self.store.maybe_reload()
                     if time.monotonic() - last_stats >= STATS_EVERY_SEC:
                         last_stats = time.monotonic()
+                        wd = self.watchdog  # 留证据：下次再出事就能分清"回调停了"还是"回调在来但输入全零"
+                        log.debug("audio-mon frames=%d cb_age=%.2fs signal_age=%.0fs zero_play=%.1fs", wd.count,
+                                  time.monotonic() - wd.last_beat, time.monotonic() - wd.last_signal, wd.zero_play)
                         if (self._dropped, self._underflows) != stats:
                             stats = (self._dropped, self._underflows)
                             log.warning("累计丢帧 %d，输出欠载 %d", *stats)
