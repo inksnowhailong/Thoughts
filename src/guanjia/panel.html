@@ -231,6 +231,46 @@
     </div>
     <div id="injectResult" class="hint"></div>
   </section>
+  <section id="memSection" data-alt="memory-section">
+    <h2>记忆（用户档案 / 长期记忆 / 每日笔记 / 时间线 / 家庭事实）</h2>
+    <div class="hint">这些是思绪的「记事本」，改的是工作区里的真实文件：保存前自动备份（可从历史恢复），模型刚写过会提示冲突。</div>
+    <div id="memList" data-alt="memory-list"></div>
+    <div class="filters">
+      <span>每日笔记：</span>
+      <select id="memDaily" data-alt="memory-daily-select"></select>
+      <button id="btnMemDailyOpen" data-alt="memory-daily-open">打开</button>
+      <button id="btnMemDailyNew" data-alt="memory-daily-new">新建今天的笔记</button>
+    </div>
+    <div id="memEditor" data-alt="memory-editor" hidden>
+      <h3 id="memTitle"></h3>
+      <div id="memBadges"></div>
+      <div id="memNote" class="hint"></div>
+      <div id="memWarn" class="ed-warn" data-alt="memory-warn" hidden></div>
+      <div id="memCards" data-alt="memory-cards"></div>
+      <div class="ed-grid">
+        <textarea id="memText" data-alt="memory-text" spellcheck="false"></textarea>
+        <div id="memSide" data-alt="memory-side"></div>
+      </div>
+      <div id="memConflict" class="ed-warn" data-alt="memory-conflict" hidden>
+        <div id="memConflictText"></div>
+        <div class="filters">
+          <button id="btnMemReload" data-alt="memory-reload">重新载入（放弃我的修改）</button>
+          <button id="btnMemForce" data-alt="memory-force">用我的覆盖</button>
+        </div>
+      </div>
+      <div class="filters">
+        <button id="btnMemSave" data-alt="memory-save">保存</button>
+        <button id="btnMemHist" data-alt="memory-history">历史</button>
+        <button id="btnMemClose" data-alt="memory-close">关闭</button>
+        <span id="memMsg" class="hint"></span>
+      </div>
+      <div id="memHistory" data-alt="memory-history-box" hidden>
+        <div class="hist-list" id="memHistList"></div>
+        <div class="filters"><button id="btnMemRestore" data-alt="memory-restore" disabled>恢复这一版</button></div>
+        <div class="ed-box" id="memHistText"></div>
+      </div>
+    </div>
+  </section>
 </main>
 <script>
 "use strict";
@@ -885,6 +925,10 @@ function waitBack() {
 for (const id of ["onlyAccepted", "followNewest"]) $(id).addEventListener("change", () => { if ($("followNewest").checked) S.selected = null; renderAll(); });
 for (const id of ["level", "search"]) $(id).addEventListener("input", renderLogs);
 start().catch((e) => { banner("面板启动失败：" + e); waitBack(); });
+</script>
+<script>
+"use strict";
+/*__PANEL_MEMORY_JS__*/
 </script>
 </body>
 </html>

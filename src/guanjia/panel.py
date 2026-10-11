@@ -15,6 +15,7 @@ from pathlib import Path
 
 from guanjia import elog
 from guanjia.events import LOG_MODULES, STAGE_CN, STAGES, EventHub
+from guanjia.memory_page import MemoryService
 from guanjia.params import describe
 from guanjia.prompts import PromptService
 from guanjia.remembered_overrides import LEVELS_PATH, list_remembered, revoke
@@ -106,6 +107,12 @@ class PanelBackend:
         self.register_get("/api/prompt", svc.get)
         self.register_post("/api/prompt", svc.post)
 
+    def attach_memory(self, svc: MemoryService) -> None:
+        """B3：记忆页接口（USER / MEMORY / 每日笔记 / 时间线 / 家庭事实）。"""
+        self.register_get("/api/memory", svc.list_all)
+        self.register_get("/api/memory/file", svc.get)
+        self.register_post("/api/memory/file", svc.post)
+
     def attach_flags(self, log: elog.EventLog | elog.NullLog) -> None:
         """面板每句话旁的「这句有问题」：写一条 user_flag 事件（logq --flags 列出），并在记录上标记。
         同时让改设置 / 控制（静音、重启、退出）也进事件流（panel.settings / panel.control）。"""
@@ -135,7 +142,11 @@ class PanelBackend:
 
     def html(self) -> bytes:
         """每次现读文件（改了页面刷新即可看到），把令牌填进占位符。"""
-        return self.html_path.read_text(encoding="utf-8").replace("__GUANJIA_TOKEN__", self.token).encode("utf-8")
+        page = self.html_path.read_text(encoding="utf-8")
+        # 记忆页的脚本拆在同目录的 panel_memory.js（控制口只静态服务 /panel 一个页面，所以读出来内联进去）
+        js = self.html_path.with_name("panel_memory.js")
+        page = page.replace("/*__PANEL_MEMORY_JS__*/", js.read_text(encoding="utf-8") if js.exists() else "")
+        return page.replace("__GUANJIA_TOKEN__", self.token).encode("utf-8")
 
     def snapshot(self) -> dict:
         return {"status": self._status(), "settings": to_dict(self.store.current), "records": self.hub.records(),

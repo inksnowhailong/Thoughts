@@ -53,6 +53,7 @@ from guanjia.control import CONTROL_PORT, start_control_server
 from guanjia.enroll_session import (MAX_ZERO_RATIO, MIN_EFFECTIVE_SEC, MIN_PEAK, MIN_SELF_SIM, MIN_TOTAL, EnrollSession)
 from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
+from guanjia.memory_page import MemoryService
 from guanjia.prompts import PromptService
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
 from guanjia.runtrace import run_summary
@@ -268,7 +269,9 @@ class VoiceDaemon:
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
         self.panel.register_get("/api/speaker", self._speaker_info)
         self.panel.register_post("/api/speaker", self._speaker_action)
-        self.panel.attach_prompts(PromptService(WorkspaceFiles()), self._param_consts)  # B2：参数表 + 提示词编辑
+        ws_files = WorkspaceFiles()  # 提示词页和记忆页共用同一套锁 / 备份 / 审计
+        self.panel.attach_memory(MemoryService(ws_files, elog.get()))  # B3：记忆页
+        self.panel.attach_prompts(PromptService(ws_files), self._param_consts)  # B2：参数表 + 提示词编辑
         self.panel.attach_flags(elog.get())  # 「这句有问题」+ 面板改设置 / 控制进事件流
         self.pending = PendingConfirm()
         self.audit = AuditTail(self._on_tool, on_gate=self._on_gate)
