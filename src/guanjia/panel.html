@@ -120,6 +120,11 @@
     <div id="spkSlot" data-alt="speaker-slot"></div>
     <h3>提示词</h3>
     <div id="drawerPrompts" data-alt="drawer-prompts"></div>
+    <div id="remSlot" data-alt="remembered-slot" hidden>
+      <h3>已记住的放行</h3>
+      <div class="hint">主人口头说「以后都允许」后记下的放行规则；撤销后下次再遇到会重新问你。</div>
+      <div id="remList" data-alt="remembered-list"></div>
+    </div>
     <div id="editor" data-alt="prompt-editor" hidden>
       <h3 id="edTitle"></h3>
       <div id="edBadges"></div>
@@ -579,6 +584,42 @@ function renderDrawer() {
   $("drawerTitle").textContent = `${S.names[D.node] || D.node}：参数与提示词`;
   renderParams();
   renderPromptList();
+  $("remSlot").hidden = D.node !== "tools";  // 「已记住的放行」只挂在工具环节
+  if (D.node === "tools") loadRemembered();
+}
+
+// ----- 已记住的放行：列表 + 撤销 -----
+let remBusy = false;
+function fmtLocal(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleString("zh-CN", { hour12: false });
+}
+async function loadRemembered(note) {
+  const box = $("remList");
+  const r = await getJson("/api/overrides");
+  box.textContent = "";
+  if (!r.ok) { box.append(el("div", { class: "spk-bad", text: "读不出来：" + (r.data.reason || "未知错误") })); return; }
+  if (!r.data.items.length) box.append(el("div", { class: "hint", text: "还没有" }));
+  else {
+    const tb = el("tbody");
+    for (const it of r.data.items) {
+      const btn = el("button", { text: "撤销", "data-alt": "revoke-" + it.id });
+      btn.disabled = remBusy;
+      btn.addEventListener("click", () => revokeRemembered(it));
+      tb.append(el("tr", { "data-alt": "remembered-" + it.id }, el("td", { text: it.summary || it.id }), el("td", { text: it.tool || "" }),
+        el("td", { text: fmtLocal(it.createdAt) }), el("td", { text: String(it.expiresAt || "").startsWith("9999") ? "不过期" : fmtLocal(it.expiresAt) }), el("td", null, btn)));
+    }
+    box.append(el("table", null, el("thead", null, el("tr", null, ...["说明", "工具", "记住时间", "到期", "操作"].map((t) => el("th", { text: t })))), tb));
+  }
+  if (note) box.append(el("div", { class: note.cls, text: note.text }));
+}
+async function revokeRemembered(it) {
+  if (remBusy) return;
+  if (!confirm("撤销后再遇到会重新问你")) return;
+  remBusy = true;
+  let r;
+  try { r = await api("/api/overrides", { action: "revoke", id: it.id }); } finally { remBusy = false; }
+  await loadRemembered(r.ok ? { cls: "spk-ok", text: "已撤销：" + (it.summary || it.id) } : { cls: "spk-bad", text: "没撤销：" + (r.data.reason || "未知错误") });
 }
 
 function paramRow(p) {

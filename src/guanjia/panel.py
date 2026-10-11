@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import secrets
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -15,7 +17,9 @@ from guanjia import elog
 from guanjia.events import LOG_MODULES, STAGE_CN, STAGES, EventHub
 from guanjia.params import describe
 from guanjia.prompts import PromptService
+from guanjia.remembered_overrides import LEVELS_PATH, list_remembered, revoke
 from guanjia.settings import SettingsStore, to_dict
+from guanjia.wsfiles import HISTORY_DIR
 
 PANEL_HTML = Path(__file__).with_name("panel.html")
 PANEL_URL = "http://127.0.0.1:18795/panel"
@@ -26,7 +30,8 @@ DEFAULT_HIDDEN_MODULES = ("health", "barge-mon")  # 面板日志默认不显示�
 class PanelBackend:
     def __init__(self, hub: EventHub, store: SettingsStore, *, status: Callable[[], dict],
                  control: Callable[[str], tuple[bool, str]], inject: Callable[[str, bool], dict],
-                 html_path: Path = PANEL_HTML, token: str | None = None) -> None:
+                 html_path: Path = PANEL_HTML, token: str | None = None,
+                 levels_path: Path = LEVELS_PATH, audit_dir: Path = HISTORY_DIR) -> None:
         self.hub = hub
         self.store = store
         self._status = status
@@ -38,6 +43,10 @@ class PanelBackend:
         self._get: dict[str, Callable[[dict], tuple[int, dict]]] = {}
         self._post: dict[str, Callable[[dict], tuple[int, dict]]] = {}
         self._elog: elog.EventLog | elog.NullLog = elog.NullLog()  # 统一事件日志；attach_flags 时接上，之前是空操作
+        self.levels_path = levels_path  # 线上分级表（测试传临时文件）
+        self.audit_dir = audit_dir  # 撤销审计写到这里的 audit.jsonl（与工作区文件改动同一份审计）
+        self.register_get("/api/overrides", self._overrides_list)
+        self.register_post("/api/overrides", self._overrides_post)
 
     def register_get(self, path: str, fn: Callable[[dict], tuple[int, dict]]) -> None:
         self._get[path] = fn
@@ -51,6 +60,44 @@ class PanelBackend:
             return fn(arg)
         except ValueError as e:
             return 400, {"ok": False, "reason": str(e)}
+
+    # ---------- B4：「已记住的放行」列表与撤销 ----------
+    def _overrides_list(self, query: dict) -> tuple[int, dict]:
+        try:
+            return 200, {"ok": True, "items": list_remembered(self.levels_path)}
+        except ValueError as e:  # 分级表读不出来：不当成「没有」，让页面显示原因
+            return 500, {"ok": False, "reason": str(e)}
+
+    def _overrides_post(self, body: dict) -> tuple[int, dict]:
+        """只有 revoke：只删 source=remembered 的条目（手写的、rules、tools 一律不动），结果映射成 HTTP 状态码。"""
+        if body.get("action") != "revoke":
+            raise ValueError(f"不认识的操作：{body.get('action')}")
+        oid = str(body.get("id") or "").strip()
+        if not oid:
+            raise ValueError("缺少 id")
+        try:
+            summary = next((i.get("summary") for i in list_remembered(self.levels_path) if i["id"] == oid), None)
+        except ValueError as e:
+            return 500, {"ok": False, "reason": str(e)}
+        ok, why = revoke(oid, self.levels_path)
+        if not ok:
+            code, reason = {"not_found": (404, "没有这一条（可能已经被撤销）"),
+                            "not_remembered": (403, "这一条不是口头记住的，面板不能撤销"),
+                            "unreadable": (500, "分级表读不出来，没有改动")}[why]
+            return code, {"ok": False, "reason": reason}
+        self._audit_revoke(oid, summary)
+        self._elog.emit("panel", "panel.override_revoke", f"撤销放行：{summary or oid}", id=oid, summary=summary)
+        return 200, {"ok": True}
+
+    def _audit_revoke(self, oid: str, summary: str | None) -> None:
+        """撤销已经成功，审计写失败不能让接口报失败（主人会以为没撤掉）。"""
+        line = {"t": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "file": "guanjia/levels.json", "actor": "panel", "id": oid, "summary": summary}
+        try:
+            self.audit_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.audit_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     def attach_prompts(self, svc: PromptService, consts: Callable[[], dict[str, tuple]]) -> None:
         """B2：参数表和提示词编辑接口。consts() 返回只读常量 {key: (当前值, 默认值)}，每次请求现取。"""
