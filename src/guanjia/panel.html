@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>管家面板</title>
+<title>思绪面板</title>
 <style>
   :root { --bg:#0f1419; --card:#18202a; --line:#2a3542; --text:#d8e0e8; --dim:#8a97a6; --ok:#2ea043; --busy:#1f6feb;
           --warn:#d29922; --bad:#da3633; --idle:#3a4654; }
@@ -89,7 +89,7 @@
 </head>
 <body>
 <header>
-  <h1>管家面板</h1>
+  <h1>思绪面板</h1>
   <span id="pill" class="pill">连接中</span>
   <span class="dep">网关 <b id="gw">…</b></span>
   <span class="dep">TTS <b id="tts">…</b></span>
@@ -837,7 +837,7 @@ $("btnRestart").addEventListener("click", async () => {
   banner(r.ok ? "正在重启语音，回来后页面会自动刷新……" : "重启失败");
 });
 $("btnQuit").addEventListener("click", async () => {
-  if (!confirm("退出语音？退出后不会自己起来，要再开请双击桌面上的「管家面板」。")) return;
+  if (!confirm("退出语音？退出后不会自己起来，要再开请双击桌面上的「思绪面板」。")) return;
   const r = await api("/api/control", { action: "quit" });
   banner(r.ok ? r.data.reason : "退出失败");
 });

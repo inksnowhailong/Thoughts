@@ -188,7 +188,10 @@ class FakeReg:
     def __init__(self):
         self.vals = {"a": {"InitialTooltip": "管家：在听", "ExecutablePath": "x\\python.exe"},
                      "b": {"InitialTooltip": "管家：启动中", "IsPromoted": 0},
-                     "c": {"InitialTooltip": "Steam"}}
+                     "c": {"InitialTooltip": "Steam"},
+                     # B5 改名：老注册表项还是「管家：…」，新启动的是「思绪：…」，两种开头都要认
+                     "d": {"InitialTooltip": "思绪：空闲", "ExecutablePath": "x\\python.exe"},
+                     "e": {"InitialTooltip": "思绪：在听", "IsPromoted": 1}}
         self.promoted = []
 
     def entries(self):
@@ -199,6 +202,6 @@ class FakeReg:
 
 
 reg = FakeReg()
-check(promote_tray_icon(reg) == ["a"] and reg.promoted == ["a"], "only our never-touched tray entry is promoted")
+check(promote_tray_icon(reg) == ["a", "d"] and reg.promoted == ["a", "d"], "never-touched tray entries starting with 管家 or 思绪 are promoted, others left")
 
 print("ALL PASS test_p21_voice_gate")

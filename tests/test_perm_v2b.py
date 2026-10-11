@@ -96,7 +96,7 @@ t = Tray(view=lambda: v, muted=lambda: False, on_toggle_mute=lambda: None, on_re
 check(t.notify("hi") is False, "notify without an icon is a no-op returning False")
 sent = []
 t._icon = SimpleNamespace(notify=lambda msg, title: sent.append((msg, title)))
-check(t.notify("管家在等你确认：x") is True and sent == [("管家在等你确认：x", "管家")], "notify forwards message with the default title")
+check(t.notify("思绪在等你确认：x") is True and sent == [("思绪在等你确认：x", "思绪")], "notify forwards message with the default title (显示名 思绪)")
 t.notify("y" * 400, "t" * 100)
 check(len(sent[-1][0]) <= 250 and len(sent[-1][1]) <= 60, "notify truncates to the Windows balloon limits")
 t._icon = SimpleNamespace(notify=lambda msg, title: (_ for _ in ()).throw(OSError("boom")))
@@ -132,7 +132,7 @@ class FakeTray:
         self.notified: list[str] = []
         self.refreshed = 0
 
-    def notify(self, message: str, title: str = "管家") -> bool:
+    def notify(self, message: str, title: str = "思绪") -> bool:
         self.notified.append(message)
         return True
 
@@ -270,7 +270,7 @@ d.tray = FakeTray()
 check(d.view().key == "listening", "no pending -> normal view")
 d._on_gate(gate_event(line("block-need-confirm", summary="exec: del D:\\old")))
 check(d.view().key == "pending" and "del D:" in d.view().label, "pending -> tray view turns pending")
-check(d.tray.notified == ["管家在等你确认：exec: del D:\\old"] and d.tray.refreshed >= 1, "balloon text + tray refreshed")
+check(d.tray.notified == ["思绪在等你确认：exec: del D:\\old"] and d.tray.refreshed >= 1, "balloon text + tray refreshed")
 d._on_gate(gate_event(line("l2-confirmed")))
 check(d.view().key == "listening" and len(d.tray.notified) == 1, "confirmed -> view restored, no extra balloon")
 d = make_daemon([])

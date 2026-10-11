@@ -109,4 +109,7 @@ html = PANEL_HTML.read_text(encoding="utf-8")
 check("spkBusy" in html and "btnEnrollCommit\").disabled = s.state !== \"ready\" || spkBusy" in html
       and "btnEnrollRollback\").disabled = !info.backup || spkBusy" in html, "speaker buttons are disabled while a request is in flight")
 
+# B5 改名：页面标题、抬头、退出确认都显示「思绪」，不再出现「管家面板」
+check("<title>思绪面板</title>" in html and "<h1>思绪面板</h1>" in html and "管家面板" not in html, "panel.html shows the display name 思绪")
+
 print("ALL PASS test_p22_panel_routes")

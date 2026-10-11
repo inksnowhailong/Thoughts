@@ -1,11 +1,11 @@
 """系统托盘图标（pystray）：颜色表示状态，左键 = 切换静音，右键菜单 = 状态 / 打开面板 / 静音 / 重启语音 / 退出语音。
 
 托盘跑在自己的线程里；菜单回调只调守护进程的线程安全方法（toggle_mute / request_exit）。
-平时不弹通知；只有 notify() 会弹气泡（目前仅「管家在等你确认」，且游戏中由守护进程决定不调用）。
+平时不弹通知；只有 notify() 会弹气泡（目前仅「思绪在等你确认」，且游戏中由守护进程决定不调用）。
 pystray 的 Windows 后端在构造 Icon 时就建隐藏窗口，窗口消息只投给建它的线程，所以 Icon 必须在托盘线程里构造并 run。
 
 Windows 11 默认把新托盘图标收进「^」。系统在 HKCU\\Control Panel\\NotifyIconSettings 下给每个图标建一个子键，
-值 IsPromoted=1 表示固定显示在任务栏上（未公开但广泛使用的做法）。图标出现几秒后我们找到提示文字以「管家」开头的那一项，
+值 IsPromoted=1 表示固定显示在任务栏上（未公开但广泛使用的做法）。图标出现几秒后我们找到提示文字以「思绪」（改名前建的老项是「管家」）开头的那一项，
 只在 IsPromoted 还不存在时（从没被人调过）设成 1；主人以后自己拖回「^」里，系统写成 0，我们不再动它。
 """
 
@@ -18,12 +18,14 @@ from collections.abc import Callable
 
 from PIL import Image, ImageDraw
 
-from guanjia.status import TrayView
+from guanjia.status import DISPLAY_NAME, TrayView
 
 log = logging.getLogger("guanjia.tray")
 ICON_SIZE = 64
 NOTIFY_SETTINGS_KEY = r"Control Panel\NotifyIconSettings"
-TOOLTIP_PREFIX = "管家"
+# 系统给托盘项记的 InitialTooltip 是「图标第一次出现时」的提示文字：改名之前建的项还是「管家：…」，
+# 改名之后新建的是「思绪：…」，两种开头都要认，否则老项（主人已经固定好的）或新项会漏掉
+TOOLTIP_PREFIXES = (DISPLAY_NAME, "管家")
 
 
 def make_icon_image(color: tuple[int, int, int], size: int = ICON_SIZE) -> Image.Image:
@@ -79,8 +81,8 @@ class WinregNotifySettings:
             winreg.SetValueEx(k, "IsPromoted", 0, winreg.REG_DWORD, 1)
 
 
-def promote_tray_icon(reg=None, prefix: str = TOOLTIP_PREFIX) -> list[str]:
-    """把提示文字以「管家」开头、且从没设过 IsPromoted 的托盘项设为固定显示。返回改了哪些子键。"""
+def promote_tray_icon(reg=None, prefix: str | tuple[str, ...] = TOOLTIP_PREFIXES) -> list[str]:
+    """把提示文字以「思绪」或「管家」开头、且从没设过 IsPromoted 的托盘项设为固定显示。返回改了哪些子键。"""
     reg = reg or WinregNotifySettings()
     changed = []
     try:
@@ -161,7 +163,7 @@ class Tray:
             except Exception:  # noqa: BLE001
                 log.exception("tray refresh failed")
 
-    def notify(self, message: str, title: str = TOOLTIP_PREFIX) -> bool:
+    def notify(self, message: str, title: str = DISPLAY_NAME) -> bool:
         """弹一条托盘气泡（Windows 通知）。图标还没建好、或系统拒绝返回 False。调用方负责「游戏中不弹」。
         Windows 气泡标题上限 63、正文上限 255 个字符，超了会弹不出来，这里截断。"""
         if not self._icon:

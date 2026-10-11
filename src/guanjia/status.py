@@ -10,6 +10,8 @@ from dataclasses import dataclass, replace
 
 log = logging.getLogger("guanjia.status")
 
+DISPLAY_NAME = "思绪"  # 二代的显示名（托盘提示、气泡标题）；唤醒词仍是「管家」，与它无关
+
 SLEEP_LABELS = {"sleeping": "休眠中", "consolidating": "整理记忆中"}  # P4 休眠状态位的托盘文字
 COLORS = {  # 托盘图标颜色（RGB）
     "listening": (46, 160, 67),
@@ -114,7 +116,7 @@ def tray_view(*, muted: bool, gaming: bool, busy: bool, health: Health, last_err
         key, label = "busy", "说话中"
     else:
         key, label = "listening", "在听"
-    tip = f"管家：{label}｜网关{_mark(health.gateway)} TTS{_mark(health.tts)}"
+    tip = f"{DISPLAY_NAME}：{label}｜网关{_mark(health.gateway)} TTS{_mark(health.tts)}"
     if sleep_state in SLEEP_LABELS:
         tip += f"｜{SLEEP_LABELS[sleep_state]}"
     return TrayView(key, label, COLORS[key], tip[:120])  # Windows 托盘提示上限 128 字符

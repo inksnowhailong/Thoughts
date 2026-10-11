@@ -60,7 +60,7 @@ from guanjia.seg_filter import is_hollow_segment, is_unconfirmed_by_stream
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
-from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
+from guanjia.status import DISPLAY_NAME, Health, HealthMonitor, TrayView, tcp_alive, tray_view
 from guanjia.tts_client import TTSClient
 from guanjia.turns import (NUDGE_TEXT, NUDGE_TEXT_FAKE_BLOCK, Heard, SayItem, TurnRunner, claims_blocked, has_promise,
                            needs_fake_block_nudge, needs_nudge)
@@ -844,7 +844,7 @@ class VoiceDaemon:
 
     def _on_gate(self, ev: dict) -> None:
         """审计跟随：拦截 / 确认类记录。记到本轮（「编造拦截」兜底的依据），并维护「待确认」状态：
-        新出现一件待确认 → 托盘变紫 + 弹气泡「管家在等你确认：…」（游戏中只变色不弹）；了结（确认 / 否认 / 超时）→ 恢复。"""
+        新出现一件待确认 → 托盘变紫 + 弹气泡「思绪在等你确认：…」（游戏中只变色不弹）；了结（确认 / 否认 / 超时）→ 恢复。"""
         if self._turn_marks is not None:
             self._turn_gate = self._turn_gate | {ev["decision"]}
         change = self.pending.feed(ev)
@@ -857,7 +857,7 @@ class VoiceDaemon:
             elog.emit("tool", "pending.open", summary, level="warn", uid=self._turn_uid, decision=ev["decision"],
                       gaming=gaming or None)
             if self.tray and not gaming:
-                self.tray.notify(f"管家在等你确认：{summary}")
+                self.tray.notify(f"{DISPLAY_NAME}在等你确认：{summary}")
         elif change == "closed":
             log.info("pending confirm cleared (%s)", ev["decision"])
             elog.emit("tool", "pending.close", ev["decision"], uid=self._turn_uid, decision=ev["decision"])
@@ -1087,7 +1087,7 @@ class VoiceDaemon:
             return True, "已静音" if action == "mute" else "已取消静音"
         code = EXIT_RESTART if action == "restart" else EXIT_QUIT
         threading.Timer(0.5, self.request_exit, args=(code, "panel")).start()
-        return True, "正在重启语音" if action == "restart" else "语音已退出，看门狗不会再拉起（双击桌面「管家面板」可重新打开）"
+        return True, "正在重启语音" if action == "restart" else "语音已退出，看门狗不会再拉起（双击桌面「思绪面板」可重新打开）"
 
     def open_panel(self) -> None:
         """托盘「打开面板」：用默认浏览器打开。"""

@@ -17,6 +17,7 @@ def check(cond: bool, what: str) -> None:
 ok = Health(True, True)
 v = tray_view(muted=False, gaming=False, busy=False, health=ok)
 check(v.key == "listening" and v.label == "在听" and "网关✓ TTS✓" in v.tooltip, "healthy -> listening")
+check(v.tooltip.startswith("思绪：") and "管家" not in v.tooltip, "tooltip shows the display name 思绪")
 check(tray_view(muted=False, gaming=False, busy=True, health=ok).key == "busy", "speaking -> busy")
 check(tray_view(muted=True, gaming=False, busy=False, health=ok).key == "muted", "muted")
 check(tray_view(muted=False, gaming=True, busy=False, health=ok).key == "gaming", "gaming")
