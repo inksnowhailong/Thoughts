@@ -75,6 +75,8 @@ try:
     check(quality(voice)[0], "3s voiced segment passes")
     short = voice[: sr]
     check(not quality(short)[0], "1s segment rejected (effective < 1.5s)")
+    check(quality(voice[: int(sr * 1.2)], min_effective=1.0)[0], "far group: 1.2s effective passes with 1.0s floor")
+    check(not quality(voice[: int(sr * 0.8)], min_effective=1.0)[0], "far group: 0.8s effective still rejected")
     gated = voice.copy()
     gated[: int(len(gated) * 0.6)] = 0
     check(not quality(gated)[0], "60% digital zeros rejected")

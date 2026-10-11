@@ -17,12 +17,16 @@ from guanjia.speaker import score_against
 SR = 16000
 GROUPS = (  # (键, 提示, 例句, 段数)
     ("near", "坐在平时的位置，正常说话", ("管家，明天早上七点叫我起床", "管家，帮我打开网易云放首歌", "今天中午吃什么好呢，我想想"), 4),
-    ("far", "走到 2～3 米外，正常音量说", ("管家，现在几点了", "管家，把声音调小一点", "外面是不是要下雨了"), 4),
+    ("far", "走到 2～3 米外，正常音量一口气说一整句，中间别停", (
+        "管家，现在几点了，顺便看看明天天气怎么样，要不要带伞",
+        "管家，把声音调小一点，我要接个电话，等会儿再调回来",
+        "外面是不是要下雨了，管家你帮我查一下今天下午的天气"), 4),
     ("loud", "大声一点、带点情绪，或者随口说", ("管家！快帮我把游戏打开！", "哎呀烦死了，管家你听见没有", "管家，停一下停一下"), 3),
 )
 MIN_TOTAL = 8
 MAX_SEG_SEC = 10.0
 MIN_EFFECTIVE_SEC = 1.5
+MIN_EFFECTIVE_BY_GROUP = {"far": 1.0}  # 远处的弱音被音箱噪声门抹得多，1.5 秒几乎录不上
 MAX_ZERO_RATIO = 0.5
 MIN_PEAK = 0.03
 SELF_CHECK_AFTER = 3  # 已收这么多段之后，新段才做"像不像同一个人"检查
@@ -30,7 +34,7 @@ MIN_SELF_SIM = 0.30  # 新段对已收样本的 top-3 分低于它就拒收。�
 SESSION_TIMEOUT_SEC = 600.0
 
 
-def quality(samples: np.ndarray, sr: int = SR) -> tuple[bool, str, dict]:
+def quality(samples: np.ndarray, sr: int = SR, min_effective: float = MIN_EFFECTIVE_SEC) -> tuple[bool, str, dict]:
     """一段能不能拿来注册。数字零是音箱 DSP 噪声门抹掉的部分，不算有效语音。"""
     n = len(samples)
     nz = int(np.count_nonzero(samples))
@@ -38,7 +42,7 @@ def quality(samples: np.ndarray, sr: int = SR) -> tuple[bool, str, dict]:
             "zero_ratio": round(1 - nz / n, 2) if n else 1.0, "peak": round(float(np.abs(samples).max()), 3) if n else 0.0}
     if n / sr > MAX_SEG_SEC:
         return False, "这段太长了（可能混进了别的声音），说一句 3～5 秒的话", info
-    if nz / sr < MIN_EFFECTIVE_SEC:
+    if nz / sr < min_effective:
         return False, f"有效语音只有 {nz / sr:.1f} 秒，请说长一点（3～5 秒）", info
     if info["zero_ratio"] >= MAX_ZERO_RATIO:
         return False, "声音太小，被音箱截掉了一大半，大声一点或近一点", info
@@ -85,7 +89,8 @@ class EnrollSession:
             if playing:
                 self.last = {"ok": False, "reason": "电脑正在出声，这段不算"}
                 return self.last
-            ok, reason, info = quality(samples)
+            g = self._group() if self.state == "recording" else None
+            ok, reason, info = quality(samples, min_effective=MIN_EFFECTIVE_BY_GROUP.get(g[0], MIN_EFFECTIVE_SEC) if g else MIN_EFFECTIVE_SEC)
             if not ok:
                 self.last = {"ok": False, "reason": reason, "info": info}
                 return self.last
