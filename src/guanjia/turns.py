@@ -22,6 +22,27 @@ from guanjia.textseg import SentenceSplitter, speakable
 
 log = logging.getLogger("guanjia.turns")
 
+# 「只说没做」兜底：回复里出现这些承诺词、而本轮又零工具调用，就追发一次 NUDGE_TEXT（见 voice.VoiceDaemon._handle_item）
+PROMISE_WORDS = (
+    "我先", "我看看", "我看一下", "我查一下", "我查查", "我来查", "我来看", "稍等", "马上", "这就", "让我", "我去",
+    "我试试", "我帮你查", "我帮你看",
+)
+# 追发的话（发给网关时由 tag_voice_text 加上「[语音 …]」前缀，分级插件和 AGENTS.md 仍把它当语音轮）
+NUDGE_TEXT = "直接调用工具把刚才说的事做完，做完用一句话说结果；做不到就如实说"
+
+
+def has_promise(reply: str) -> bool:
+    """回复里是否含承诺词（「我先查一下」这类说要做、还没做的话）。"""
+    return any(w in reply for w in PROMISE_WORDS)
+
+
+def needs_nudge(reply: str, tool_calls: int, *, aborted: bool = False, error: str | None = None) -> bool:
+    """一轮语音回复结束后是否要追问：含承诺词 且 本轮零工具调用；被打断 / 已出错不追。
+    只是在问主人问题（含问号、没有承诺词）时没有承诺词，自然不追。"""
+    if aborted or error or tool_calls > 0:
+        return False
+    return has_promise(reply)
+
 
 @dataclass
 class SayItem:

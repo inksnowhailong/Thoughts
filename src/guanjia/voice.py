@@ -59,7 +59,7 @@ from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
 from guanjia.tts_client import TTSClient
-from guanjia.turns import Heard, SayItem, TurnRunner
+from guanjia.turns import NUDGE_TEXT, Heard, SayItem, TurnRunner, has_promise, needs_nudge
 from guanjia.vad import SR as SR16K
 from guanjia.vad import VAD, Downsampler
 from guanjia.wake import WakeMatcher, decide
@@ -95,6 +95,7 @@ PLAY_OVERLAP_GUARD_SEC = 0.3  # 注册时：段开始于最后一次出声后不
 MIN_UTT_SEC = 0.4        # 短于此的语音段不当作指令
 PREROLL_MS = 500         # ASR 预滚：VAD 起判前这段音频先补喂 ASR，防首字丢失
 STATS_EVERY_SEC = 30     # 丢帧 / 欠载计数的日志周期
+AUDIT_LAG_SEC = 0.8      # 判「零工具调用」前再等这么久：工具调用从审计文件跟随（每 0.5 秒读一次），可能比回复结束晚到
 
 # ---- 打断（只在我们出声时判定；不看声纹、不看 VAD，原因见 barge.py；下限在设置 barge_rms_min）----
 BARGE_MS = 180           # 累计过线时长达到此值即打断
@@ -187,6 +188,7 @@ class VoiceDaemon:
     wake = WakeMatcher(Settings().wake_words)
     _turn_uid = None
     _turn_is_say = False  # 这一轮是 /say（主程序让念）：念的时候、念完都不算免喊窗口
+    _turn_tools = 0  # 这一轮已见到的工具调用数（审计跟随累加），「只说没做」兜底据此判断
     _turn_gen = -1
     enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
     _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
@@ -569,10 +571,13 @@ class VoiceDaemon:
             except Exception:  # noqa: BLE001  一轮出错不能让大脑线程退出
                 log.exception("brain loop error")
 
-    def _handle_item(self, item: str | Heard | SayItem) -> None:
-        """一轮：放行的话进主线会话 / /say 的话直接念；等本轮播完再回到监听，然后打开免喊窗口。"""
+    def _handle_item(self, item: str | Heard | SayItem, nudged: bool = False) -> None:
+        """一轮：放行的话进主线会话 / /say 的话直接念；等本轮播完再回到监听，然后打开免喊窗口。
+        只说没做（回复含承诺词、本轮零工具调用）时，本轮收尾后在同一会话追发一次 NUDGE_TEXT；nudged=True 是追发的那一轮，不再追。"""
         uid = item.uid if isinstance(item, (Heard, SayItem)) else None
         self._turn_is_say = isinstance(item, SayItem)
+        self._turn_tools = 0
+        nudge = False
         gen = self._begin_speaking()
         self._turn_first = True
         self._turn_t0 = time.monotonic()
@@ -598,6 +603,10 @@ class VoiceDaemon:
             current = gen == self._gen
             if current and not isinstance(item, SayItem):  # 主程序让念的话不是在跟主人对话，不开免喊窗口
                 self._open_followup()
+            if not nudged and current and not isinstance(item, SayItem):
+                nudge = self._should_nudge(res)
+                if nudge:
+                    self.hub.stage(uid, "gateway", "done", "只说没做，已追问一次")
             if res.spoken and current:
                 self.hub.stage(uid, "play", "done", f"念完 {len(res.spoken)} 句")
             elif res.aborted or not current:
@@ -615,6 +624,23 @@ class VoiceDaemon:
             with self._lock:
                 if gen == self._gen:
                     self.state = "LISTENING"
+        if nudge:
+            self._send_nudge()
+
+    def _should_nudge(self, res: TurnResult) -> bool:
+        """本轮是否「只说没做」：回复含承诺词、零工具调用、没被打断没出错；主人已排了新话、静音、游戏中也不追。"""
+        if res.aborted or res.error or self._muted.is_set() or self._paused.is_set() or not self.text_q.empty():
+            return False
+        if not has_promise(res.reply):
+            return False
+        time.sleep(AUDIT_LAG_SEC)  # 审计跟随有 0.5 秒轮询延迟，等一下再数工具调用
+        return needs_nudge(res.reply, self._turn_tools, aborted=res.aborted, error=res.error)
+
+    def _send_nudge(self) -> None:
+        """在同一会话追发一条语音标记的话，让模型把说过的事做完；它的回复照常念出来，面板上单独一条记录。"""
+        log.info("nudge sent: 只说没做，追问一次")
+        uid = self.hub.new_utterance("nudge", text=NUDGE_TEXT, verdict="accept", reason="只说没做，自动追问一次", sent=NUDGE_TEXT)
+        self._handle_item(Heard(NUDGE_TEXT, uid), nudged=True)
 
     def _turn_timings(self, uid: str | None, m: dict) -> dict:
         """耗时拆分（毫秒）：听完 → 排队 → 网关首字 → 首句成形 → 合成首句 → 真正出声。"""
@@ -670,6 +696,8 @@ class VoiceDaemon:
     def _on_tool(self, entry: dict) -> None:
         """审计跟随：主线会话的工具调用记到当前这一轮上（没有进行中的语音轮就只打日志）。"""
         log.info("tool %s %s %s: %s", entry["tool"], entry["level"], entry["decision"], entry["summary"])
+        if self._turn_marks is not None:  # 有进行中的一轮：先计数（不依赖面板记录 id）
+            self._turn_tools += 1
         uid = self._turn_uid
         if uid:
             self.hub.add_tool(uid, entry)
