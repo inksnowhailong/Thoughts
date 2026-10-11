@@ -11,6 +11,7 @@ import secrets
 from collections.abc import Callable
 from pathlib import Path
 
+from guanjia import elog
 from guanjia.events import LOG_MODULES, STAGE_CN, STAGES, EventHub
 from guanjia.params import describe
 from guanjia.prompts import PromptService
@@ -36,6 +37,7 @@ class PanelBackend:
         # 通用路由表：功能模块往里注册 /api/xxx，control.py 不用再改。路由函数返回 (状态码, JSON)，抛 ValueError 回 400
         self._get: dict[str, Callable[[dict], tuple[int, dict]]] = {}
         self._post: dict[str, Callable[[dict], tuple[int, dict]]] = {}
+        self._elog: elog.EventLog | elog.NullLog = elog.NullLog()  # 统一事件日志；attach_flags 时接上，之前是空操作
 
     def register_get(self, path: str, fn: Callable[[dict], tuple[int, dict]]) -> None:
         self._get[path] = fn
@@ -56,6 +58,24 @@ class PanelBackend:
         self.register_get("/api/prompts", svc.list_all)
         self.register_get("/api/prompt", svc.get)
         self.register_post("/api/prompt", svc.post)
+
+    def attach_flags(self, log: elog.EventLog | elog.NullLog) -> None:
+        """面板每句话旁的「这句有问题」：写一条 user_flag 事件（logq --flags 列出），并在记录上标记。
+        同时让改设置 / 控制（静音、重启、退出）也进事件流（panel.settings / panel.control）。"""
+        self._elog = log
+
+        def flag(body: dict) -> tuple[int, dict]:
+            uid = str(body.get("uid") or "").strip()[:40]
+            note = str(body.get("note") or "").strip()[:200]
+            if not uid:
+                raise ValueError("缺少 uid")
+            rec = self.hub.record(uid) or {}  # 面板只留最近 50 句，老的查不到也照样记
+            log.emit("panel", "user_flag", note or "（没写备注）", level="warn", uid=uid, text=(rec.get("text") or "")[:80] or None,
+                     reply=(rec.get("reply") or "")[:160] or None, verdict=rec.get("verdict") or None)
+            self.hub.update(uid, flag=note or "有问题")
+            return 200, {"ok": True}
+
+        self.register_post("/api/flag", flag)
 
     def route_get(self, path: str, query: dict) -> tuple[int, dict] | None:
         """query 已拍平成 {键: 第一个值}。没注册这条路径返回 None。"""
@@ -91,11 +111,14 @@ class PanelBackend:
     def control(self, action: str) -> tuple[bool, str]:
         if action not in CONTROL_ACTIONS:
             return False, f"不认识的操作：{action}"
+        self._elog.emit("panel", "panel.control", f"面板：{action}", action=action)
         return self._control(action)
 
     def update_settings(self, patch: dict) -> tuple[bool, dict | str]:
         try:
-            return True, to_dict(self.store.update(patch))
+            new = to_dict(self.store.update(patch))
+            self._elog.emit("panel", "panel.settings", "面板改设置：" + ",".join(patch), changed=list(patch), patch=patch)
+            return True, new
         except ValueError as e:
             return False, str(e)
         except OSError as e:  # 文件被别的程序占着（杀毒、编辑器）：设置没变，告诉页面

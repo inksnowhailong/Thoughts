@@ -267,6 +267,7 @@ class VoiceDaemon:
         self.panel.register_get("/api/speaker", self._speaker_info)
         self.panel.register_post("/api/speaker", self._speaker_action)
         self.panel.attach_prompts(PromptService(WorkspaceFiles()), self._param_consts)  # B2：参数表 + 提示词编辑
+        self.panel.attach_flags(elog.get())  # 「这句有问题」+ 面板改设置 / 控制进事件流
         self.pending = PendingConfirm()
         self.audit = AuditTail(self._on_tool, on_gate=self._on_gate)
         self.store.subscribe(self._apply_settings)

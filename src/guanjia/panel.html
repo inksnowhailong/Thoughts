@@ -84,6 +84,7 @@
   .ed-warn { background:#3a2a10; border:1px solid var(--warn); border-radius:6px; padding:8px; margin:6px 0; }
   .hist-list { max-height:180px; overflow:auto; margin:4px 0; }
   .hist-list div { cursor:pointer; padding:2px 6px; font:12px Consolas,monospace; } .hist-list div:hover { background:#1e2935; }
+  .flagrow { display:flex; gap:10px; align-items:center; margin:8px 0; } .flagnote { color:var(--warn); }
 </style>
 </head>
 <body>
@@ -305,7 +306,7 @@ function renderRows() {
     const r = S.records.get(S.order[i]);
     if (!r || (only && r.verdict !== "accept")) continue;
     const tr = el("tr", { class: r.id === S.selected ? "sel" : "" },
-      el("td", { text: hhmmss(r.t0) }), el("td", { text: r.text || "" }),
+      el("td", { text: hhmmss(r.t0) }), el("td", { text: (r.flag ? "⚑ " : "") + (r.text || "") }),
       el("td", { text: r.score == null ? "—" : r.score.toFixed(2) }),
       el("td", { class: "v-" + r.verdict, text: (VERDICT[r.verdict] || "处理中") + (r.reason && r.verdict !== "accept" ? "：" + r.reason : "") }),
       el("td", { text: ms(r.timings && r.timings.first_sound_ms) }));
@@ -332,6 +333,20 @@ function renderDetail() {
   add("念出来", (r.spoken || []).length + " 句"); add("没念出来", (r.unspoken || []).join(" / "));
   if (r.error) add("错误", r.error);
   box.append(kv);
+  // 「这句有问题」：写一条 user_flag 事件，之后用 logq --flags 一眼找到；备注可空
+  const flagRow = el("div", { class: "flagrow" });
+  const flagBtn = el("button", { "data-alt": "flag-button", text: "这句有问题" });
+  flagBtn.addEventListener("click", async () => {
+    const note = prompt("哪里不对？（可空）", r.flag || "");
+    if (note === null) return;
+    flagBtn.disabled = true;
+    const res = await api("/api/flag", { uid: r.id, note });
+    flagBtn.disabled = false;
+    flagBtn.textContent = res.ok ? "已标记，可再改备注" : "标记失败，再点一次";
+  });
+  flagRow.append(flagBtn);
+  if (r.flag) flagRow.append(el("span", { class: "flagnote", "data-alt": "flag-note", text: "⚑ " + r.flag }));
+  box.append(flagRow);
   const t = r.timings || {};
   const parts = BAR.filter(([k]) => t[k] != null && !(k === "gateway_first_ms" && t.gateway_prep_ms != null));
   if (parts.length) {
