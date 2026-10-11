@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper
 from guanjia.textseg import SentenceSplitter, speakable
 
 log = logging.getLogger("guanjia.turns")
@@ -114,7 +115,8 @@ class TurnRunner:
     def __init__(self, open_stream: Callable[[str], Iterator[str]], synth: Callable[[str], tuple[np.ndarray, int]],
                  enqueue: Callable[[int, np.ndarray, int], None], current_gen: Callable[[], int], *,
                  first_max_chars: int = 20, max_tts_fails: int = 2, first_soft_min: int = 8,
-                 on_event: Callable[[str, dict], None] | None = None) -> None:
+                 on_event: Callable[[str, dict], None] | None = None,
+                 shaper: Callable[[], SpeechShaper | None] | None = None) -> None:
         self.open_stream = open_stream  # 文本 -> 网关回复增量（生成器）
         self.synth = synth  # 一句 -> (PCM, 采样率)，失败抛异常
         self.enqueue = enqueue  # (代次, PCM, 采样率) -> 进播放队列
@@ -123,6 +125,7 @@ class TurnRunner:
         self.first_soft_min = first_soft_min  # 首句在逗号处最早第几个字就切：首句越短合成越快
         self.max_tts_fails = max_tts_fails
         self.on_event = on_event
+        self.shaper = shaper  # 每轮调一次，返回本轮的口语整形器（None = 这轮不整形）；只用于 run_reply，/say 不整形
 
     def _emit(self, name: str, **data) -> None:
         if self.on_event is not None:
@@ -136,6 +139,7 @@ class TurnRunner:
         res = TurnResult()
         splitter = SentenceSplitter(first_hard_max_chars=self.first_max_chars, first_soft_min_chars=self.first_soft_min)
         fails = [0]  # 本轮 TTS 连续失败次数（列表便于 _speak 里修改）
+        shaper = self.shaper() if self.shaper is not None else None
         first = True
         try:
             for piece in self.open_stream(text):  # 不 break、不 close：打断时也要读完
@@ -144,14 +148,17 @@ class TurnRunner:
                     self._emit("first_token", t=time.time())
                 res.reply += piece
                 for sent in splitter.push(piece):
-                    self._speak(sent, gen, res, fails)
+                    self._speak_shaped(sent, splitter.last_end, gen, res, fails, shaper)
             for sent in splitter.flush():
-                self._speak(sent, gen, res, fails)
+                self._speak_shaped(sent, splitter.last_end, gen, res, fails, shaper)
             self._emit("stream_end", t=time.time(), ok=True)
         except Exception as e:  # noqa: BLE001  网关连接/报错：这一轮结束，交给上层记错误
             res.error = f"网关：{type(e).__name__}: {e}"
             res.unspoken.extend(s for s in map(speakable, splitter.flush()) if s)  # 断流时缓冲里半句也记账
             self._emit("stream_end", t=time.time(), ok=False, error=res.error)
+        stats = shaper.stats() if shaper is not None else None
+        if stats:  # 整形动过这一轮（省略了句子 / 切短了超长句）：报给事件日志
+            self._emit("shaped", t=time.time(), **stats)
         reply = res.reply.strip()
         if reply and reply.upper() != "NO_REPLY" and not (res.spoken or res.unspoken or res.error):
             res.unspoken.append(f"（整轮没有能念的内容）{reply[:60]}")  # 有字但全被过滤：也要在日志里看得见
@@ -165,6 +172,18 @@ class TurnRunner:
         for sent in [*splitter.push(text), *splitter.flush()]:
             self._speak(sent, gen, res, fails)
         return res
+
+    def _speak_shaped(self, sent: str, ends: bool, gen: int, res: TurnResult, fails: list[int],
+                      shaper: SpeechShaper | None) -> None:
+        """切句路径上的口语整形：整形器说念哪几块就念哪几块；省略的块不送 TTS，记进 unspoken（带前缀），回复本身照常收完。"""
+        if shaper is None:
+            self._speak(sent, gen, res, fails)
+            return
+        pieces, omitted = shaper.shape(sent, ends)
+        if omitted:
+            res.unspoken.append(SHAPED_PREFIX + omitted)
+        for p in pieces:
+            self._speak(p, gen, res, fails)
 
     def _speak(self, sent: str, gen: int, res: TurnResult, fails: list[int]) -> None:
         """合成并入队一句；任何异常都在这里吞掉记账，绝不往外抛（外抛会中断读流、导致连接被关闭）。"""

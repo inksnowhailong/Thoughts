@@ -30,6 +30,7 @@ class SentenceSplitter:
         self.first_soft_min = first_soft_min_chars  # 第一句在逗号处更早切，让首字尽快出声
         self._buf = ""
         self._emitted = 0
+        self.last_end = False  # 最近一次 yield 的块是不是在句末标点（含换行）处切的；块本身已去掉首尾空白，换行结尾看不出来
 
     def push(self, piece: str) -> Iterator[str]:
         """喂一段增量文本，yield 已经完整的句子。"""
@@ -38,14 +39,17 @@ class SentenceSplitter:
             cut = self._find_cut()
             if cut is None:
                 return
+            end = self._buf[cut - 1] in END
             sent, self._buf = self._buf[:cut].strip(), self._buf[cut:]
             if sent:
                 self._emitted += 1
+                self.last_end = end
                 yield sent
 
     def flush(self) -> Iterator[str]:
         rest, self._buf = self._buf.strip(), ""
         if rest:
+            self.last_end = False
             yield rest
 
     def _find_cut(self) -> int | None:

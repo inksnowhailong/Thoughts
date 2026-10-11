@@ -197,6 +197,8 @@ def turn_line(end: dict, gw: dict | None, flag: dict | None) -> str:
         bits.append(f"首音={t['first_sound_ms']}ms")
     if d.get("unspoken"):
         bits.append(f"漏念={d['unspoken']}")
+    if d.get("shaped"):  # 口语整形主动省略的（不是故障）：全文在面板记录里
+        bits.append(f"整形省略={d['shaped']}")
     if d.get("error"):
         bits.append("ERR=" + short(d["error"], 30))
     if flag:
@@ -284,7 +286,8 @@ def show_turn(uid: str, a: argparse.Namespace, out: Out) -> None:
         out.add(fmt_event(e, detail=a.detail, rel=t0))
     if end:
         out.add(f"-- 回复：{short(d.get('reply', ''), 400 if a.detail else 160)}")
-        out.add(f"-- 念出 {d.get('spoken')} 句，漏念 {d.get('unspoken')} 句；耗时 {short(d.get('timings'), 200)}"
+        out.add(f"-- 念出 {d.get('spoken')} 句，漏念 {d.get('unspoken')} 句" + (f"，整形省略 {d['shaped']} 块" if d.get("shaped") else "")
+                + f"；耗时 {short(d.get('timings'), 200)}"
                 + (f"；错误 {d['error']}" if d.get("error") else ""))
     render_gateway(gw, evs, t0, a, out)
     for h in diagnose(d, (gw or {}).get("data"), evs):

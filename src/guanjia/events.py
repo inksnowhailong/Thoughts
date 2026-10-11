@@ -20,6 +20,8 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from guanjia.speech_shape import SHAPED_PREFIX
+
 STAGES = ("mic", "vad", "asr", "speaker", "wake", "gateway", "tools", "tts", "play", "barge")
 STAGE_CN = {"mic": "麦克风", "vad": "人声检测", "asr": "识别", "speaker": "声纹", "wake": "唤醒词",
             "gateway": "主程序", "tools": "工具/审批", "tts": "合成", "play": "播放", "barge": "打断"}
@@ -87,9 +89,11 @@ def classify_log(name: str, msg: str) -> str:
 def turn_summary(rec: dict) -> dict:
     """一轮的摘要（统一事件日志的 turn.end 用）：不含 stages / timeline 这两份重复的全量。
     run_id 由网关侧异步补进记录，通常晚于 finish，这里多半没有；uid ↔ run 的关联看 brain.run / gateway.run 事件。"""
+    unspoken = rec.get("unspoken") or []
+    shaped = sum(1 for x in unspoken if isinstance(x, str) and x.startswith(SHAPED_PREFIX))  # 口语整形主动省略的，不算「漏念」
     return {"source": rec.get("source"), "verdict": rec.get("verdict") or "", "reason": rec.get("reason") or None,
             "text": (rec.get("text") or "")[:60], "reply": (rec.get("reply") or "")[:160],
-            "spoken": len(rec.get("spoken") or []), "unspoken": len(rec.get("unspoken") or []),
+            "spoken": len(rec.get("spoken") or []), "unspoken": len(unspoken) - shaped, "shaped": shaped or None,
             "tools": [f"{t.get('tool')}:{t.get('decision')}" for t in rec.get("tools") or []] or None,
             "timings": rec.get("timings") or None, "error": rec.get("error") or None, "run_id": rec.get("run_id")}
 

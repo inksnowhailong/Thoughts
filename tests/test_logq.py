@@ -282,6 +282,9 @@ with tempfile.TemporaryDirectory() as tmp:
     text, _ = runb3("--runs", "3", "--agent-db", str(d / "nope.sqlite"))
     check(text.strip() == "", "网关库不存在时 --runs 空输出不抛错")
 
+line = logq.turn_line({"ts": 1_800_000_000.0, "uid": "u1", "data": {"source": "mic", "verdict": "accept", "text": "x", "reply": "y", "shaped": 2, "unspoken": 0}}, None, None)
+check("整形省略=2" in line and "漏念" not in line, "turn line shows shaped chunks separately from missed ones")
+
 # 时间解析
 now = 1_800_000_000.0
 check(logq.parse_time("10m", now) == now - 600 and logq.parse_time("2h", now) == now - 7200, "parse_time 相对时间")

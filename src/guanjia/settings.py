@@ -30,6 +30,7 @@ class Settings:
     min_chars: int = 2  # 去掉标点后少于这么多字的片段直接忽略（免喊窗口里"好/行/对/要/是/不/停"例外）
     earcon: bool = True  # 说完话立即放提示音
     ack_text: str = "在呢"  # 只喊唤醒词时的应答（TTS 不在时改放提示音）
+    speech_max_sentences: int = 2  # 语音轮最多念几句（口语整形，见 speech_shape.py）；多的只在面板看；0 = 不整形、全念
 
 
 _LIMITS = {
@@ -37,7 +38,9 @@ _LIMITS = {
     "spk_threshold": (0.0, 0.9),
     "barge_rms_min": (0.001, 0.05),
     "min_chars": (1, 6),
+    "speech_max_sentences": (0, 10),
 }
+_INT_KEYS = ("min_chars", "speech_max_sentences")
 
 
 def from_dict(data: dict, base: Settings = Settings()) -> Settings:
@@ -68,7 +71,7 @@ def from_dict(data: dict, base: Settings = Settings()) -> Settings:
     for key, (lo, hi) in _LIMITS.items():
         if key in data:
             try:
-                v = int(data[key]) if key == "min_chars" else float(data[key])
+                v = int(data[key]) if key in _INT_KEYS else float(data[key])
             except (TypeError, ValueError):
                 raise ValueError(f"{key} 要是数字") from None
             if not lo <= v <= hi:

@@ -58,6 +58,7 @@ from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
 from guanjia.runtrace import run_summary
 from guanjia.seg_filter import is_hollow_segment, is_unconfirmed_by_stream
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
+from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
 from guanjia.tts_client import TTSClient
@@ -256,7 +257,7 @@ class VoiceDaemon:
             open_stream=lambda text: self.brain.stream(tag_voice_text(text)),
             synth=self.tts.synth, enqueue=self._enqueue_pcm, current_gen=lambda: self._gen,
             first_max_chars=FIRST_SENT_MAX_CHARS, max_tts_fails=TTS_MAX_FAILS, first_soft_min=FIRST_SENT_SOFT_MIN,
-            on_event=self._on_turn_event)
+            on_event=self._on_turn_event, shaper=self._new_shaper)
         self._earcon = earcon(self.sr)
         self._ack_text = ""  # _ack_pcm 是哪句应答合成的
         self.barge = BargeDetector(BargeConfig(guard_ms=BARGE_GUARD_MS, tail_ms=BARGE_TAIL_MS, rms_min=s.barge_rms_min,
@@ -635,8 +636,11 @@ class VoiceDaemon:
                 self.hub.stage(uid, "gateway", "active", "请求已发出")
                 res = self.runner.run_reply(text, gen)
                 log.info("reply: %s", res.reply)
-            if res.unspoken:
-                log.warning("unspoken %d (aborted=%s): %s", len(res.unspoken), res.aborted, " / ".join(res.unspoken)[:300])
+            real_unspoken = [x for x in res.unspoken if not x.startswith(SHAPED_PREFIX)]  # 口语整形主动省略的不算「没念出来」
+            if real_unspoken:
+                log.warning("unspoken %d (aborted=%s): %s", len(real_unspoken), res.aborted, " / ".join(real_unspoken)[:300])
+            if len(real_unspoken) != len(res.unspoken):
+                log.info("speech shaped: %d chunk(s) left unread (full reply is on the panel)", len(res.unspoken) - len(real_unspoken))
             if res.error:
                 self._set_error(res.error)
             elif res.spoken:
@@ -780,6 +784,11 @@ class VoiceDaemon:
                   **{k: s.get(k) for k in ("run_id", "provider", "model", "channel", "stop", "final_status", "usage", "tools",
                                            "aborted", "timed_out", "prompt_error", "texts", "phases")})
 
+    def _new_shaper(self) -> SpeechShaper | None:
+        """每轮语音回复调一次（TurnRunner.run_reply）：按当前设置建口语整形器；speech_max_sentences=0 = 这轮不整形。"""
+        n = self.store.current.speech_max_sentences
+        return SpeechShaper(n) if n > 0 else None
+
     def _on_turn_event(self, name: str, data: dict) -> None:
         """TurnRunner 的进度 → 面板环节状态与耗时记点。"""
         uid, m = self._turn_uid, self._turn_marks
@@ -792,6 +801,10 @@ class VoiceDaemon:
             # uid ↔ 网关 run 的关联点：流里第一个 chunk 的 id 就是 trajectory 的 run_id
             elog.emit("brain", "brain.run", uid=uid, run_id=getattr(self.brain, "last_run_id", None),
                       first_ms=round((t - m["turn_start"]) * 1000))
+        elif name == "shaped":  # 口语整形动过这一轮：原句数 / 字数、念出句数、省略块数
+            elog.emit("voice", "speech.shaped",
+                      f"整形：原 {data.get('sentences')} 句 → 念 {data.get('spoken_sentences')} 句，省略 {data.get('omitted')} 块",
+                      uid=uid, **{k: v for k, v in data.items() if k != "t"})
         elif name == "sentence":
             m.setdefault("first_sentence", t)
         elif name == "tts_start":
