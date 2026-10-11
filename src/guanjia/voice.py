@@ -48,12 +48,13 @@ from guanjia.audittail import AuditTail
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.control import CONTROL_PORT, start_control_server
+from guanjia.enroll_session import EnrollSession
 from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
 from guanjia.runtrace import run_phases
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
-from guanjia.speaker import SpeakerGate
+from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
 from guanjia.tts_client import TTSClient
 from guanjia.turns import Heard, SayItem, TurnRunner
@@ -183,6 +184,8 @@ class VoiceDaemon:
     _turn_uid = None
     _turn_is_say = False  # 这一轮是 /say（主程序让念）：念的时候、念完都不算免喊窗口
     _turn_gen = -1
+    enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
+    _spare_gate = None  # SpeakerGate | None：库为空时守护进程没建声纹门，注册用另建的这把
     _turn_marks = None
     _followup_until = 0.0
     _ack_pcm = None
@@ -247,6 +250,8 @@ class VoiceDaemon:
         self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
                                      on_change=self._on_health, interval=HEALTH_EVERY_SEC)
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
+        self.panel.register_get("/api/speaker", self._speaker_info)
+        self.panel.register_post("/api/speaker", self._speaker_action)
         self.audit = AuditTail(self._on_tool)
         self.store.subscribe(self._apply_settings)
         self.tray = None  # run() 里按 tray_on 创建
@@ -349,6 +354,16 @@ class VoiceDaemon:
         for seg in self.vad.pop_segments():
             stream, self._asr_stream = self._asr_stream, self.asr.new_stream()  # 每句一条新流，不带上一句残留
             if seg.duration < MIN_UTT_SEC:
+                continue
+            sess = self.enroll
+            if sess is not None:  # 注册模式：同一条链路的段只拿来注册，不识别、不判定、不送主线
+                if sess.expired():
+                    self.enroll = None
+                    log.info("enroll timeout, cancelled")
+                    continue
+                r = sess.feed(seg.samples, playing=self._playing())
+                self.hub.stage(None, "speaker", "done" if r.get("ok") else "blocked",
+                               "注册：收下" if r.get("ok") else f"注册：{r.get('reason')}")
                 continue
             self.hub.stage(None, "asr", "active", "识别中")
             t_asr = time.monotonic()
@@ -693,12 +708,86 @@ class VoiceDaemon:
             return False, "muted"
         if self._paused.is_set():
             return False, "gaming"
+        if self.enroll is not None:  # 声纹注册中：不让电脑出声，免得盖住主人的话
+            return False, "enrolling"
         if sum(isinstance(x, SayItem) for x in list(self.text_q.queue)) >= SAY_MAX_PENDING:
             return False, "busy"
         uid = self.hub.new_utterance("say", text=text, verdict="say", reason="主程序让电脑念")
         self.text_q.put(SayItem(text, uid))
         log.info("say queued: %s", text)
         return True, "queued"
+
+    # ---------- 声纹注册（面板「声纹」卡片） ----------
+    def _ensure_gate(self) -> SpeakerGate:
+        """注册用的声纹门：平时那把；库为空时守护进程没建门，就另建一把，保存后接上。"""
+        if self.gate is not None:
+            return self.gate
+        if self._spare_gate is None:
+            self._spare_gate = SpeakerGate(threshold=self.store.current.spk_threshold)
+        return self._spare_gate
+
+    def _speaker_info(self, query: dict) -> tuple[int, dict]:
+        g = self.gate or self._spare_gate
+        return 200, {"ok": True, "model": SPK_MODEL.stem, "store": STORE.name, "people": g.counts() if g else {},
+                     "legacy": bool(g and g.legacy), "backup": backup_path(STORE).exists(),
+                     "threshold": self.store.current.spk_threshold, "enabled": self.speaker_gate,
+                     "session": self.enroll.snapshot() if self.enroll else None}
+
+    def _speaker_action(self, body: dict) -> tuple[int, dict]:
+        """面板「声纹」卡片：start / discard_last / enough / cancel / commit / rollback。"""
+        action = str(body.get("action") or "")
+        sess = self.enroll
+        if action == "start":
+            if not self.speaker_gate:
+                return 400, {"ok": False, "reason": "声纹已关闭（--no-gate），不能注册"}
+            if sess is not None:
+                return 409, {"ok": False, "reason": "已经在注册了"}
+            if self.state == "SPEAKING" or not self.text_q.empty():
+                return 409, {"ok": False, "reason": "正在回话，等它说完再开始"}
+            name = str(body.get("name") or "我").strip()[:8] or "我"
+            gate = self._ensure_gate()
+            self.enroll = EnrollSession(name, gate.embed, old_refs=gate.refs(name))
+            log.info("enroll start: %s", name)
+            return 200, {"ok": True, "session": self.enroll.snapshot()}
+        if action == "rollback":
+            if sess is not None:
+                return 409, {"ok": False, "reason": "先结束当前注册"}
+            gate = self._ensure_gate()
+            if not gate.rollback():
+                return 404, {"ok": False, "reason": "没有注册前的备份"}
+            if self.gate is None and gate.names():
+                gate.threshold = self.store.current.spk_threshold
+                self.gate = gate
+            log.warning("speaker store rolled back to %s", backup_path(STORE).name)
+            return 200, {"ok": True, "people": gate.counts(), "legacy": gate.legacy}
+        if sess is None:
+            return 409, {"ok": False, "reason": "没有在注册"}
+        if action == "cancel":
+            self.enroll = None
+            log.info("enroll cancelled")
+            return 200, {"ok": True}
+        if action == "discard_last":
+            sess.discard_last()
+        elif action == "enough":
+            if not sess.to_testing():
+                return 409, {"ok": False, "reason": "至少要 8 段才能自测"}
+        elif action == "commit":
+            if sess.state != "ready":
+                return 409, {"ok": False, "reason": "先说一句自测"}
+            gate = self._ensure_gate()
+            backup = gate.backup()
+            gate.set_person(sess.name, sess.embs())  # 只写盘和换字典；提取向量只在前端线程做
+            if self.gate is None:
+                gate.threshold = self.store.current.spk_threshold
+                self.gate = gate
+            self.enroll = None
+            log.info("enroll saved: %s n=%d test=%.3f old=%s backup=%s", sess.name, len(sess.samples), sess.test_score,
+                     sess.test_old_score, backup.name if backup else "-")
+            return 200, {"ok": True, "people": gate.counts(), "test_score": sess.test_score,
+                         "test_old_score": sess.test_old_score}
+        else:
+            return 400, {"ok": False, "reason": f"不认识的操作：{action}"}
+        return 200, {"ok": True, "session": sess.snapshot()}
 
     def status(self) -> dict:
         """控制口 /status 与面板状态栏。"""
@@ -831,10 +920,11 @@ class VoiceDaemon:
     def run(self) -> None:
         logging.getLogger().addHandler(HubLogHandler(self.hub))
         s = self.store.current
-        log.info("device rate %d, in=%s out=%s, speakers=%s(%s), gate=%s@%.2f, wake=%s(required=%s) followup=%.0fs, "
+        log.info("device rate %d, in=%s out=%s, speakers=%s(%s) legacy=%s n=%s, gate=%s@%.2f, wake=%s(required=%s) followup=%.0fs, "
                  "mic_gain=%.1f, aec=%s, barge=%dms guard=%dms rms_min=%.4f ratio=%.1f, tts_timeout=%.0fs, session=%s, "
                  "control=127.0.0.1:%d", self.sr, self.in_dev, self.out_dev, self.gate.names() if self.gate else "off",
-                 self.gate.model.stem if self.gate else "-", self.gate_mode, s.spk_threshold, "/".join(s.wake_words),
+                 self.gate.model.stem if self.gate else "-", self.gate.legacy if self.gate else "-",
+                 self.gate.counts() if self.gate else "-", self.gate_mode, s.spk_threshold, "/".join(s.wake_words),
                  s.wake_required, s.follow_up_sec, self.mic_gain, "on" if self.aec else "off", BARGE_MS, BARGE_GUARD_MS,
                  s.barge_rms_min, BARGE_FLOOR_RATIO, TTS_TIMEOUT_SEC, MAIN_SESSION_KEY, self.control_port)
         try:

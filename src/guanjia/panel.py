@@ -31,6 +31,31 @@ class PanelBackend:
         self._inject = inject
         self.html_path = html_path
         self.token = token or secrets.token_urlsafe(24)
+        # 通用路由表：功能模块往里注册 /api/xxx，control.py 不用再改。路由函数返回 (状态码, JSON)，抛 ValueError 回 400
+        self._get: dict[str, Callable[[dict], tuple[int, dict]]] = {}
+        self._post: dict[str, Callable[[dict], tuple[int, dict]]] = {}
+
+    def register_get(self, path: str, fn: Callable[[dict], tuple[int, dict]]) -> None:
+        self._get[path] = fn
+
+    def register_post(self, path: str, fn: Callable[[dict], tuple[int, dict]]) -> None:
+        self._post[path] = fn
+
+    @staticmethod
+    def _call(fn: Callable[[dict], tuple[int, dict]], arg: dict) -> tuple[int, dict]:
+        try:
+            return fn(arg)
+        except ValueError as e:
+            return 400, {"ok": False, "reason": str(e)}
+
+    def route_get(self, path: str, query: dict) -> tuple[int, dict] | None:
+        """query 已拍平成 {键: 第一个值}。没注册这条路径返回 None。"""
+        fn = self._get.get(path)
+        return None if fn is None else self._call(fn, query)
+
+    def route_post(self, path: str, body: dict) -> tuple[int, dict] | None:
+        fn = self._post.get(path)
+        return None if fn is None else self._call(fn, body)
 
     def html(self) -> bytes:
         """每次现读文件（改了页面刷新即可看到），把令牌填进占位符。"""

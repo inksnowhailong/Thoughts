@@ -57,6 +57,13 @@
   .form { display:grid; grid-template-columns: 150px 1fr; gap:6px 10px; align-items:center; max-width:640px; }
   .hint { color:var(--dim); font-size:12px; }
   #msg, #injectResult { margin-top:6px; }
+  .spk-prompt { font-size:22px; font-weight:700; margin:6px 0; }
+  .spk-ex { color:var(--dim); font-size:15px; }
+  .spk-bars { display:grid; grid-template-columns: 110px 1fr 50px; gap:4px 8px; align-items:center; max-width:560px; margin:8px 0; }
+  .spk-track { height:10px; border-radius:5px; background:#0c1116; overflow:hidden; }
+  .spk-fill { height:100%; background:var(--busy); } .spk-fill.full { background:var(--ok); }
+  .spk-ok { color:var(--ok); } .spk-bad { color:#ff8b8b; } .spk-warn { color:var(--warn); }
+  .box.clickable { cursor:pointer; }
 </style>
 </head>
 <body>
@@ -104,6 +111,33 @@
       <label><input type="checkbox" id="autoscroll" checked> 自动滚到底</label>
     </div>
     <div id="logs"></div>
+  </section>
+  <section id="spkCard" data-alt="speaker-card">
+    <h2>声纹（让它认得出是你的声音）</h2>
+    <div id="spkIdle" data-alt="speaker-idle">
+      <div id="spkInfo" class="hint">读取中…</div>
+      <div class="filters">
+        <label>名字 <input type="text" id="spkName" size="6" maxlength="8" value="我"></label>
+        <button id="btnEnrollStart">开始重新注册</button>
+        <button id="btnEnrollRollback">回滚到注册前</button>
+        <span id="spkMsg" class="hint"></span>
+      </div>
+      <div class="hint">重新注册会替换这个名字原有的全部样本；注册期间它不会回应任何话，10 分钟没动静自动退出。</div>
+    </div>
+    <div id="spkLive" data-alt="speaker-session" hidden>
+      <div id="spkPrompt" class="spk-prompt"></div>
+      <div id="spkExamples" class="spk-ex"></div>
+      <div id="spkBars" class="spk-bars"></div>
+      <div id="spkLast"></div>
+      <div id="spkResult"></div>
+      <div class="filters">
+        <button id="btnEnrollDiscard">删掉上一段</button>
+        <button id="btnEnrollEnough">这些够了，去自测</button>
+        <button id="btnEnrollCommit">保存</button>
+        <button id="btnEnrollCancel">取消</button>
+        <span id="spkLeft" class="hint"></span>
+      </div>
+    </div>
   </section>
   <section>
     <h2>设置（保存后立即生效，不用重启）</h2>
@@ -187,8 +221,9 @@ function renderFlow() {
     let st = rec && rec.stages[stage] ? rec.stages[stage] : null;
     const live = S.live[stage];
     if (live && (!rec || live.t > (st ? st.t1 || st.t0 : rec.t0))) st = live;
-    const box = el("div", { class: "box " + (st ? st.state : ""), title: STATE_CN[st && st.state] || "" },
+    const box = el("div", { class: "box " + (st ? st.state : "") + (stage === "speaker" ? " clickable" : ""), title: STATE_CN[st && st.state] || "" },
       el("div", { class: "name", text: S.names[stage] || stage }), el("div", { class: "note", text: st ? (st.note || STATE_CN[st.state] || "") : "" }));
+    if (stage === "speaker") box.addEventListener("click", () => $("spkCard").scrollIntoView({ behavior: "smooth" }));
     if (stage === "barge") flow.append(el("span", { class: "arrow", text: "｜" }));
     else if (i > 0) flow.append(el("span", { class: "arrow", text: "→" }));
     flow.append(box);
@@ -323,6 +358,91 @@ $("btnInject").addEventListener("click", async () => {
                                        : "失败：" + (d.reason || "未知错误");
 });
 
+// ---------- 声纹注册 ----------
+const GROUP_CN = { near: "近处", far: "远处（2～3 米）", loud: "大声 / 带情绪" };
+let spkTimer = null;
+async function getJson(path) {
+  const r = await fetch(path + "?token=" + encodeURIComponent(TOKEN), { cache: "no-store" });
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* 空回应 */ }
+  return { ok: r.ok && data.ok !== false, data };
+}
+function spkSay(text, cls) { const m = $("spkMsg"); m.className = "hint " + (cls || ""); m.textContent = text || ""; }
+function renderSpeakerIdle(info) {
+  const people = Object.entries(info.people || {}).map(([n, c]) => `${n} ${c} 段`).join("、") || "还没有人";
+  const fmt = info.legacy ? "（旧格式：每人只有 1 个向量，建议重新注册）" : "";
+  $("spkInfo").textContent = info.enabled === false ? "声纹已关闭（--no-gate），不能注册"
+    : `库：${people}${fmt}　门槛 ${info.threshold}（只管免喊窗口）　注册前备份：${info.backup ? "有" : "没有"}`;
+  $("btnEnrollStart").disabled = info.enabled === false;
+  $("btnEnrollRollback").disabled = !info.backup;
+}
+function renderSession(s) {
+  const bars = $("spkBars");
+  bars.textContent = "";
+  for (const g of s.groups) {
+    const fill = el("div", { class: "spk-fill" + (g.have >= g.need ? " full" : "") });
+    fill.style.width = Math.min(100, g.have / g.need * 100) + "%";
+    bars.append(el("div", { text: GROUP_CN[g.key] || g.key }), el("div", { class: "spk-track" }, fill), el("div", { text: `${g.have}/${g.need}` }));
+  }
+  const prompts = { recording: s.prompt, testing: "再随便说一句话自测——这句不会存进去", ready: "自测完成，确认没问题就保存" };
+  $("spkPrompt").textContent = prompts[s.state] || "";
+  $("spkExamples").textContent = s.state === "recording" ? "可以说：" + s.examples.join(" ／ ") : "";
+  const last = s.last, lastBox = $("spkLast");
+  lastBox.className = last ? (last.ok ? "spk-ok" : "spk-bad") : "hint";
+  lastBox.textContent = !last ? "说一句话，说完停一下" : last.ok ? `收下了（${last.info.sec} 秒）` : last.reason;
+  const res = $("spkResult");
+  res.textContent = "";
+  if (s.state === "ready") {
+    const oldTxt = s.test_old_score == null ? "（原来没有这个名字）" : `旧库 ${s.test_old_score.toFixed(2)}`;
+    const worse = s.test_old_score != null && s.test_score < s.test_old_score;
+    res.className = worse ? "spk-warn" : "spk-ok";
+    res.textContent = `自测分数：新库 ${s.test_score.toFixed(2)} ／ ${oldTxt}` + (worse ? "　新分数比旧库低，可以放弃重来" : "");
+  }
+  $("btnEnrollDiscard").disabled = s.state !== "recording" || s.total === 0;
+  $("btnEnrollEnough").disabled = s.state !== "recording" || s.total < s.min_total;
+  $("btnEnrollCommit").disabled = s.state !== "ready";
+  $("spkLeft").textContent = `已收 ${s.total} 段（至少 ${s.min_total} 段），剩 ${s.left_sec} 秒`;
+}
+function showSpeaker(info) {
+  const live = !!info.session;
+  $("spkLive").hidden = !live;
+  $("spkIdle").hidden = live;
+  if (live) renderSession(info.session); else renderSpeakerIdle(info);
+  if (live && !spkTimer) spkTimer = setInterval(refreshSpeaker, 1000);
+  if (!live && spkTimer) { clearInterval(spkTimer); spkTimer = null; }
+}
+async function refreshSpeaker() {
+  const r = await getJson("/api/speaker");
+  if (r.ok) showSpeaker(r.data);
+}
+async function speakerAction(body, okText) {
+  const r = await api("/api/speaker", body);
+  if (!r.ok) {
+    const why = "没成功：" + (r.data.reason || "未知错误");
+    spkSay(why, "spk-bad");
+    if (!$("spkLive").hidden) alert(why);  // 注册中提示条看不到，弹一下
+  }
+  else if (okText) spkSay(okText, "spk-ok");
+  await refreshSpeaker();
+  return r;
+}
+$("btnEnrollStart").addEventListener("click", () => {
+  if (!confirm("开始重新注册？会替换这个名字原有的全部样本（保存前可随时取消）。注册期间它不会回应任何话。")) return;
+  spkSay("");
+  speakerAction({ action: "start", name: $("spkName").value.trim() || "我" });
+});
+$("btnEnrollRollback").addEventListener("click", () => {
+  if (!confirm("回滚到最初的旧声纹库？现在的样本会被覆盖。")) return;
+  speakerAction({ action: "rollback" }, "已回滚到注册前的库");
+});
+$("btnEnrollDiscard").addEventListener("click", () => speakerAction({ action: "discard_last" }));
+$("btnEnrollEnough").addEventListener("click", () => speakerAction({ action: "enough" }));
+$("btnEnrollCancel").addEventListener("click", () => speakerAction({ action: "cancel" }, "已取消，库没有变化"));
+$("btnEnrollCommit").addEventListener("click", async () => {
+  const r = await speakerAction({ action: "commit" });
+  if (r.ok) spkSay(`已保存。自测：新库 ${r.data.test_score}${r.data.test_old_score == null ? "" : " ／ 旧库 " + r.data.test_old_score}`, "spk-ok");
+});
+
 // ---------- 控制 ----------
 $("btnMute").addEventListener("click", () => api("/api/control", { action: S.status.muted ? "unmute" : "mute" }));
 $("btnRestart").addEventListener("click", async () => {
@@ -354,7 +474,7 @@ async function start() {
   S.modules = snap.log_modules; S.hidden = new Set(snap.hidden_modules);
   for (const rec of snap.records) upsert(rec);
   S.logs = snap.logs || [];
-  buildFilters(); fillSettings(); renderAll(); renderLogs();
+  buildFilters(); fillSettings(); renderAll(); renderLogs(); refreshSpeaker();
   const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
   es.addEventListener("hello", () => banner(""));
   es.addEventListener("status", (e) => { S.status = JSON.parse(e.data).status; renderStatus(); });

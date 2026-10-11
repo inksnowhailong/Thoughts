@@ -8,6 +8,8 @@
     GET  /panel                 -> 面板页面（页面里带着本次启动随机生成的令牌）
     GET  /api/snapshot、/api/utterance?id=、/api/events（SSE）   令牌放查询参数 token=
     POST /api/control、/api/settings、/api/inject                 令牌放请求头 X-Guanjia-Token
+    其余 /api/* 由 PanelBackend 路由表提供（register_get / register_post，如 /api/speaker），同样要令牌与同源 Origin；
+    /api/* 请求体上限 256KB，旧接口仍是 8KB。
 
 防护：只绑 127.0.0.1、只接受本机来源；Host 必须是 127.0.0.1/localhost（挡 DNS 重绑定）；POST 必须是 application/json；
 独占端口，第二个实例绑不上。旧接口带 Origin 头一律 403（浏览器网页发起的都带）；/api/* 只放行同源 Origin
@@ -33,7 +35,8 @@ SLEEP_STATES = ("awake", "sleeping", "consolidating")
 SSE_HEARTBEAT_SEC = 15.0
 SSE_WRITE_TIMEOUT_SEC = 30.0  # 页面冻住（后台标签、休眠）不读时，写阻塞这么久就断开，让出名额
 SSE_MAX_CLIENTS = 5
-_MAX_BODY = 8192
+_MAX_BODY = 8192  # 旧接口（/say、/sleep-state）的请求体上限
+_MAX_BODY_API = 262144  # /api/*（要令牌）的上限：提示词、记忆这类整份文本要能存
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
@@ -65,6 +68,10 @@ class PanelAPI(Protocol):
     def update_settings(self, patch: dict) -> tuple[bool, dict | str]: ...
 
     def inject(self, text: str, dry_run: bool) -> dict: ...
+
+    def route_get(self, path: str, query: dict) -> tuple[int, dict] | None: ...
+
+    def route_post(self, path: str, body: dict) -> tuple[int, dict] | None: ...
 
 
 class _ExclusiveServer(ThreadingHTTPServer):
@@ -131,6 +138,9 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
 
         _body_read = False
 
+        def _body_limit(self) -> int:
+            return _MAX_BODY_API if urlsplit(self.path).path.startswith("/api/") else _MAX_BODY
+
         def _drain(self) -> None:
             """回应前把没读的请求体读掉：Windows 上带着未读数据关连接会发 RST，客户端可能收不到这条回应。"""
             if self._body_read or self.command != "POST":
@@ -141,7 +151,7 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
             except ValueError:
                 n = -1
             try:
-                if 0 <= n <= _MAX_BODY:
+                if 0 <= n <= self._body_limit():
                     self.rfile.read(n)
                 else:
                     self.connection.settimeout(0.2)
@@ -160,7 +170,7 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
             if n < 0:
                 self._send(400, {"ok": False, "reason": "bad_length"})
                 return None
-            if n > _MAX_BODY:
+            if n > self._body_limit():
                 self._send(413, {"ok": False, "reason": "too_large"})
                 return None
             self._body_read = True
@@ -192,7 +202,8 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
                 elif url.path == "/api/events":
                     self._sse()
                 else:
-                    self._send(404, {"ok": False, "reason": "not_found"})
+                    r = panel.route_get(url.path, {k: v[0] for k, v in query.items()})
+                    self._send(*(r if r is not None else (404, {"ok": False, "reason": "not_found"})))
             elif not is_api:
                 self._send(404, {"ok": False, "reason": "not_found"})
 
@@ -203,9 +214,6 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
                 return
             if is_api:
                 if not self._token_ok({}):
-                    return
-                if url.path not in ("/api/control", "/api/settings", "/api/inject"):
-                    self._send(404, {"ok": False, "reason": "not_found"})
                     return
             elif url.path not in ("/say", "/sleep-state"):
                 self._send(404, {"ok": False, "reason": "not_found"})
@@ -236,12 +244,15 @@ def make_control_server(api: ControlAPI, port: int = CONTROL_PORT, host: str = "
             elif url.path == "/api/settings":
                 ok, result = panel.update_settings(body)
                 self._send(200 if ok else 400, {"ok": ok, "settings": result} if ok else {"ok": False, "reason": result})
-            else:
+            elif url.path == "/api/inject":
                 text = str(body.get("text") or "").strip()
                 if not text or len(text) > SAY_MAX_CHARS:
                     self._send(400, {"ok": False, "reason": "bad_text"})
                     return
                 self._send(200, {"ok": True, **panel.inject(text, bool(body.get("dry_run", True)))})
+            else:  # 路由表里的 /api/*；没注册的路径 404
+                r = panel.route_post(url.path, body)
+                self._send(*(r if r is not None else (404, {"ok": False, "reason": "not_found"})))
 
         def _send_panel(self) -> None:
             data = panel.html()

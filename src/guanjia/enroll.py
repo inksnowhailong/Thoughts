@@ -1,7 +1,8 @@
-"""声纹注册：录 N 秒你的声音（自然说话即可），切出语音段，逐段叠加进声纹库。
+"""声纹注册（命令行版）：录 N 秒你的声音（自然说话即可），切出合格的语音段，每段存一个向量。
 
 用法：uv run python -m guanjia.enroll --name 我 --seconds 12 --in 20
-建议在实际使用的位置、用实际的麦克风录；同一个名字可以多次注册叠加（近/远、平静/带情绪各录一次效果最好）。
+默认「替换」这个人原有的全部样本；加 --append 则在原有样本后面追加（近/远、平静/带情绪各录一次，追加最稳）。
+保存前会备份旧库（pre-reenroll 只建一次，另有 .prev）。更省事的做法是用面板「声纹」卡片引导注册。
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 import numpy as np
 import sounddevice as sd
 
+from guanjia.enroll_session import quality
 from guanjia.speaker import SpeakerGate
 from guanjia.vad import VAD, Downsampler
 from guanjia.voice import AEC_ENABLED, MIC_GAIN, aec_cancel, apply_mic_gain, make_aec, pick_stream_rate
@@ -33,6 +35,7 @@ def main() -> None:
     ap.add_argument("--in", dest="in_dev", type=int, default=None)
     ap.add_argument("--mic-gain", type=float, default=MIC_GAIN, help="与守护进程一致的软件增益")
     ap.add_argument("--out", dest="out_dev", type=int, default=None, help="与守护进程相同的输出设备，用来取同一采样率")
+    ap.add_argument("--append", action="store_true", help="在这个名字原有的样本后追加（默认替换）")
     a = ap.parse_args()
 
     # 采样率与守护进程一致：取输出设备的默认采样率
@@ -46,18 +49,28 @@ def main() -> None:
     vad = VAD()
     for i in range(0, len(pcm), 1600):
         vad.push(pcm[i:i + 1600])
-    segs = [s for s in vad.flush() if s.duration >= 0.8]
+    segs = []
+    for s in vad.flush():
+        if s.duration < 0.8:
+            continue
+        ok, reason, _ = quality(s.samples)
+        if ok:
+            segs.append(s)
+        else:
+            print(f"跳过一段（{s.duration:.1f}s）：{reason}")
     if not segs:
-        print("没有检出足够长的语音段，请离麦近一点再试")
+        print("没有检出合格的语音段，请离麦近一点、说长一点再试")
         return
     gate = SpeakerGate()
-    for s in segs:
-        gate.enroll(a.name, s.samples)
-    print(f"声纹模型 {gate.model.name}，库 {gate.store.name}（GUANJIA_SPK_MODEL=campplus 可切回 CAM++）")
-    print(f"已叠加 {len(segs)} 段（共 {sum(s.duration for s in segs):.1f}s）到「{a.name}」；当前库：{gate.names()}")
+    embs = np.stack([gate.embed(s.samples) for s in segs])
+    if a.append and gate.refs(a.name) is not None:
+        embs = np.concatenate([gate.refs(a.name), embs])
+    backup = gate.backup()  # 整批一次写盘；旧库先备份
+    gate.set_person(a.name, embs)
+    print(f"声纹模型 {gate.model.name}，库 {gate.store.name}（备份：{backup.name if backup else '无'}）")
+    print(f"「{a.name}」现有 {len(embs)} 段样本（本次 {len(segs)} 段，共 {sum(s.duration for s in segs):.1f}s）；当前库：{gate.counts()}")
     print("自检：", gate.identify(np.concatenate([s.samples for s in segs])))
-    print("提示：同一名字可多次运行叠加。建议再各录一次：离远 2~3 米、大声/带情绪、平时随口说，"
-          "每次叠加都会让识别对远距离和情绪变化更稳。")
+    print("提示：想再补近/远、大声/带情绪的样本，加 --append 再录一次（打分取最像的 3 段平均，覆盖场景越多越稳）。")
 
 
 if __name__ == "__main__":
