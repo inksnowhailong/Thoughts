@@ -3,7 +3,8 @@
 数据源（全部只读）：
     tmp\\logs\\events-*.jsonl        新事件流（各进程一份，合并后按 ts 排序）
     tmp\\utterances.jsonl            旧记录（--turn 找不到新事件时兜底）
-    网关 trajectory / 网关日志       见 B3（--turn 的网关段、--runs、--payload）
+    网关 trajectory（只读）          --runs / --payload 兜底；--turn 的网关段来自 gateway.run 事件（语音进程一轮结束时摘好存下）
+    %TEMP%\\openclaw\\openclaw-日期.log  --turn 附本轮时间窗内的 WARN 以上与本 run 相关的网关日志行
 远程用法：scripts\\logq.cmd 会加 --out tmp\\logq-out.txt，再 scp 回来读，绕开 ssh 的 GBK 乱码。
 """
 
@@ -13,11 +14,27 @@ import argparse
 import base64
 import fnmatch
 import json
+import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from guanjia import runtrace
+from guanjia.events import redact
+
+try:
+    from guanjia.turns import claims_blocked, has_promise
+except Exception:  # noqa: BLE001  logq 在没有 numpy 的环境（比如拷到别处分析）也要能跑：退回最小词表
+    def has_promise(reply: str) -> bool:
+        return any(w in reply for w in ("我先", "我看看", "我查一下", "稍等", "马上", "这就", "让我", "我去", "我试试"))
+
+    def claims_blocked(reply: str) -> bool:
+        return any(w in reply for w in ("需要审批", "审批超时", "没批下来", "被拦", "需要放行"))
+
+TOOLISH = re.compile(r"<\|?tool|tool_call|function_call|\"name\"\s*:\s*\"\w+\"\s*,\s*\"arguments\"")
 
 ROOT = Path(__file__).resolve().parents[2]
 LOG_DIR = ROOT / "tmp" / "logs"
@@ -269,25 +286,149 @@ def show_turn(uid: str, a: argparse.Namespace, out: Out) -> None:
         out.add(f"-- 回复：{short(d.get('reply', ''), 400 if a.detail else 160)}")
         out.add(f"-- 念出 {d.get('spoken')} 句，漏念 {d.get('unspoken')} 句；耗时 {short(d.get('timings'), 200)}"
                 + (f"；错误 {d['error']}" if d.get("error") else ""))
-    render_gateway(gw, evs, t0, a, out)  # B3 实现；B2 阶段先是空函数
-    for h in diagnose(d, (gw or {}).get("data"), evs):  # B3 补全；B2 阶段只做本地规则
+    render_gateway(gw, evs, t0, a, out)
+    for h in diagnose(d, (gw or {}).get("data"), evs):
         out.add("!! " + h, force=True)
 
 
-def render_gateway(gw, evs, t0, a, out) -> None:  # B3 替换
-    pass
+# ---------- 网关段（B3）：本轮的 gateway.run 事件 + 网关日志 + 诊断提示 ----------
+def gw_log_lines(t0: float, t1: float, run_id: str | None, a: argparse.Namespace, limit: int = 12) -> list[str]:
+    """网关日志（%TEMP%\\openclaw\\openclaw-日期.log，JSON 行）里本轮时间窗内：含本 run_id 的行 + WARN 以上 + model-fetch 行。"""
+    gdir = a.gw_log_dir or Path(os.environ.get("TEMP", tempfile.gettempdir())) / "openclaw"
+    p = gdir / f"openclaw-{datetime.fromtimestamp(t0):%Y-%m-%d}.log"
+    try:
+        with p.open("rb") as fh:
+            fh.seek(max(0, p.stat().st_size - 20_000_000))  # 最多读尾部 20MB
+            raw = fh.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in raw:
+        try:
+            r = json.loads(ln)
+            ts = datetime.fromisoformat(r["time"]).timestamp()
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not (t0 - 1 <= ts <= t1 + 3):
+            continue
+        lv = (r.get("_meta") or {}).get("logLevelName", "")
+        msg = r.get("message") or " ".join(str(r[k]) for k in sorted(r) if k.isdigit())
+        if (run_id and run_id in ln) or lv in ("WARN", "ERROR", "FATAL") or "[model-fetch]" in msg:
+            out.append(f"+{round((ts - t0) * 1000):>6}ms gwlog {lv[:1]} {short(redact(msg), 130)}")
+    return out[-limit:]
 
 
-def diagnose(end_d: dict, gw_d: dict | None, evs: list[dict]) -> list[str]:  # B3 扩充
-    hints = []
+def render_gateway(gw: dict | None, evs: list[dict], t0: float, a: argparse.Namespace, out: Out) -> None:
+    if not gw:
+        return
+    g = gw.get("data") or {}
+    u = g.get("usage") or {}
+    out.add(f"-- 网关 run={short(g.get('run_id', ''), 24)} {g.get('provider')}/{g.get('model')} stop={g.get('stop')} "
+            f"状态={g.get('final_status')} token 入{u.get('input')}/出{u.get('output')}/缓存{u.get('cacheRead')}"
+            + (f" blob={g['blob']}" if g.get("blob") else ""))
+    ph = g.get("phases") or {}
+    if ph:
+        out.add("   阶段：" + " ".join(f"{k}=+{round((v - t0) * 1000)}ms" for k, v in sorted(ph.items(), key=lambda kv: kv[1])
+                                       if isinstance(v, (int, float))))
+    tools = g.get("tools") or []
+    if not tools:
+        out.add("   工具：本轮模型没有发起任何工具调用")
+    for x in tools:
+        mark = "✓" if x.get("ok") else ("✗" if x.get("ok") is False else "?")
+        out.add(f"   {mark} {x.get('name')} {x.get('ms')}ms exit={x.get('exit')} {short(x.get('args', ''), 70)}"
+                + (f" 错误：{short(x.get('err', ''), 80)}" if x.get("err") else ""))
+    for i, txt in enumerate(g.get("texts") or []):
+        out.add(f"   模型原文[{i}]：{short(txt, 400 if a.detail else 120)}")
+    t1 = max(e.get("ts", t0) for e in evs)
+    for ln in gw_log_lines(t0, t1, g.get("run_id"), a):
+        out.add(ln)
+
+
+def diagnose(end_d: dict, gw_d: dict | None, evs: list[dict]) -> list[str]:
+    """看一轮的常见毛病，给一句人话。只是线索，不是结论。"""
+    hints: list[str] = []
+    reply = end_d.get("reply") or " ".join((gw_d or {}).get("texts") or [])
+    tools = (gw_d or {}).get("tools") or []
+    blocked = [e for e in evs if e.get("ev") == "tool.audit" and str((e.get("data") or {}).get("decision", "")).startswith(
+        ("block", "approval-deny", "approval-timeout", "approval-cancelled"))]
+    gated = blocked or any(e.get("ev") in ("tool.gate", "pending.open") for e in evs)
+    if gw_d is not None:
+        if not tools and has_promise(reply) and gw_d.get("stop") == "stop":
+            hints.append("模型说了要做（承诺词），但这一轮一次工具调用都没发就正常结束了（stop）→ 模型行为问题，不是工具被拦；"
+                         "看有没有 nudge.sent 追问、追问轮是否做了")
+        bad = [x for x in tools if x.get("ok") is False]
+        if bad:
+            hints.append(f"工具失败 {len(bad)} 次：" + "；".join(f"{x.get('name')}: {short(x.get('err', ''), 60)}" for x in bad))
+        if gw_d.get("stop") not in (None, "stop", "toolUse", "tool_calls"):
+            hints.append(f"非正常结束 stopReason={gw_d.get('stop')}（length=输出被截断，error=模型侧报错）")
+        if gw_d.get("aborted") or gw_d.get("timed_out"):
+            hints.append(f"网关侧 aborted={gw_d.get('aborted')} timed_out={gw_d.get('timed_out')}：客户端断开或超时会取消本轮")
+        if gw_d.get("prompt_error"):
+            hints.append(f"提示词构建出错：{gw_d.get('prompt_error')}")
+    elif end_d.get("verdict") == "accept":
+        miss = any(e.get("ev") == "gateway.run_missing" for e in evs)
+        hints.append("没有网关侧记录" + ("（trajectory 5 次都没查到）" if miss else "") + "：用 --runs 10 看网关最近的 run")
+    if TOOLISH.search(reply):
+        hints.append("回复里像混进了工具调用文本：模型想调工具但格式没被网关识别")
+    if claims_blocked(reply) and not gated:
+        hints.append("回复声称被拦 / 要审批 / 要放行，但本轮没有任何拦截或待确认记录（tool.gate / tool.audit）→ 疑似模型编造，"
+                     "看有没有 nudge.sent（编造拦截追问）")
+    if blocked:
+        hints.append("分级插件拦下/审批未通过：" + "；".join(f"{(e.get('data') or {}).get('tool')} {(e.get('data') or {}).get('decision')}" for e in blocked))
     if end_d.get("unspoken"):
-        hints.append(f"有 {end_d['unspoken']} 句没念出来（被打断或 TTS 失败），看上面 tts.* / play.* 事件")
+        hints.append(f"有 {end_d['unspoken']} 句没念出来（被打断或 TTS 失败），看 tts.* / play.* 事件")
     if end_d.get("error"):
         hints.append("本轮报错：" + short(end_d["error"], 120))
     child = next(((e.get("data") or {}).get("child") for e in evs if e.get("ev") == "nudge.sent"), None)
     if child:
         hints.append(f"本轮触发了自动追问，追问轮：--turn {child}")
     return hints
+
+
+def show_runs(a: argparse.Namespace, out: Out) -> None:
+    """网关最近 N 个 run（不限语音），一行一个；能对上语音 uid 的标出来。"""
+    db = a.agent_db or runtrace.AGENT_DB
+    uid_of = {(e.get("data") or {}).get("run_id"): e.get("uid")
+              for e in load_events(time.time() - 3 * 86400, time.time() + 60, a.log_dir, "run_id")
+              if e.get("ev") in ("brain.run", "gateway.run")}
+    for rid in runtrace.recent_runs(a.runs, db):
+        s = runtrace.run_summary(rid, db)
+        if not s:
+            out.add(f"{short(rid, 30)} （还没结束或读不到）")
+            continue
+        t = (s.get("phases") or {}).get("session_started")
+        tools = s.get("tools") or []
+        bad = sum(1 for x in tools if x.get("ok") is False)
+        prompt = ((s.get("ctx") or {}).get("prompt")) or ""
+        out.add(f"{fmt_ts(t) if t else '?'} {s.get('channel') or s.get('trigger')} uid={uid_of.get(rid, '-')} "
+                f"stop={s.get('stop')} tools={len(tools)}" + (f"(失败{bad})" if bad else "")
+                + f" 「{short(prompt, 30)}」→「{short(' '.join(s.get('texts') or []), 40)}」 run={short(rid, 22)}")
+
+
+def show_payload(a: argparse.Namespace, out: Out) -> None:
+    """发给模型的上下文摘要：先找 gateway.run 的 blob，没有就现查 trajectory（可能已滚出窗口）。"""
+    key = a.payload
+    if re.fullmatch(r"u\d{6}-\d+", key):
+        gw = next((e for e in find_uid(key, a) if e.get("ev") == "gateway.run" and e.get("uid") == key), None)
+    else:
+        gw = next((e for e in load_events(time.time() - 3 * 86400, time.time() + 60, a.log_dir, key)
+                   if e.get("ev") == "gateway.run"), None)
+    rel = ((gw or {}).get("data") or {}).get("blob")
+    text = None
+    if rel:
+        try:
+            text = (a.log_dir / "blobs" / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = None  # blob 超过 7 天被清了：退回现查
+    if text is None:
+        rid = ((gw or {}).get("data") or {}).get("run_id") or key
+        s = runtrace.run_summary(rid, a.agent_db or runtrace.AGENT_DB)
+        if not s or not s.get("ctx"):
+            out.add(f"没有 {key} 的上下文（blob 不在、trajectory 也查不到）")
+            return
+        text = redact(json.dumps(s["ctx"], ensure_ascii=False, indent=1))
+    for ln in text.splitlines():
+        out.add(ln if a.detail else short(ln, LINE_WIDTH * 2))
 
 
 # ---------- 旧文本日志 ----------
@@ -355,9 +496,9 @@ def main(argv: list[str] | None = None) -> int:
     elif a.flags:
         flags(a, out)
     elif a.runs:
-        show_runs(a, out)  # B3
+        show_runs(a, out)
     elif a.payload:
-        show_payload(a, out)  # B3
+        show_payload(a, out)
     elif a.tail:
         tail_text(a, out)
     elif a.boot:
@@ -373,14 +514,6 @@ def main(argv: list[str] | None = None) -> int:
         list_events(a, out)
     out.emit(a.out)
     return 0
-
-
-def show_runs(a, out) -> None:  # B3 替换
-    out.add("（--runs 在 B3 实现）")
-
-
-def show_payload(a, out) -> None:  # B3 替换
-    out.add("（--payload 在 B3 实现）")
 
 
 if __name__ == "__main__":

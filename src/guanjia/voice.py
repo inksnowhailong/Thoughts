@@ -55,7 +55,7 @@ from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
 from guanjia.prompts import PromptService
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
-from guanjia.runtrace import run_phases
+from guanjia.runtrace import run_summary
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import Health, HealthMonitor, TrayView, tcp_alive, tray_view
@@ -713,16 +713,39 @@ class VoiceDaemon:
         return {k: v for k, v in t.items() if v is not None}
 
     def _fill_gateway_phases(self, uid: str, run_id: str, marks: dict) -> None:
-        """轮次结束后去网关会话库查这一轮的内部时间点，把网关首字拆成"网关准备"和"模型首字"。"""
-        for _ in range(3):
-            ph = run_phases(run_id)
-            if ph and "prompt_submitted" in ph:
-                t = {"gateway_prep_ms": round((ph["prompt_submitted"] - marks["turn_start"]) * 1000)}
-                if "first_token" in marks:
-                    t["model_first_ms"] = round((marks["first_token"] - ph["prompt_submitted"]) * 1000)
-                self.hub.update(uid, run_id=run_id, timings=t)
-                return
-            time.sleep(1.0)
+        """轮次结束后（后台线程，不碰首字）去网关会话库（只读）读这一轮的 trajectory：
+        1) 把网关首字拆成"网关准备"和"模型首字"；2) 摘要成一条 gateway.run 事件（模型 / stop / token / 每次工具调用成败），
+        发给模型的上下文另存 blob。trajectory 是 10MiB 滚动窗口，所以必须趁现在摘下来；写出要等 session.ended 前后，最多重试 5 次。"""
+        s = None
+        for i in range(5):
+            try:
+                s = run_summary(run_id)
+            except Exception:  # noqa: BLE001  读网关库出任何问题都不能影响语音
+                log.exception("run_summary failed")
+                s = None
+            if s:
+                break
+            if i < 4:
+                time.sleep(1.0)
+        if not s:
+            elog.emit("gateway", "gateway.run_missing", "trajectory 5 次都没读到", level="warn", uid=uid, run_id=run_id)
+            return
+        ph = s["phases"]
+        if "prompt_submitted" in ph:
+            t = {"gateway_prep_ms": round((ph["prompt_submitted"] - marks["turn_start"]) * 1000)}
+            if "first_token" in marks:
+                t["model_first_ms"] = round((marks["first_token"] - ph["prompt_submitted"]) * 1000)
+            self.hub.update(uid, run_id=run_id, timings=t)
+        blob = elog.blob(uid, "gwctx", s.pop("ctx", None)) if s.get("ctx") else None
+        tools = s.get("tools") or []
+        bad = [x for x in tools if x.get("ok") is False]
+        warn = bool(bad) or s.get("aborted") or s.get("timed_out") or s.get("prompt_error") \
+            or (s.get("final_status") not in (None, "success"))
+        short_model = str(s.get("model") or "").split("/")[-1]
+        elog.emit("gateway", "gateway.run", f"{short_model} stop={s.get('stop')} 工具 {len(tools)} 次" + (f"（失败 {len(bad)}）" if bad else ""),
+                  level="warn" if warn else "info", uid=uid, blob=blob,
+                  **{k: s.get(k) for k in ("run_id", "provider", "model", "channel", "stop", "final_status", "usage", "tools",
+                                           "aborted", "timed_out", "prompt_error", "texts", "phases")})
 
     def _on_turn_event(self, name: str, data: dict) -> None:
         """TurnRunner 的进度 → 面板环节状态与耗时记点。"""
@@ -733,6 +756,9 @@ class VoiceDaemon:
         if name == "first_token":
             m["first_token"] = t
             self.hub.stage(uid, "gateway", "active", f"首字 {round((t - m['turn_start']) * 1000)}ms")
+            # uid ↔ 网关 run 的关联点：流里第一个 chunk 的 id 就是 trajectory 的 run_id
+            elog.emit("brain", "brain.run", uid=uid, run_id=getattr(self.brain, "last_run_id", None),
+                      first_ms=round((t - m["turn_start"]) * 1000))
         elif name == "sentence":
             m.setdefault("first_sentence", t)
         elif name == "tts_start":
@@ -748,6 +774,10 @@ class VoiceDaemon:
         elif name == "stream_end":
             self.hub.stage(uid, "gateway", "done" if data.get("ok") else "blocked",
                            "回复完毕" if data.get("ok") else data.get("error", ""))
+            elog.emit("brain", "brain.stream_end", "回复完毕" if data.get("ok") else "断流", uid=uid,
+                      level="info" if data.get("ok") else "error", ok=bool(data.get("ok")), error=data.get("error"),
+                      ms=round((t - m["turn_start"]) * 1000), run_id=getattr(self.brain, "last_run_id", None),
+                      **dict(getattr(self.brain, "last_meta", None) or {}))
 
     def _on_tool(self, entry: dict) -> None:
         """审计跟随：主线会话的工具调用记到当前这一轮上（没有进行中的语音轮就只打日志）。"""

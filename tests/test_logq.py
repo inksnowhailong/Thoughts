@@ -177,6 +177,111 @@ with tempfile.TemporaryDirectory() as tmp:
     text, _ = run(d, "--tail", "voice", "-k", "other")
     check(text.strip() == "INFO other", "--tail 配合 -k 过滤")
 
+# ---------- B3：网关段、诊断、--runs、--payload、网关日志 ----------
+def iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="milliseconds")
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp)
+    gwdir = d / "gwlogs"
+    gwdir.mkdir()
+    U_PROMISE, U_BAD, U_FAKE, U_GATED, U_PARENT, U_CHILD = (f"u1400{i:02d}-0{i:02d}" for i in range(1, 7))
+    blob_rel = f"{datetime.fromtimestamp(BASE).strftime('%Y-%m-%d')}/{U_PROMISE}-gwctx.txt"
+    (d / "blobs" / blob_rel).parent.mkdir(parents=True)
+    (d / "blobs" / blob_rel).write_text('{\n "prompt": "[语音] 让你干的活干成怎么样了",\n "messages_total": 64\n}', encoding="utf-8")
+
+    def turn(t, uid, reply, **kw):
+        return [ev(t, "voice", "utt.new", "x", uid=uid, source="mic"),
+                ev(t + 1, "voice", "turn.end", "accept", uid=uid, source="mic", verdict="accept", text="x", reply=reply,
+                   spoken=1, unspoken=0, **kw)]
+
+    ok_tool = {"name": "exec", "ok": True, "ms": 120, "exit": 0, "args": "Get-Date"}
+    bad_tool = {"name": "web_fetch", "ok": False, "ms": 5, "exit": None, "args": "https://x", "err": "denied by guard"}
+    evs_ = [
+        *turn(100, U_PROMISE, "我先用只读方式找一下"), gw_event(102, U_PROMISE, [], blob=blob_rel, texts=["我先用只读方式找一下"],
+                                                      phases={"session_started": BASE + 100.1, "prompt_submitted": BASE + 100.2}),
+        *turn(110, U_BAD, "没成功"), gw_event(112, U_BAD, [ok_tool, bad_tool], texts=["没成功"]),
+        *turn(120, U_FAKE, "这个命令需要审批，已经超时没批下来"), gw_event(122, U_FAKE, [], texts=["需要审批"]),
+        *turn(130, U_GATED, "这个命令需要审批，请你确认"), gw_event(132, U_GATED, [], texts=["需要审批"]),
+        ev(131, "tool", "tool.gate", "block-need-confirm x", uid=U_GATED, decision="block-need-confirm"),
+        *turn(140, U_PARENT, "我先查一下"), gw_event(142, U_PARENT, [], texts=["我先查一下"]),
+        ev(143, "nudge", "nudge.check", "promise -> 追问", uid=U_PARENT, decision=True, why="nudge"),
+        ev(144, "nudge", "nudge.sent", "只说没做", uid=U_CHILD, parent=U_PARENT, child=U_CHILD, kind="promise"),
+        *turn(145, U_CHILD, "查完了", source_ok=True), gw_event(147, U_CHILD, [ok_tool], texts=["查完了"]),
+    ]
+    write_events(d, "voice", evs_)
+    # 网关日志：窗口内 3 行（WARN、含本 run、无关 INFO）+ 窗口外 1 行 WARN
+    day = datetime.fromtimestamp(BASE).strftime("%Y-%m-%d")
+    glines = []
+    for ts, lv, msg in ((BASE + 101, "WARN", "retrying request after 429"), (BASE + 101.5, "INFO", "run chatcmpl_aaaaaaaaaaaaaaaaaaaa ended with stopReason=stop"),
+                        (BASE + 101.6, "INFO", "weixin monitor heartbeat"), (BASE + 500, "WARN", "far away warning")):
+        glines.append(json.dumps({"time": iso(ts), "_meta": {"logLevelName": lv}, "message": msg}, ensure_ascii=False))
+    (gwdir / f"openclaw-{day}.log").write_text("\n".join(glines) + "\n", encoding="utf-8")
+
+    def runb3(*args):
+        return run(d, *args, "--gw-log-dir", str(gwdir))
+
+    text, _ = runb3("--turn", U_PROMISE)
+    check("!! 模型说了要做" in text and "一次工具调用都没发" in text, "承诺但零工具调用 → 诊断「模型行为问题」")
+    check("本轮模型没有发起任何工具调用" in text and "DeepSeek-V4-Flash" in text and "token 入100/出20/缓存50" in text, "网关段：模型、token、零工具调用")
+    import re
+
+    check(re.search(r"阶段：session_started=\+(99|100|101)ms prompt_submitted=\+(199|200|201)ms", text) is not None,
+          "阶段时间换成相对本轮首个事件的毫秒")
+    check("retrying request after 429" in text and "stopReason=stop" in text and "heartbeat" not in text and "far away" not in text,
+          "网关日志只带 WARN 与含 run_id 的行，窗口外和无关行不要")
+    check(f"blob={blob_rel}" in text, "网关段指出 blob 位置")
+
+    text, _ = runb3("--turn", U_BAD)
+    check("✗ web_fetch" in text and "✓ exec" in text and "!! 工具失败 1 次" in text and "denied by guard" in text, "失败工具带叉号和错误，诊断工具失败")
+
+    text, _ = runb3("--turn", U_FAKE)
+    check("疑似模型编造" in text, "声称被拦但没有任何拦截记录 → 诊断编造")
+    text, _ = runb3("--turn", U_GATED)
+    check("疑似模型编造" not in text, "有 tool.gate 记录时不报编造")
+
+    text, _ = runb3("--turn", U_PARENT)
+    check(f"追问轮：--turn {U_CHILD}" in text, "被追问的那一轮提示追问轮 uid")
+    text, _ = runb3("--turn", U_CHILD)
+    check("✓ exec" in text and "模型没有发起任何工具调用" not in text, "追问轮看自己的网关段")
+
+    text, _ = runb3("--recent", "10")
+    line = next(ln for ln in text.splitlines() if U_BAD in ln)
+    check("tools=2(失败1)" in line, "--recent 里工具失败数显示出来")
+
+    # --payload：blob 优先
+    text, _ = runb3("--payload", U_PROMISE)
+    check("messages_total" in text and "让你干的活干成怎么样了" in text, "--payload <uid> 读 blob")
+    text, _ = runb3("--payload", U_BAD, "--agent-db", str(d / "nope.sqlite"))
+    check("没有" in text and "上下文" in text, "没有 blob 也没有 trajectory → 给出提示不抛错")
+
+    # --runs：用临时 trajectory 库
+    import sqlite3
+
+    db = d / "agent.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("create table trajectory_runtime_events (session_id text, seq integer, run_id text, event_json text, created_at integer)")
+    t0 = int(BASE * 1000)
+    rows = [("session.started", {"messageProvider": "webchat"}), ("context.compiled", {"prompt": "[语音] 现在几点", "messages": [], "tools": []}),
+            ("tool.call", {"toolCallId": "c", "name": "exec", "args": {}}),
+            ("tool.result", {"toolCallId": "c", "name": "exec", "success": False, "result": {"content": [{"text": "boom"}]}}),
+            ("model.completed", {"stopReason": "stop"}), ("trace.artifacts", {"stopReason": "stop", "assistantTexts": ["三点整"]})]
+    for rid, off in (("chatcmpl_aaaaaaaaaaaaaaaaaaaa", 0), ("chatcmpl_trajonly00000000000", 1000)):  # 第二个只在 trajectory 里、事件流没有
+        for i, (typ, data) in enumerate(rows):
+            con.execute("insert into trajectory_runtime_events values ('s', ?, ?, ?, ?)",
+                        (off + i, rid, json.dumps({"traceSchema": "openclaw-trajectory", "type": typ, "data": data}, ensure_ascii=False), t0 + i * 10))
+    con.commit()
+    con.close()
+    text, _ = runb3("--runs", "3", "--agent-db", str(db))
+    check("stop=stop tools=1(失败1)" in text and "「[语音] 现在几点」→「三点整」" in text and "webchat" in text, "--runs 一行一个 run，含 stop/工具/提示/回复")
+    check(f"uid={U_CHILD}" in text, "--runs 标出能对上的语音 uid（同一 run_id 取最后一个事件的 uid；对不上是 -）")
+    check("uid=-" in text, "--runs 对不上语音 uid 的 run 标 -")
+    text, _ = runb3("--payload", "chatcmpl_trajonly00000000000", "--agent-db", str(db))
+    check('"prompt"' in text and "现在几点" in text, "--payload <run_id> 直接查 trajectory")
+    text, _ = runb3("--runs", "3", "--agent-db", str(d / "nope.sqlite"))
+    check(text.strip() == "", "网关库不存在时 --runs 空输出不抛错")
+
 # 时间解析
 now = 1_800_000_000.0
 check(logq.parse_time("10m", now) == now - 600 and logq.parse_time("2h", now) == now - 7200, "parse_time 相对时间")
