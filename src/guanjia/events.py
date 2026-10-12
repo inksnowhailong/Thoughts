@@ -176,7 +176,7 @@ class EventHub:
     def new_utterance(self, source: str, **fields) -> str:
         now = self.clock()
         uid = f"u{datetime.fromtimestamp(now):%H%M%S}-{next(self._ids):03d}"
-        rec = {"id": uid, "t0": now, "source": source, "text": "", "score": None, "verdict": "", "reason": "",
+        rec = {"id": uid, "t0": now, "source": source, "text": "", "score": None, "speaker": "", "verdict": "", "reason": "",
                "sent": "", "stages": {}, "timeline": [], "tools": [], "reply": "", "spoken": [], "unspoken": [],
                "timings": {}, "done": False, **_redact_fields(fields)}
         with self._lock:
@@ -186,7 +186,7 @@ class EventHub:
                 self._records.pop(self._order.popleft(), None)
         self._emit({"type": "record", "record": self._copy(rec)})
         self._e("voice", "utt.new", (fields.get("text") or "")[:60], uid=uid, source=source, score=fields.get("score"),
-                in_window=fields.get("in_window"))
+                speaker=fields.get("speaker") or None, in_window=fields.get("in_window"))
         return uid
 
     def stage(self, uid: str | None, stage: str, state: str, note: str = "", **data) -> None:

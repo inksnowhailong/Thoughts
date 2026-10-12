@@ -3,9 +3,9 @@
 - 模型：默认 CAM++（`campplus`）；环境变量 GUANJIA_SPK_MODEL 可切 `eres2netv2` 或给 .onnx 路径；库按模型分文件（SPK_MODELS）。
 - 库格式 v2：每个人存全部注册样本的向量 [N, dim]；打分 = 对该人样本余弦的 top-3 平均（N<3 时取全部）。
   旧格式（每人一个向量）照常读，第一次保存时整库改写成 v2。
-- 门槛默认取 settings.Settings().spk_threshold；软门禁后只在免喊窗口里当门槛，其余只作身份标签。
+- 门槛默认取 settings.Settings().spk_threshold；它是「认人门槛」：最高分的人 ≥ 门槛才标成这个人，不拦截任何声音。
 - 注册：面板引导（enroll_session.py，守护进程同一条链路）或命令行 enroll.py，都走 save_person（锁内：备份 + 写库 + 换库）；可回滚。
-- 库为空或读不出时 identify 的分数是 None，和"没有声纹库"的语义一致（免喊窗口不会因此拒掉主人）。
+- 库为空或读不出时 identify 的分数是 None，和"没有声纹库"的语义一致（不标说话人）。
 """
 
 from __future__ import annotations

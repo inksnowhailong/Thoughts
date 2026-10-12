@@ -66,7 +66,7 @@ try:
             same = False
     check(same, "default template byte-identical to the legacy format (400 samples)")
     check(brain.tag_voice_text("你好", datetime(2026, 10, 11, 18, 5)) == "[语音 2026-10-11 18:05 周日] 你好", "tag_voice_text unchanged")
-    check((prompts.DEFAULT_DIR / "voice_tag.txt").read_bytes() == "[语音 {{DATE}} {{TIME}} 周{{WEEKDAY}}]".encode("utf-8"),
+    check((prompts.DEFAULT_DIR / "voice_tag.txt").read_bytes() == "[语音 {{DATE}} {{TIME}} 周{{WEEKDAY}}{{SPEAKER}}]".encode("utf-8"),
           "default template file: single line, no trailing newline, no BOM")
 
     # 3. 模板保存校验
@@ -254,7 +254,7 @@ try:
 
     # 6h. 模板：读、预览、保存、恢复默认
     code, r = get("voice_tag")
-    check(code == 200 and r["preview"] == "[语音 2026-10-11 18:05 周日]" and r["valid"] and r["overridden"] is False, "template get: preview + default")
+    check(code == 200 and r["preview"] == "[语音 2026-10-11 18:05 周日 主人]" and r["valid"] and r["overridden"] is False, "template get: preview + default")
     code, p = svc.post({"id": "voice_tag", "action": "preview", "text": "[语音 {{FOO}}]"})
     check(code == 200 and p["valid"] is False and p["unknown"] == ["FOO"], "template preview flags unknown placeholder")
     code, resp = svc.post({"id": "voice_tag", "text": "[语音 {{FOO}}]", "base_sha": ""})

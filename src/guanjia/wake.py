@@ -1,4 +1,4 @@
-"""一句话要不要进主线：碎音过滤 → 唤醒词（免喊窗口内可省）→ 声纹门槛只管没喊唤醒词的话。纯逻辑，可单测。
+"""一句话要不要进主线：碎音过滤 → 唤醒词（免喊窗口内可省）。纯逻辑，可单测。声纹不参与去留，只用来标「是谁说的」（见 voice.py）。
 
 唤醒词按拼音容错匹配：识别常把"管家"写成"关家/管加/光价"，所以逐字比读音而不是比字形——
 唤醒词按词语取它本来的读音（"管家"= guan jia），识别文字里的字取全部读音（识别写成的多音字都算），
@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import difflib
-import math
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -166,16 +165,17 @@ def rescue_wake(text: str, alt_text: str | None, matcher: WakeMatcher) -> tuple[
 @dataclass(frozen=True)
 class GateDecision:
     verdict: str  # accept / wake_only / ignored / rejected
-    stage: str  # 拦在哪一环：filler / speaker / wake；放行时为 ""
+    stage: str  # 拦在哪一环：filler / wake；放行时为 ""
     reason: str  # 给人看的原因，面板和日志用
     text: str  # 放行时送主线的话（已去掉唤醒词）
     wake: str = ""  # 原文里命中的唤醒词写法
-    spk_checked: bool = False  # 这一句真的拿声纹当了门槛（没喊唤醒词，且分数不是 None）
 
 
-def decide(text: str, score: float | None, *, threshold: float, matcher: WakeMatcher, wake_required: bool,
-           min_chars: int, in_window: bool, allow_short_answer: bool = True, alt_text: str | None = None) -> GateDecision:
-    """一句识别结果的去留。score=None 表示不过声纹（测试注入、没有声纹库）。
+def decide(text: str, score: float | None = None, *, threshold: float | None = None, matcher: WakeMatcher,
+           wake_required: bool, min_chars: int, in_window: bool, allow_short_answer: bool = True,
+           alt_text: str | None = None) -> GateDecision:
+    """一句识别结果的去留，只看碎音、唤醒词、免喊窗口；声纹分数不影响去留。
+    score / threshold 是旧「声纹软门禁」留下的参数，现在被忽略，只为调用方不用改。
     含唤醒词的话不按碎音丢：最少字数调到 3 以上时，只喊「管家」也要能应答。
     allow_short_answer=False：它还在说的时候，"好/对/是"多半是附和，不当成新的一句。
     alt_text：同一句话的另一路识别结果（流式）。text 没命中唤醒词、alt_text 在句首命中时也算命中，
@@ -184,17 +184,11 @@ def decide(text: str, score: float | None, *, threshold: float, matcher: WakeMat
     if is_filler(text, min_chars, in_window and allow_short_answer) and matcher.find(text) is None and rescued is None:
         return GateDecision("ignored", "filler", f"碎音/语气词「{core_text(text) or text}」", "")
     rest, hit = rescued if rescued is not None else matcher.strip(text)
-    if hit is not None:  # 喊了唤醒词：声纹分数再低也不拒
+    if hit is not None:  # 喊了唤醒词
         via = "（流式补判）" if rescued is not None else ""
         if is_filler(rest, min_chars, True):
             return GateDecision("wake_only", "", f"只喊了「{hit.heard}」{via}", "", hit.heard)
         return GateDecision("accept", "", f"唤醒词「{hit.heard}」{via}", rest, hit.heard)
     if wake_required and not in_window:
         return GateDecision("rejected", "wake", "没有唤醒词", "")
-    if score is not None and score < threshold:  # 免喊窗口内，或不需要唤醒词，才用声纹当门槛
-        shown = f"{score:.2f}"
-        if shown == f"{threshold:.2f}":  # 0.447 四舍五入会显示成"0.45 < 0.45"，改成截到三位
-            shown = f"{math.floor(score * 1000) / 1000:.3f}"
-        return GateDecision("rejected", "speaker", f"声纹 {shown} < {threshold:.2f}", "", spk_checked=True)
-    return GateDecision("accept", "", "免喊窗口内" if in_window else "不需要唤醒词", text,
-                        spk_checked=score is not None)
+    return GateDecision("accept", "", "免喊窗口内" if in_window else "不需要唤醒词", text)

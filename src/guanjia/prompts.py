@@ -31,7 +31,9 @@ _WEEKDAY_CN = "一二三四五六日"
 # （取最后一个「[语音 …]」及其前面的全部内容）。我们要求：整个标记是一行、以「[语音 」开头、以「]」结尾、
 # 括号里不含 ] 和换行、最多 40 字，这样渲染结果一定被插件整段剥掉，AGENTS.md 的语音规则也认得。
 VOICE_TAG_RULE = re.compile(r"\[语音 [^\]\r\n]{1,40}\]\Z")
-PLACEHOLDERS = {"voice_tag": {"DATE": "日期，如 2026-10-11", "TIME": "时刻，如 18:05", "WEEKDAY": "周几（一～日）"}}
+PLACEHOLDERS = {"voice_tag": {"DATE": "日期，如 2026-10-11", "TIME": "时刻，如 18:05", "WEEKDAY": "周几（一～日）",
+                              "SPEAKER": "声纹认出的说话人，前面自带一个空格，如「 主人」「 未知」；没有声纹结果时为空"}}
+SPEAKER_MAX_CHARS = 8  # 说话人名字最多取这么多字：标记整体不超过 40 字，库里名字再长也不会让标记不合格
 
 _BOOT_NOTE = "文档对启动文件注入时机有两种说法（每轮重建 / 新会话首轮）；上线后用「改一句规则→下一句是否遵守」实测，不遵守就开新会话"
 _SKILL_NOTE = "OpenClaw 默认监听 SKILL.md（skills.load.watch 未关），改完下一轮自动刷新；监听失效时开新会话"
@@ -89,12 +91,19 @@ def render(template: str, ctx: dict[str, str]) -> tuple[str, list[str]]:
     return _PH.sub(sub, template), unknown
 
 
-def voice_ctx(now: datetime) -> dict[str, str]:
-    return {"DATE": f"{now:%Y-%m-%d}", "TIME": f"{now:%H:%M}", "WEEKDAY": _WEEKDAY_CN[now.weekday()]}
+def _speaker_part(speaker: str) -> str:
+    """说话人 → 标记里的片段：" 主人"；空 / 清洗后为空返回 ""。去掉 [ ] 和空白，防止破坏插件的正则 [语音[^\]]*\]。"""
+    name = re.sub(r"[\[\]\s]+", "", speaker or "")[:SPEAKER_MAX_CHARS]
+    return f" {name}" if name else ""
 
 
-def _builtin_voice_tag(now: datetime) -> str:
-    return f"[语音 {now:%Y-%m-%d %H:%M} 周{_WEEKDAY_CN[now.weekday()]}]"
+def voice_ctx(now: datetime, speaker: str = "") -> dict[str, str]:
+    return {"DATE": f"{now:%Y-%m-%d}", "TIME": f"{now:%H:%M}", "WEEKDAY": _WEEKDAY_CN[now.weekday()],
+            "SPEAKER": _speaker_part(speaker)}
+
+
+def _builtin_voice_tag(now: datetime, speaker: str = "") -> str:
+    return f"[语音 {now:%Y-%m-%d %H:%M} 周{_WEEKDAY_CN[now.weekday()]}{_speaker_part(speaker)}]"
 
 
 def load_template(pid: str) -> tuple[str, bool]:
@@ -107,13 +116,16 @@ def load_template(pid: str) -> tuple[str, bool]:
 
 def check_template(pid: str, text: str) -> str:
     """校验并返回渲染预览；不合格抛 ValueError。"""
-    rendered, unknown = render(text, voice_ctx(datetime(2026, 10, 11, 18, 5)) if pid == "voice_tag" else {})
+    sample = datetime(2026, 10, 11, 18, 5)
+    rendered, unknown = render(text, voice_ctx(sample, "主人") if pid == "voice_tag" else {})
     if unknown:
         raise ValueError(f"不认识的占位符：{', '.join(unknown)}（可用：{', '.join(PLACEHOLDERS.get(pid, {}))}）")
     if "{{" in rendered or "}}" in rendered:
         raise ValueError("{{ }} 不成对")
-    if pid == "voice_tag" and not VOICE_TAG_RULE.match(rendered):
-        raise ValueError("语音标记必须是一行、以「[语音 」开头、以「]」结尾、括号里不超过 40 字")
+    if pid == "voice_tag":
+        no_speaker = render(text, voice_ctx(sample))[0]  # 没有声纹结果时（说话人为空）也得合格
+        if not (VOICE_TAG_RULE.match(rendered) and VOICE_TAG_RULE.match(no_speaker)):
+            raise ValueError("语音标记必须是一行、以「[语音 」开头、以「]」结尾、括号里不超过 40 字（有无说话人都要满足）")
     return rendered
 
 
@@ -130,19 +142,19 @@ def reset_template(pid: str) -> None:
     (OVERRIDE_DIR / f"{pid}.txt").unlink(missing_ok=True)
 
 
-def render_voice_tag(now: datetime | None = None) -> str:
-    """brain.voice_tag 用。覆盖文件被手工改坏、读不了时回退内置格式（保护插件和语音规则）。
-    默认模板渲染结果与内置格式逐字节相同。"""
+def render_voice_tag(now: datetime | None = None, speaker: str = "") -> str:
+    """brain.voice_tag 用。speaker 是声纹认出的说话人（"" = 没有）。覆盖文件被手工改坏、读不了时回退内置格式（保护插件和语音规则）。
+    默认模板渲染结果与内置格式逐字节相同；speaker 为空时渲染结果与加说话人之前逐字节一致。"""
     now = now or datetime.now()
     try:
         text, _ = load_template("voice_tag")
-        out, unknown = render(text, voice_ctx(now))
+        out, unknown = render(text, voice_ctx(now, speaker))
         if not unknown and VOICE_TAG_RULE.match(out):
             return out
         log.warning("voice_tag 模板不合格，用内置格式：%r", text)
     except (OSError, ValueError) as e:  # ValueError 含 UnicodeDecodeError
         log.warning("voice_tag 模板读不了，用内置格式：%s", e)
-    return _builtin_voice_tag(now)
+    return _builtin_voice_tag(now, speaker)
 
 
 def split_block(text: str) -> tuple[str, str, str]:
@@ -285,7 +297,7 @@ class PromptService:
 
     def _preview(self, e: PromptEntry, text: str) -> dict:
         """模板的渲染预览（用当前时间）+ 是否合格。不合格不抛，把原因带回去给页面标红。"""
-        rendered, unknown = render(text, voice_ctx(self._now()) if e.id == "voice_tag" else {})
+        rendered, unknown = render(text, voice_ctx(self._now(), "主人") if e.id == "voice_tag" else {})
         try:
             check_template(e.id, text)
             return {"preview": rendered, "unknown": unknown, "valid": True, "reason": ""}

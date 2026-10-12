@@ -29,15 +29,15 @@ VOICE_MODEL = os.environ.get("GUANJIA_VOICE_MODEL", "")
 STREAM_READ_TIMEOUT_SEC = 900.0
 
 
-def voice_tag(now: datetime | None = None) -> str:
-    """语音轮标记，例如「[语音 2026-10-10 18:05 周六]」；AGENTS.md 的语音规则和分级插件都认这个前缀。
+def voice_tag(now: datetime | None = None, speaker: str = "") -> str:
+    """语音轮标记，例如「[语音 2026-10-10 18:05 周六]」，声纹认出说话人时末尾带上，如「[语音 2026-10-10 18:05 周六 主人]」；AGENTS.md 的语音规则和分级插件都认这个前缀。
     格式来自可在面板编辑的模板（prompts.render_voice_tag），默认与原来逐字节一致，模板不合格时回退内置格式。"""
-    return render_voice_tag(now)
+    return render_voice_tag(now, speaker)
 
 
-def tag_voice_text(text: str, now: datetime | None = None) -> str:
-    """给识别出的一句话加上语音轮标记。"""
-    return f"{voice_tag(now)} {text}"
+def tag_voice_text(text: str, now: datetime | None = None, speaker: str = "") -> str:
+    """给识别出的一句话加上语音轮标记；speaker 是声纹认出的说话人（"主人" / "未知" / 库里的名字），空则不带。"""
+    return f"{voice_tag(now, speaker)} {text}"
 
 
 def load_gateway_token() -> str:

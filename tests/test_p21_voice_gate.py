@@ -30,9 +30,11 @@ def check(cond: bool, what: str) -> None:
 class FakeRunner:
     def __init__(self):
         self.got = []
+        self.speakers = []  # 每轮 run_reply 时守护进程记着的说话人（语音标记据此生成）
 
     def run_reply(self, text, gen):
         self.got.append(text)
+        self.speakers.append(d._turn_speaker)
         d.runner_events("first_token")
         return TurnResult(reply="好的，打开了。", spoken=["好的，打开了。"])
 
@@ -87,19 +89,36 @@ check(rec["done"] and rec["stages"]["wake"]["state"] == "blocked" and rec["stage
 r = d._on_heard("唉", 0.41, source="mic")
 check(r["verdict"] == "ignored" and d.hub.record(r["uid"])["stages"]["asr"]["state"] == "blocked", "grunt ignored at recognition box")
 d._followup_until = time.monotonic() + 30
-r = d._on_heard("开灯", 0.28, source="mic")
+r = d._on_heard("开灯", 0.28, source="mic", speaker="未知")
 rec = d.hub.record(r["uid"])
-check(r["verdict"] == "rejected" and rec["stages"]["speaker"]["state"] == "blocked"
-      and rec["stages"]["speaker"]["note"] == "声纹 0.28 < 0.45",
-      "in window, no wake word: low voiceprint blocked with reason")
-check(rec["stages"]["wake"]["state"] == "done" and rec["stages"]["wake"]["note"] == "免喊窗口内",
-      "voiceprint reject inside the window still shows wake as done")
+check(r["verdict"] == "accept" and r["speaker"] == "未知" and rec["stages"]["speaker"]["state"] == "done"
+      and rec["stages"]["speaker"]["note"] == "未知 0.28",
+      "in window, no wake word, low score: accepted, speaker only labelled 未知")
+check(rec["stages"]["wake"]["state"] == "done" and rec["stages"]["wake"]["note"] == "免喊窗口内" and rec["speaker"] == "未知",
+      "wake shows window; record carries the speaker label")
+items = drain(d.text_q)
+check(len(items) == 1 and isinstance(items[0], Heard) and items[0].speaker == "未知", "queued Heard carries the speaker label")
+drain(d.play_q)
+for sc in (0.0, 0.1, 0.28, 0.44, 0.45, 0.9):  # 任何分数、任何时候都不再出现 stage=speaker，也不再 blocked
+    for win in (True, False):
+        d._followup_until = time.monotonic() + 30 if win else 0.0
+        for txt in ("开灯", "管家开灯", "唉"):
+            r = d._on_heard(txt, sc, source="mic", speaker="主人" if sc >= 0.45 else "未知")
+            rec = d.hub.record(r["uid"])
+            check(r["stage"] != "speaker" and rec["stages"]["speaker"]["state"] != "blocked",
+                  f"score {sc} window={win} {txt}: voiceprint never blocks")
+drain(d.text_q)
+drain(d.play_q)
 d._followup_until = 0.0
 r = d._on_heard("管家打开记事本", 0.28, source="mic")
 rec = d.hub.record(r["uid"])
-check(r["verdict"] == "accept" and rec["stages"]["speaker"]["state"] == "done"
-      and rec["stages"]["speaker"]["note"] == "0.28（唤醒词放行，不作门槛）",
-      "wake word + low score accepted; speaker note says the gate was skipped")
+check(r["verdict"] == "accept" and rec["stages"]["speaker"]["state"] == "done" and rec["stages"]["speaker"]["note"] == "0.28",
+      "no label: speaker note is just the score")
+r = d._on_heard("管家打开记事本", 0.52, source="mic", speaker="主人")
+check(d.hub.record(r["uid"])["stages"]["speaker"]["note"] == "主人 0.52" and r["speaker"] == "主人", "label shown as 主人 0.52")
+r = d._on_heard("管家打开记事本", None, source="mic")
+rec = d.hub.record(r["uid"])
+check(rec["stages"]["speaker"]["state"] == "skipped" and rec["speaker"] == "", "no score: speaker skipped, no label")
 drain(d.text_q)
 drain(d.play_q)
 r = d._on_heard("关家，打开记事本", 0.6, source="mic", seg_sec=1.2, asr_ms=150, spk_ms=40)
@@ -133,6 +152,9 @@ rec = d.hub.record(accepted_uid)
 check(d.runner.got == ["打开记事本"] and rec["done"] and rec["reply"] == "好的，打开了。", "turn recorded on the same id")
 check(rec["stages"]["play"]["state"] == "done" and "gateway_first_ms" in rec["timings"], "play done, gateway timing recorded")
 check(d._followup_until > time.monotonic() + 19 and d.state == "LISTENING", "window opens after the last sentence")
+check(d.runner.speakers == [""] and d._turn_speaker == "", "no label: turn runs without a speaker and clears it afterwards")
+d._handle_item(Heard("打开记事本", None, "主人"))
+check(d.runner.speakers == ["", "主人"] and d._turn_speaker == "", "Heard.speaker is visible during the turn, cleared after")
 d._followup_until = 0.0
 d._handle_item(SayItem("念这句", None))
 check(d.state == "LISTENING" and d._followup_until == 0.0, "say item handled without opening the window")

@@ -2,7 +2,7 @@
 
 P2.1 起的调用链：
 
-  音频回调 ──(麦帧, 本块是否在出声)──> 前端线程 ── VAD/ASR/声纹 ──> decide()：碎音过滤 → 唤醒词（免喊窗口内可省）→ 声纹门槛只管没喊唤醒词的话
+  音频回调 ──(麦帧, 本块是否在出声)──> 前端线程 ── VAD/ASR ∥ 声纹认人（并行）──> decide()：碎音过滤 → 唤醒词（免喊窗口内可省）；声纹只标「是谁说的」，不拦截
                                           │                          ├─ 放行 ──> 提示音 + text_q（去掉唤醒词的话）
                                           │                          ├─ 只喊了唤醒词 ──> 应答「在呢」+ 打开免喊窗口
                                           │                          └─ 不理（记一条带原因的记录）
@@ -35,6 +35,8 @@ import time
 import wave
 import webbrowser
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -75,8 +77,29 @@ from guanjia.wsfiles import WorkspaceFiles
 log = logging.getLogger("guanjia.voice")
 _PROC_T0 = time.monotonic()  # 进程（本模块被导入）的起点，voice.ready 的 boot_ms 据此计算
 
-# ---- 声纹门（门槛在 data\voice-settings.json 的 spk_threshold，面板可调）----
-SPK_GATE_MODE = "enforce"  # enforce=低于门槛拦截；log=只记录分数不拦截（--gate-mode log）
+# ---- 声纹认人（只标是谁说的，不拦截；认人门槛在 data\voice-settings.json 的 spk_threshold，面板可调）----
+SPK_GATE_MODE = "enforce"  # 已废弃：声纹不再拦截，两个值效果相同；只为启动参数 --gate-mode 兼容而留
+SPK_TIMEOUT_SEC = 1.0  # 声纹最多等这么久（从与二次识别同时起算）：超时 / 出错就当没有标签继续，不阻塞这一句
+OWNER_NAME = "我"  # 声纹库里主人注册时用的名字
+OWNER_LABEL = "主人"  # 库里名字是「我」的，对模型和面板显示成这个
+UNKNOWN_LABEL = "未知"  # 有声纹库、但最高分没过认人门槛
+
+
+def speaker_label(name: str | None, score: float | None) -> str:
+    """声纹结果 → 说话人标签。score=None（没有声纹库 / 没过声纹 / 超时出错）→ ""（不标）；
+    过了认人门槛 → 库里的名字（「我」显示为「主人」）；没过 → 「未知」。"""
+    if score is None:
+        return ""
+    if name is None:
+        return UNKNOWN_LABEL
+    return OWNER_LABEL if name == OWNER_NAME else name
+
+
+def _identify_job(gate: SpeakerGate, samples: np.ndarray) -> tuple[str | None, float | None, int]:
+    """声纹线程里跑：(过门槛的名字或 None, 最高分, 耗时 ms)。"""
+    t0 = time.monotonic()
+    name, score = gate.identify(samples)
+    return name, score, round((time.monotonic() - t0) * 1000)
 
 # ---- 回声消除 ----
 # speex AEC 默认关：音响一体麦自带 DSP 噪声门 + 回声消除，而 speex 预处理实测会伤识别。GUANJIA_AEC=1 或 --aec on 可重新打开
@@ -237,7 +260,7 @@ class VoiceDaemon:
     in_dev: int | None = None
     out_dev: int | None = None
     speaker_gate: bool = True
-    gate_mode: str = SPK_GATE_MODE  # enforce / log
+    gate_mode: str = SPK_GATE_MODE  # 已废弃（声纹不再拦截），保留字段和 --gate-mode 参数只为兼容
     mic_gain: float = MIC_GAIN  # 软件增益
     aec_on: bool = AEC_ENABLED  # 是否走 speex AEC
     tray_on: bool = True  # 托盘图标（--no-tray 关）
@@ -262,6 +285,8 @@ class VoiceDaemon:
     _turn_gen = -1
     enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
     _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
+    _spk_pool = None  # ThreadPoolExecutor | None：声纹认人的单线程池（只有前端线程提交，首次用到时才建）
+    _turn_speaker = ""  # 这一轮语音标记里的说话人（大脑线程读写；追发的话没有）
     _last_play_t = -1.0  # 前端线程：最近一次真正出声时的 VAD 时间轴（秒），用来判断一段话有没有和播放重叠
     _turn_marks = None
     _last_health: dict | None = None  # 上一次记过的依赖状态（B4 dep.change 只记变化）
@@ -317,7 +342,7 @@ class VoiceDaemon:
         self.brain = Brain(session_key=MAIN_SESSION_KEY)  # 主线会话；流不可提前关（见 brain.py）
         self.tts = TTSClient(timeout=TTS_TIMEOUT_SEC)
         self.runner = TurnRunner(
-            open_stream=lambda text: self.brain.stream(tag_voice_text(text)),
+            open_stream=self._open_stream,
             synth=self.tts.synth, enqueue=self._enqueue_pcm, current_gen=lambda: self._gen,
             first_max_chars=FIRST_SENT_MAX_CHARS, max_tts_fails=TTS_MAX_FAILS, first_soft_min=FIRST_SENT_SOFT_MIN,
             on_event=self._on_turn_event, shaper=self._new_shaper)
@@ -384,6 +409,10 @@ class VoiceDaemon:
             self.in_q.put_nowait(Frames(mic=indata[:, 0].copy(), ref=out, playing=voiced))
         except queue.Full:
             self._dropped += 1
+
+    def _open_stream(self, text: str):
+        """一轮语音对话发给网关：加上「[语音 日期 时间 周几 说话人]」标记（没有说话人时与以前一致）。"""
+        return self.brain.stream(tag_voice_text(text, speaker=self._turn_speaker))
 
     def _reset_frontend(self) -> None:
         """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
@@ -458,6 +487,7 @@ class VoiceDaemon:
                 self._drop_segment(seg, "hollow", "噪声门掏空的假触发，丢弃", "hollow", stream_text=stream_text,
                                    zero_frac=round(float(np.mean(raw == 0)), 2) if len(raw) else None)
                 continue
+            spk_fut = self._submit_identify(seg.samples)  # 声纹认人与二次识别同时跑（推理释放 GIL），都完成后再判定
             text = self.asr_final.transcribe(seg.samples, fallback=stream_text)
             asr_ms = round((time.monotonic() - t_asr) * 1000)
             if is_unconfirmed_by_stream(text, stream_text):  # 流式一个字没出、二次识别却出了中文：疑似幻觉，当没识别出字
@@ -469,11 +499,38 @@ class VoiceDaemon:
                 log.debug("丢弃空文本段 %.2fs", seg.duration)
                 continue
             self.hub.stage(None, "asr", "done", text[:20])
-            t_spk = time.monotonic()
-            score = self.gate.identify(seg.samples)[1] if self.gate else None
-            spk_ms = round((time.monotonic() - t_spk) * 1000)
+            speaker, score, spk_ms = self._collect_speaker(spk_fut)
+            front_ms = round((time.monotonic() - t_asr) * 1000)  # 识别 ∥ 声纹 并行后的总耗时
+            log.debug("front asr=%dms speaker=%sms parallel_total=%dms", asr_ms, spk_ms, front_ms)
             self._on_heard(text, score, source="mic", stream_text=stream_text, seg_sec=seg.duration,
-                           asr_ms=asr_ms, spk_ms=spk_ms)
+                           asr_ms=asr_ms, spk_ms=spk_ms, front_ms=front_ms, speaker=speaker)
+
+    def _submit_identify(self, samples: np.ndarray) -> tuple[Future, float] | None:
+        """把这一段交给声纹线程认人；没有声纹库返回 None。返回 (Future, 提交时刻)。"""
+        gate = self.gate
+        if gate is None:
+            return None
+        if self._spk_pool is None:
+            self._spk_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker")
+        return self._spk_pool.submit(_identify_job, gate, samples), time.monotonic()
+
+    def _collect_speaker(self, job: tuple[Future, float] | None) -> tuple[str, float | None, int | None]:
+        """等声纹结果：(说话人标签, 最高分, 声纹耗时 ms)。从提交起最多等 SPK_TIMEOUT_SEC，超时 / 出错当没有标签，不阻塞判定。"""
+        if job is None:
+            return "", None, None
+        fut, t_submit = job
+        try:
+            name, score, spk_ms = fut.result(timeout=max(0.0, t_submit + SPK_TIMEOUT_SEC - time.monotonic()))
+        except FutureTimeout:
+            fut.cancel()
+            log.warning("声纹超过 %.1fs 还没出结果，这一句不标说话人", SPK_TIMEOUT_SEC)
+            elog.emit("speaker", "spk.fail", "声纹超时，不标说话人", level="warn", reason="timeout", limit_sec=SPK_TIMEOUT_SEC)
+            return "", None, None
+        except Exception as e:  # noqa: BLE001  声纹出错不能影响这一句的去留
+            log.warning("声纹识别出错，这一句不标说话人：%s: %s", type(e).__name__, e)
+            elog.emit("speaker", "spk.fail", "声纹出错，不标说话人", level="warn", reason=type(e).__name__, error=str(e)[:200])
+            return "", None, None
+        return speaker_label(name, score), score, spk_ms
 
     def _drop_segment(self, seg, why: str, note: str, dump_label: str, **data) -> None:
         """识别链路上直接丢掉一段（不判定、不进主线）：面板写原因、取证保留音频、记一条 seg.drop 事件。"""
@@ -510,17 +567,19 @@ class VoiceDaemon:
 
     def _on_heard(self, text: str, score: float | None, *, source: str, stream_text: str = "",
                   seg_sec: float | None = None, asr_ms: int | None = None, spk_ms: int | None = None,
-                  dry_run: bool = False) -> dict:
-        """一句识别结果的去留（麦克风和面板注入共用）：记一条面板记录，放行就交给大脑，只喊唤醒词就应答。"""
+                  front_ms: int | None = None, speaker: str = "", dry_run: bool = False) -> dict:
+        """一句识别结果的去留（麦克风和面板注入共用）：记一条面板记录，放行就交给大脑，只喊唤醒词就应答。
+        去留只看碎音、唤醒词、免喊窗口；声纹不拦截，speaker（"主人" / "未知" / 库里的名字 / ""=没有）只做标签，
+        随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
         s = self.store.current
         in_window = self._in_followup()
-        threshold = 0.0 if self.gate_mode == "log" else s.spk_threshold
-        d = decide(text, score, threshold=threshold, matcher=self.wake, wake_required=s.wake_required,
+        d = decide(text, matcher=self.wake, wake_required=s.wake_required,
                    min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING",
                    alt_text=stream_text or None)  # 二次识别漏掉唤醒词、流式识别抓到了：靠流式结果救回
+        timings = {k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms), ("front_ms", front_ms)) if v is not None}
         uid = self.hub.new_utterance(source, text=text, stream_text=stream_text,
-                                     score=None if score is None else round(score, 3), in_window=in_window,
-                                     timings={k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms)) if v is not None})
+                                     score=None if score is None else round(score, 3), speaker=speaker, in_window=in_window,
+                                     timings=timings)
         if seg_sec is not None:
             self.hub.stage(uid, "vad", "done", f"{seg_sec:.1f} 秒")
         self.hub.stage(uid, "asr", "blocked" if d.stage == "filler" else "done",
@@ -528,23 +587,15 @@ class VoiceDaemon:
         if d.stage == "filler":
             self.hub.stage(uid, "speaker", "skipped")
         elif score is None:
-            self.hub.stage(uid, "speaker", "skipped", "未过声纹（注入/无声纹库）")
-        elif d.stage == "speaker":
-            self.hub.stage(uid, "speaker", "blocked", d.reason)
-        elif d.wake:  # 喊了唤醒词：分数只展示，不当门槛
-            self.hub.stage(uid, "speaker", "done", f"{score:.2f}（唤醒词放行，不作门槛）")
-        elif d.spk_checked:
-            self.hub.stage(uid, "speaker", "done", f"{score:.2f} ≥ {threshold:.2f}")
-        else:  # 没喊唤醒词，被唤醒词这环拒了：声纹没参与判定
-            self.hub.stage(uid, "speaker", "done", f"{score:.2f}")
+            self.hub.stage(uid, "speaker", "skipped", "未过声纹（注入/无声纹库/超时）")
+        else:  # 声纹永不拦截：只展示是谁和分数，例如「主人 0.52」「未知 0.18」
+            self.hub.stage(uid, "speaker", "done", f"{speaker} {score:.2f}" if speaker else f"{score:.2f}")
         if d.stage == "filler":
             self.hub.stage(uid, "wake", "skipped")
-        elif d.stage == "speaker":
-            self.hub.stage(uid, "wake", "done", "免喊窗口内" if in_window else "不需要唤醒词")
         else:
             self.hub.stage(uid, "wake", "blocked" if d.stage == "wake" else "done", d.reason)
-        label = "注入" if source == "inject" else ("我" if score is not None else "未过声纹")
-        shown = f"{label} {score:.2f}" if score is not None else label
+        label = "注入" if source == "inject" else (speaker or ("未过声纹" if score is None else ""))
+        shown = f"{label} {score:.2f}".strip() if score is not None else label
         if d.verdict == "accept":
             log.info("[%s] %s  → 送主线「%s」（%s）(stream: %s)", shown, text, d.text, d.reason, stream_text)
         elif d.verdict == "wake_only":
@@ -554,12 +605,12 @@ class VoiceDaemon:
         else:
             log.info("拒绝：%s text=%r (stream: %r)", d.reason, text, stream_text)
         result = {"uid": uid, "verdict": d.verdict, "stage": d.stage, "reason": d.reason, "text": d.text,
-                  "wake": d.wake, "in_window": in_window, "dry_run": dry_run}
+                  "wake": d.wake, "in_window": in_window, "dry_run": dry_run, "speaker": speaker}
         if dry_run:
             self.hub.finish(uid, verdict=d.verdict, reason=d.reason + "（模拟，未执行）", sent=d.text)
         elif d.verdict == "accept":
             self.hub.update(uid, verdict="accept", reason=d.reason, sent=d.text)
-            self._accept_utterance(d.text, uid)
+            self._accept_utterance(d.text, uid, speaker)
         elif d.verdict == "wake_only":
             self.hub.update(uid, verdict="wake_only", reason=d.reason)
             self._wake_ack(uid)
@@ -571,13 +622,13 @@ class VoiceDaemon:
         """面板「模拟一句话」/上线验证用：当作识别出的文字走一遍去留判定（不过声纹）。dry_run 只判定不执行。"""
         return self._on_heard(text, None, source="inject", dry_run=dry_run)
 
-    def _accept_utterance(self, text: str, uid: str | None = None) -> None:
+    def _accept_utterance(self, text: str, uid: str | None = None, speaker: str = "") -> None:
         """一句话放行：正在说就停（只停播放）；立刻放提示音；文字排进大脑队列。"""
         if self.state == "SPEAKING":
             self.stop_speaking("新一轮")
         if self.store.current.earcon:
             self.play_q.put((self._gen, self._earcon))
-        self.text_q.put(Heard(text, uid) if uid else text)
+        self.text_q.put(Heard(text, uid, speaker) if (uid or speaker) else text)
 
     def _wake_ack(self, uid: str | None) -> None:
         """只喊了唤醒词：应答一声（合成好的「在呢」，TTS 不在时用提示音），从应答结束起打开免喊窗口。"""
@@ -701,6 +752,7 @@ class VoiceDaemon:
                 log.info("say: %s", item.text)
             else:
                 text = item.text if isinstance(item, Heard) else item
+                self._turn_speaker = item.speaker if isinstance(item, Heard) else ""  # open_stream 加语音标记时读
                 self.hub.stage(uid, "gateway", "active", "请求已发出")
                 res = self.runner.run_reply(text, gen)
                 log.info("reply: %s", res.reply)
@@ -738,7 +790,7 @@ class VoiceDaemon:
                 threading.Thread(target=self._fill_gateway_phases, args=(uid, run_id, dict(marks)), name="runtrace",
                                  daemon=True).start()
         finally:
-            self._turn_uid, self._turn_marks, self._turn_is_say = None, None, False
+            self._turn_uid, self._turn_marks, self._turn_is_say, self._turn_speaker = None, None, False, ""
             with self._lock:
                 if gen == self._gen:
                     self.state = "LISTENING"
@@ -1268,14 +1320,14 @@ class VoiceDaemon:
         logging.getLogger().addHandler(HubLogHandler(self.hub))
         s = self.store.current
         elog.emit("voice", "voice.start", f"pid {os.getpid()}", pid=os.getpid(), argv=sys.argv[1:], in_dev=self.in_dev,
-                  out_dev=self.out_dev, rate=self.sr, gate_mode=self.gate_mode, gate=bool(self.gate), aec=self.aec_on,
+                  out_dev=self.out_dev, rate=self.sr, gate_mode="identify-only", gate=bool(self.gate), aec=self.aec_on,
                   mic_gain=self.mic_gain, control_port=self.control_port,
                   settings={k: getattr(s, k) for k in ("spk_threshold", "wake_required", "min_chars", "follow_up_sec", "earcon")})
         log.info("device rate %d, in=%s out=%s, speakers=%s(%s) legacy=%s n=%s, gate=%s@%.2f, wake=%s(required=%s) followup=%.0fs, "
                  "mic_gain=%.1f, aec=%s, barge=%dms guard=%dms rms_min=%.4f ratio=%.1f, tts_timeout=%.0fs, session=%s, "
                  "control=127.0.0.1:%d", self.sr, self.in_dev, self.out_dev, self.gate.names() if self.gate else "off",
                  self.gate.model.stem if self.gate else "-", self.gate.legacy if self.gate else "-",
-                 self.gate.counts() if self.gate else "-", self.gate_mode, s.spk_threshold, "/".join(s.wake_words),
+                 self.gate.counts() if self.gate else "-", "identify-only", s.spk_threshold, "/".join(s.wake_words),
                  s.wake_required, s.follow_up_sec, self.mic_gain, "on" if self.aec else "off", BARGE_MS, BARGE_GUARD_MS,
                  s.barge_rms_min, BARGE_FLOOR_RATIO, TTS_TIMEOUT_SEC, MAIN_SESSION_KEY, self.control_port)
         try:
@@ -1378,6 +1430,8 @@ class VoiceDaemon:
                 deadman = _arm_exit_deadman(EXIT_CRASH if (failed or sys.exc_info()[0] is not None) else
                                             (EXIT_QUIT if self._exit_code is None else self._exit_code))
         self._stop_evt.set()
+        if self._spk_pool is not None:
+            self._spk_pool.shutdown(wait=False, cancel_futures=True)  # 声纹线程若卡在推理里，不拖住退出
         self.runtime.stop()  # 最后一次心跳，下次开机据此算离线区间
         self.monitor.stop()
         self.audit.stop()
@@ -1395,7 +1449,7 @@ def main() -> None:
     ap.add_argument("--in", dest="in_dev", type=int, default=None)
     ap.add_argument("--out", dest="out_dev", type=int, default=None)
     ap.add_argument("--no-gate", action="store_true", help="关闭声纹放行（调试用）")
-    ap.add_argument("--gate-mode", choices=("enforce", "log"), default=SPK_GATE_MODE, help="log=只记录声纹分不拦截")
+    ap.add_argument("--gate-mode", choices=("enforce", "log"), default=SPK_GATE_MODE, help="已废弃（声纹不再拦截，只认人），保留只为启动参数兼容")
     ap.add_argument("--mic-gain", type=float, default=MIC_GAIN, help="软件增益（tanh 软限幅）")
     ap.add_argument("--aec", choices=("on", "off"), default="on" if AEC_ENABLED else "off", help="speex AEC 开关（默认关）")
     ap.add_argument("--no-tray", action="store_true", help="不显示托盘图标（调试用）")
@@ -1422,6 +1476,6 @@ if __name__ == "__main__":
 
 # ---------- 评审未修项（voice-review.md 编号）----------
 # P2-10 MIN_UTT_SEC 过滤无效：段内回看/尾静音的实际占比需实录测量后再定判据，盲调会误伤"开灯"这类短指令。
-# P2-11 identify 仍在前端线程同步执行：长段 CAM++ 会短暂阻塞打断判定；已加丢帧计数日志，确有积压再移到独立线程。
+# P2-11 identify 已移到独立声纹线程与二次识别并行（_submit_identify）；前端线程仍会等两者都完成再判定，长段可能短暂阻塞打断判定，有丢帧计数日志。
 # P2-15 TTS 仍用线性插值重采样：resample_poly 需要 scipy，本次不引入新依赖。
 # P2（本期）打断阈值按 10-01 日志推算，验收时按 barge-mon 实测再定；TTS 服务端不会因客户端断开而中止合成。

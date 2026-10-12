@@ -94,9 +94,10 @@ class SayItem:
 
 @dataclass
 class Heard:
-    """识别出、已放行的一句话，带上调试面板的记录 id。"""
+    """识别出、已放行的一句话，带上调试面板的记录 id 和声纹认出的说话人（"" = 没有结果）。"""
     text: str
     uid: str | None = None
+    speaker: str = ""
 
 
 @dataclass

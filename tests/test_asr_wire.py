@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory() as dirpath:
         seen = []
         real_decide = voice.decide
 
-        def spy(text, score, **kw):
+        def spy(text, score=None, **kw):
             seen.append(kw.get("alt_text", "MISSING"))
             return real_decide(text, score, **kw)
 

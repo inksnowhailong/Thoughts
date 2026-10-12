@@ -216,7 +216,7 @@
       <label for="s_wake">唤醒词</label><div><input type="text" id="s_wake" size="30"> <span class="hint">多个用逗号隔开，按读音容错（管家/关家/管加都算）</span></div>
       <label for="s_req">必须喊唤醒词</label><div><input type="checkbox" id="s_req"> <span class="hint">关掉就和 P2 一样，听到就答</span></div>
       <label for="s_follow">免喊秒数</label><div><input type="number" id="s_follow" min="0" max="120" step="1"> <span class="hint">它回完最后一句后这么久内接着说不用再喊</span></div>
-      <label for="s_spk">声纹门槛（仅免喊时）</label><div><input type="number" id="s_spk" min="0" max="0.9" step="0.01"> <span class="hint">低于它的声音不理；主人清楚说话一般 0.47～0.6</span></div>
+      <label for="s_spk">认人门槛</label><div><input type="number" id="s_spk" min="0" max="0.9" step="0.01"> <span class="hint">声纹最高分的人 ≥ 它才标成这个人，否则标「未知」；只用来认人，不拦截任何声音；主人清楚说话一般 0.47～0.6</span></div>
       <label for="s_barge">打断线</label><div><input type="number" id="s_barge" min="0.001" max="0.05" step="0.001"> <span class="hint">它说话时你开口的音量超过这个就停；打不断调小，自己打断自己调大</span></div>
       <label for="s_min">最少字数</label><div><input type="number" id="s_min" min="1" max="6" step="1"> <span class="hint">更短的片段当碎音忽略</span></div>
       <label for="s_earcon">提示音</label><div><input type="checkbox" id="s_earcon"> <span class="hint">说完话立刻"叮咚"一声</span></div>
@@ -352,14 +352,14 @@ function renderRows() {
     if (!r || (only && r.verdict !== "accept")) continue;
     const tr = el("tr", { class: r.id === S.selected ? "sel" : "" },
       el("td", { text: hhmmss(r.t0) }), el("td", { text: (r.flag ? "⚑ " : "") + (r.text || "") }),
-      el("td", { text: r.score == null ? "—" : r.score.toFixed(2) }),
+      el("td", { text: r.score == null ? "—" : (r.speaker ? r.speaker + " " : "") + r.score.toFixed(2) }),
       el("td", { class: "v-" + r.verdict, text: (VERDICT[r.verdict] || "处理中") + (r.reason && r.verdict !== "accept" ? "：" + r.reason : "") }),
       el("td", { text: ms(r.timings && r.timings.first_sound_ms) }));
     tr.addEventListener("click", () => { S.selected = r.id; $("followNewest").checked = false; renderAll(); });
     tb.append(tr);
   }
 }
-const BAR = [["asr_ms", "识别", "#79c0ff"], ["speaker_ms", "声纹", "#a5d6ff"], ["queue_ms", "排队", "#8b949e"],
+const BAR = [["front_ms", "识别∥声纹", "#79c0ff"], ["asr_ms", "识别", "#79c0ff"], ["speaker_ms", "声纹", "#a5d6ff"], ["queue_ms", "排队", "#8b949e"],
              ["gateway_prep_ms", "网关准备", "#d2a8ff"], ["model_first_ms", "模型首字", "#bc8cff"],
              ["gateway_first_ms", "网关首字", "#bc8cff"], ["first_sentence_ms", "首句成形", "#ffa657"],
              ["tts_first_ms", "合成首句", "#7ee787"], ["play_lag_ms", "开始出声", "#56d364"]];
@@ -372,7 +372,7 @@ function renderDetail() {
   const add = (k, v) => kv.append(el("div", { text: k }), el("div", { text: v == null || v === "" ? "—" : String(v) }));
   add("时间", new Date(r.t0 * 1000).toLocaleString());
   add("来源", { mic: "麦克风", inject: "面板模拟", say: "主程序 /say" }[r.source] || r.source);
-  add("听到的", r.text); add("声纹分", r.score == null ? "—" : r.score.toFixed(3));
+  add("听到的", r.text); add("说话人", r.speaker); add("声纹分", r.score == null ? "—" : r.score.toFixed(3));
   add("结果", (VERDICT[r.verdict] || "处理中") + (r.reason ? "：" + r.reason : ""));
   add("送给主程序", r.sent); add("回复", r.reply);
   add("念出来", (r.spoken || []).length + " 句"); add("没念出来", (r.unspoken || []).join(" / "));
@@ -393,7 +393,9 @@ function renderDetail() {
   if (r.flag) flagRow.append(el("span", { class: "flagnote", "data-alt": "flag-note", text: "⚑ " + r.flag }));
   box.append(flagRow);
   const t = r.timings || {};
-  const parts = BAR.filter(([k]) => t[k] != null && !(k === "gateway_first_ms" && t.gateway_prep_ms != null));
+  // 识别与声纹是并行的：有并行总耗时（front_ms）时只画它，不再把两段首尾相接地叠加
+  const parts = BAR.filter(([k]) => t[k] != null && !(k === "gateway_first_ms" && t.gateway_prep_ms != null)
+    && !((k === "asr_ms" || k === "speaker_ms") && t.front_ms != null));
   if (parts.length) {
     const total = parts.reduce((a, [k]) => a + Math.max(0, t[k]), 0) || 1;
     const bar = el("div", { class: "bar" });
@@ -403,7 +405,8 @@ function renderDetail() {
       bar.append(s);
     }
     box.append(el("h2", { text: "耗时拆分（听完到出声 " + ms(t.first_sound_ms) + "）" }), bar,
-               el("div", { class: "legend", text: parts.map(([k, l]) => `${l} ${ms(t[k])}`).join("　") }));
+               el("div", { class: "legend", text: parts.map(([k, l]) => k === "front_ms"
+                 ? `${l} ${ms(t[k])}（识别 ${ms(t.asr_ms)}／声纹 ${ms(t.speaker_ms)}）` : `${l} ${ms(t[k])}`).join("　") }));
   }
   if ((r.tools || []).length) {
     const tbl = el("table", null, el("thead", null, el("tr", null, el("th", { text: "工具" }), el("th", { text: "分级" }),
@@ -500,7 +503,7 @@ function renderSpeakerIdle(info) {
   const people = Object.entries(info.people || {}).map(([n, c]) => `${n} ${c} 段`).join("、") || "还没有人";
   const fmt = info.legacy ? "（旧格式：每人只有 1 个向量，建议重新注册）" : "";
   $("spkInfo").textContent = info.enabled === false ? "声纹已关闭（--no-gate），不能注册"
-    : `库：${people}${fmt}　门槛 ${info.threshold}（只管免喊窗口）　注册前备份：${info.backup ? "有" : "没有"}`;
+    : `库：${people}${fmt}　认人门槛 ${info.threshold}（只用来标是谁，不拦截）　注册前备份：${info.backup ? "有" : "没有"}`;
   if (info.load_error) $("spkInfo").textContent += `　⚠ 声纹库读不出来：${info.load_error}（保存已被拒绝，可先「回滚到注册前」）`;
   $("btnEnrollStart").disabled = info.enabled === false || spkBusy;
   $("btnEnrollRollback").disabled = !info.backup || spkBusy;

@@ -1,4 +1,4 @@
-"""语音守护进程的可调参数（唤醒词、免喊窗口、声纹门槛、打断线……）。
+"""语音守护进程的可调参数（唤醒词、免喊窗口、声纹认人门槛、打断线……）。
 
 存在 F:\\coding\\guanjia\\data\\voice-settings.json（data/ 不进仓库）。面板改了立即写盘并通知守护进程热生效，
 手工改文件也会在 2 秒内被主循环发现并生效。文件坏了或某项不合法时保留当前值，不会把守护进程弄崩。
@@ -25,7 +25,7 @@ class Settings:
     wake_words: tuple[str, ...] = ("管家",)  # 识别文字里含其一才进主线（按拼音容错匹配）
     wake_required: bool = True  # False = 不要唤醒词（P2 的行为）
     follow_up_sec: float = 20.0  # 它回完最后一句后这么多秒内接着说，不用再喊
-    spk_threshold: float = 0.45  # 免喊窗口（没喊唤醒词）时的声纹门槛
+    spk_threshold: float = 0.45  # 声纹认人门槛：最高分的人 ≥ 它才标成这个人，否则「未知」；不拦截
     barge_rms_min: float = float(os.environ.get("GUANJIA_BARGE_RMS_MIN", "0.004"))  # 打断线下限（原始输入 RMS）
     min_chars: int = 2  # 去掉标点后少于这么多字的片段直接忽略（免喊窗口里"好/行/对/要/是/不/停"例外）
     earcon: bool = True  # 说完话立即放提示音

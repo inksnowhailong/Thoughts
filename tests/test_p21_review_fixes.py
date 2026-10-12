@@ -64,10 +64,9 @@ for said, sent in (("管家，哈尔滨明天下雨吗", "哈尔滨明天下雨�
 check(dd("管家管家").verdict == "wake_only", "repeated wake word alone -> wake_only")
 check(dd("管家", min_chars=3).verdict == "wake_only", "wake word alone still answered when min_chars=3")
 check(dd("唉", min_chars=3).verdict == "ignored", "grunt still ignored when min_chars=3")
-check(decide("开灯", 0.4471, threshold=0.45, matcher=m, wake_required=True, min_chars=2, in_window=True).reason
-      == "声纹 0.447 < 0.45", "score just below threshold is not shown as 0.45 < 0.45")
-check(decide("开灯", 0.28, threshold=0.45, matcher=m, wake_required=True, min_chars=2, in_window=True).reason
-      == "声纹 0.28 < 0.45", "ordinary low score keeps 2 decimals")
+for sc in (0.4471, 0.28, 0.0):  # 声纹不再拦截：免喊窗口内低分照样放行
+    r = decide("开灯", sc, threshold=0.45, matcher=m, wake_required=True, min_chars=2, in_window=True)
+    check(r.verdict == "accept" and r.reason == "免喊窗口内" and r.text == "开灯", f"in window, score {sc} no longer rejected")
 check("至少" in raises(lambda: from_dict({"wake_words": ["管"]})), "single-char wake word refused")
 check("至少" in raises(lambda: from_dict({"wake_words": ["，，"]})), "punctuation-only wake word refused")
 check(from_dict({"wake_words": "管家，小管"}).wake_words == ("管家", "小管"), "normal wake words still accepted")
