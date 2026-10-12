@@ -43,4 +43,15 @@ Check ((Get-Content (Join-Path $Dir 'b.log') -Raw -Encoding UTF8) -match 'anothe
 $null = $a.WaitForExit(20000)
 Check ((Get-Content (Join-Path $Dir 'a.log') -Raw -Encoding UTF8) -match 'quit requested') 'first supervisor finishes normally'
 
+# 3. 崩溃时 stderr 存档：下一次拉起会清空 voice-stderr.txt，堆栈必须先存到 history，尾巴也写进看门狗日志
+Remove-Item "$Dir\counter.txt", "$Dir\voice-stderr.history.txt" -ErrorAction SilentlyContinue
+$log = Join-Path $Dir 'crash.log'
+$null = Start-Sup "tests\fake_voice_child.py $Dir\counter.txt crash" $log
+$text = Get-Content $log -Raw -Encoding UTF8
+Check ($text -match 'voice exited code=1') 'crash child exited with 1'
+Check ($text -match 'stderr: RuntimeError: boom-fake-stderr') 'stderr tail is copied into the supervisor log'
+$hist = Join-Path $Dir 'voice-stderr.history.txt'
+Check ((Test-Path $hist) -and ((Get-Content $hist -Raw -Encoding UTF8) -match 'boom-fake-stderr')) 'stderr is archived to voice-stderr.history.txt before the next launch clears it'
+$live = [string](Get-Content (Join-Path $Dir 'voice-stderr.txt') -Raw -ErrorAction SilentlyContinue)
+Check (-not ($live -match 'boom-fake-stderr')) 'live stderr file starts clean again'
 'ALL PASS test_p2_supervisor'

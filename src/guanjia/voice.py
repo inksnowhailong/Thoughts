@@ -22,6 +22,7 @@ P2.1 起的调用链：
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import inspect
 import logging
 import logging.handlers
@@ -117,6 +118,40 @@ SETTINGS_POLL_SEC = 2.0  # 手工改 voice-settings.json 的发现周期
 GATEWAY_PORT = 18789
 EXIT_QUIT, EXIT_CRASH, EXIT_RESTART = 0, 1, 3  # 与 scripts/voice-supervisor.ps1 约定
 LOG_MAX_BYTES = 5_000_000  # voice.log 轮转大小（留 3 份）
+
+
+def install_crash_hooks() -> None:
+    """让「无声无息地死」不再发生：未捕获异常、线程崩溃、原生崩溃都先留痕。
+
+    未捕获异常默认只把堆栈打到 stderr，而看门狗每次拉起新进程都会清空 voice-stderr.txt，堆栈就丢了
+    （2026-10-11/12 事故：退出码 1、日志和事件流都没有任何痕迹）。这里先写 WARNING+ 日志和 voice.exit 事件，
+    再交还给默认钩子打到 stderr。faulthandler 负责段错误之类的原生崩溃（Python 栈打到 stderr）。
+    """
+    try:
+        faulthandler.enable(all_threads=True)
+    except (RuntimeError, ValueError, OSError):  # stderr 不是真文件（被测试框架接管等）时不开，不影响启动
+        pass
+
+    def on_uncaught(et, ev, tb) -> None:
+        if issubclass(et, KeyboardInterrupt):
+            sys.__excepthook__(et, ev, tb)
+            return
+        log.critical("voice exit code=%d reason=uncaught_exception: %s: %s", EXIT_CRASH, et.__name__, ev, exc_info=(et, ev, tb))
+        elog.emit("voice", "voice.exit", "未捕获异常，进程退出", level="error", code=EXIT_CRASH, reason="uncaught_exception",
+                  error=f"{et.__name__}: {ev}")
+        sys.__excepthook__(et, ev, tb)
+
+    def on_thread(args) -> None:
+        if args.exc_type is SystemExit:
+            return
+        name = args.thread.name if args.thread else "?"
+        log.error("thread %s crashed: %s: %s", name, args.exc_type.__name__, args.exc_value,
+                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+        elog.emit("voice", "thread.crash", f"线程 {name} 崩溃", level="error", thread=name,
+                  error=f"{args.exc_type.__name__}: {args.exc_value}")
+
+    sys.excepthook = on_uncaught
+    threading.excepthook = on_thread
 
 # 只给 pipeline_test.py 用：P2 起守护进程不再发 system 提示，语音规则在 AGENTS.md 里按「[语音 …]」前缀生效
 SYSTEM_PROMPT = (
@@ -1076,7 +1111,7 @@ class VoiceDaemon:
 
     def request_exit(self, code: int, reason: str = "") -> None:
         """托盘/面板：退出语音（0，看门狗不再拉起）/ 重启语音（3，看门狗立即拉起）。reason 记进 voice.exit 事件（tray / panel）。"""
-        log.info("exit requested: code=%d", code)
+        log.warning("exit requested: code=%d reason=%s", code, reason or "-")  # 任何退出路径都留一行 WARNING（含原因）
         elog.emit("voice", "voice.exit", f"请求退出 code={code}", level="info" if code in (EXIT_QUIT, EXIT_RESTART) else "warn",
                   code=code, reason=reason or None)
         self._exit_code = code
@@ -1200,7 +1235,8 @@ class VoiceDaemon:
         try:
             self.control = start_control_server(self, self.control_port, panel=self.panel)
         except OSError as e:
-            log.error("控制口 127.0.0.1:%d 绑不上（是不是已经有一个语音进程在跑？）：%s", self.control_port, e)
+            log.error("控制口 127.0.0.1:%d 绑不上（是不是已经有一个语音进程在跑？）：%s；voice exit code=%d reason=control_port_busy",
+                      self.control_port, e, EXIT_CRASH)
             elog.emit("voice", "voice.exit", "控制口绑不上", level="error", code=EXIT_CRASH, reason="control_port_busy",
                       port=self.control_port, error=str(e))
             sys.exit(EXIT_CRASH)
@@ -1242,7 +1278,8 @@ class VoiceDaemon:
                     dead = [t.name for t in threads if not t.is_alive()]
                     # 托盘/面板要求退出时工作线程会跟着结束，这不是崩溃：误判成崩溃会回退出码 1，看门狗又把它拉起来
                     if not self._stop_evt.is_set() and (dead or (not s.active and not paused)):
-                        log.error("worker died: threads=%s stream_active=%s，退出等待看门狗拉起", dead, s.active)
+                        log.error("worker died: threads=%s stream_active=%s，退出等待看门狗拉起；voice exit code=%d reason=worker_died",
+                                  dead, s.active, EXIT_CRASH)
                         elog.emit("voice", "voice.exit", "工作线程/音频流死了", level="error", code=EXIT_CRASH,
                                   reason="worker_died", threads=dead, stream_active=s.active)
                         failed = True
@@ -1271,6 +1308,8 @@ class VoiceDaemon:
                             stats = (self._dropped, self._underflows)
                             log.warning("累计丢帧 %d，输出欠载 %d", *stats)
             except KeyboardInterrupt:
+                log.warning("voice exit code=%d reason=keyboard_interrupt", EXIT_QUIT)
+                elog.emit("voice", "voice.exit", "收到 Ctrl+C，退出", level="warn", code=EXIT_QUIT, reason="keyboard_interrupt")
                 self._exit_code = EXIT_QUIT
         self._stop_evt.set()
         self.runtime.stop()  # 最后一次心跳，下次开机据此算离线区间
@@ -1280,7 +1319,7 @@ class VoiceDaemon:
             self.tray.stop()
         self.control.shutdown()
         code = EXIT_CRASH if failed else (EXIT_QUIT if self._exit_code is None else self._exit_code)
-        log.info("voice daemon exit code=%d", code)
+        log.warning("voice daemon exit code=%d", code)
         sys.exit(code)
 
 
@@ -1298,6 +1337,7 @@ def main() -> None:
     ap.add_argument("--log-file", default=None, help="同时把日志写到这个文件（按 5MB 轮转，留 3 份）")
     a = ap.parse_args()
     log_ev = elog.init("voice")  # 统一事件日志（tmp\logs\events-voice-<日期>.jsonl），先于 VoiceDaemon 创建，EventHub 才拿得到
+    install_crash_hooks()  # 未捕获异常 / 线程崩溃 / 原生崩溃：先记 voice.exit 事件 + 日志，再退出
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout), elog.LogBridge(log_ev)]  # stdout：避免 PowerShell 把 stderr 当错误；LogBridge：WARNING 以上同步进事件流
     if a.log_file:
         handlers.append(logging.handlers.RotatingFileHandler(a.log_file, maxBytes=LOG_MAX_BYTES, backupCount=3,

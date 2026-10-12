@@ -115,8 +115,36 @@ function Wait-Deps {
     }
 }
 
+# Start-Process -RedirectStandardError 每次拉起都会清空 voice-stderr.txt：上一个进程的崩溃堆栈必须先存档，否则下一次拉起就丢了
+# （2026-10-11/12 事故：python 以退出码 1 退出，堆栈只在 stderr，被下一次拉起清空，事后 voice-stderr.txt 是空的）
+$StderrPath = Join-Path $LogDir 'voice-stderr.txt'
+function Save-Stderr([int]$Code, [switch]$Pre) {
+    $abnormal = (-not $Pre) -and $Code -ne 0 -and $Code -ne 3  # 负数退出码（原生崩溃）也算异常
+    try {
+        if (-not (Test-Path $StderrPath)) { return }
+        $text = [IO.File]::ReadAllText($StderrPath, [Text.Encoding]::UTF8)
+        if ($text.Trim().Length -eq 0) {
+            if ($abnormal) { Write-Log 'stderr empty (no traceback): see voice.log / events voice.exit' }
+            return
+        }
+        $hist = Join-Path $LogDir 'voice-stderr.history.txt'
+        Add-Content -Path $hist -Value ("===== {0:yyyy-MM-dd HH:mm:ss} code={1} =====`r`n{2}" -f (Get-Date), $Code, $text) -Encoding UTF8
+        if ((Get-Item $hist).Length -gt 512KB) {  # 只留尾巴，别无限长大
+            $all = [IO.File]::ReadAllText($hist, [Text.Encoding]::UTF8)
+            [IO.File]::WriteAllText($hist, $all.Substring($all.Length - 200KB), [Text.UTF8Encoding]::new($true))
+        }
+        if ($abnormal) {  # 异常退出：把堆栈尾巴也写进看门狗日志，一份日志就能看全
+            foreach ($l in ($text -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 12)) {
+                Write-Log ('stderr: ' + $l.Substring(0, [Math]::Min(300, $l.Length)))
+            }
+        }
+        Clear-Content -Path $StderrPath
+    } catch { Write-Log "save stderr failed: $($_.Exception.Message)" }
+}
+
 $backoff = $BackoffStartSec
 while ($true) {
+    Save-Stderr 0 -Pre  # 上一个看门狗被杀时没来得及存档的 stderr
     Wait-Deps
     Import-VoiceEnv
     $t0 = Get-Date
@@ -136,6 +164,7 @@ while ($true) {
     $code = $p.ExitCode
     $ran = [int]((Get-Date) - $t0).TotalSeconds
     Write-Log "voice exited code=$code after ${ran}s"
+    Save-Stderr $code
     if ($code -eq 0) { Write-Log 'quit requested (tray), supervisor exit'; break }
     if ($code -eq 3) { Write-Log 'restart requested (tray)'; $backoff = $BackoffStartSec; continue }
     if ($ran -ge 300) { $backoff = $BackoffStartSec }
