@@ -54,4 +54,14 @@ $hist = Join-Path $Dir 'voice-stderr.history.txt'
 Check ((Test-Path $hist) -and ((Get-Content $hist -Raw -Encoding UTF8) -match 'boom-fake-stderr')) 'stderr is archived to voice-stderr.history.txt before the next launch clears it'
 $live = [string](Get-Content (Join-Path $Dir 'voice-stderr.txt') -Raw -ErrorAction SilentlyContinue)
 Check (-not ($live -match 'boom-fake-stderr')) 'live stderr file starts clean again'
+# 4. 等 TTS 超时：主动触发一次 TTS 自启任务（只一次，之后每次重启都不再触发）；网关 / TTS 用一个必然连不上的端口模拟
+Remove-Item "$Dir\counter.txt", "$Dir\kick.txt" -ErrorAction SilentlyContinue
+$log = Join-Path $Dir 'kick.log'
+$a = "-NoProfile -ExecutionPolicy Bypass -File `"$Sup`" -Exe `"$Py`" -ArgLine `"tests\fake_voice_child.py $Dir\counter.txt`" -LogPath `"$log`" -MutexName Local\GjSupTest -BackoffStartSec 1 -BackoffMaxSec 2 -DepsTimeoutSec 2 -GatewayPort 1 -TtsHealthUrl http://127.0.0.1:1/health -TtsKickCmd `"echo kicked>>$Dir\kick.txt`""
+$null = Start-Process powershell.exe -ArgumentList $a -PassThru -NoNewWindow -Wait
+$text = Get-Content $log -Raw -Encoding UTF8
+Check ((([regex]::Matches($text, 'deps not ready after')).Count) -ge 3) 'tts wait times out on every (re)start (child ran 3 times)'
+Check ((([regex]::Matches($text, 'triggered once')).Count) -eq 1) 'tts autostart task triggered exactly once per supervisor'
+Check (@(Get-Content "$Dir\kick.txt").Count -eq 1) 'the kick command really ran once'
+Check ($text -match 'starting anyway') 'voice still starts after the wait times out'
 'ALL PASS test_p2_supervisor'

@@ -15,6 +15,9 @@ param(
     [string]$LogPath = 'F:\coding\guanjia\tmp\voice-supervisor.log',
     [string]$MutexName = 'Local\GuanjiaVoiceSupervisor',
     [int]$DepsTimeoutSec = 180,
+    [int]$GatewayPort = 18789,
+    [string]$TtsHealthUrl = 'http://127.0.0.1:18791/health',
+    [string]$TtsKickCmd = 'schtasks.exe /Run /TN GuanjiaTTS-WSL',  # 等 TTS 超时时主动拉起一次开机自启任务（只一次；不改任务定义）
     [int]$BackoffStartSec = 5,
     [int]$BackoffMaxSec = 60,
     [switch]$SkipDeps
@@ -101,15 +104,33 @@ function Test-Http([string]$Url) {
     } catch { return $false }
 }
 
+# TTS 等了 DepsTimeoutSec 秒还没起来（开机自启失败的典型表现）：主动触发一次开机自启任务；本进程生命周期内只触发一次。
+# 任务已经在 Running（启动器还在重试）时，schtasks /Run 会因 MultipleInstancesPolicy=IgnoreNew 被忽略，无害。
+$script:TtsKicked = $false
+function Invoke-TtsKick {
+    if ($script:TtsKicked) { return }
+    $script:TtsKicked = $true
+    $outF = Join-Path $LogDir 'tts-kick.out'
+    try {
+        $k = Start-Process -FilePath cmd.exe -ArgumentList "/c $TtsKickCmd" -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError (Join-Path $LogDir 'tts-kick.err')
+        $txt = (([IO.File]::ReadAllText($outF, [Text.Encoding]::Default)) -replace '\s+', ' ').Trim()
+        Write-Log "tts not ready: triggered once: $TtsKickCmd -> exit=$($k.ExitCode) $txt"
+    } catch { Write-Log "tts kick failed: $($_.Exception.Message)" }
+}
+
 function Wait-Deps {
     if ($SkipDeps) { return }
     $t0 = Get-Date
     while ($true) {
-        $gw = Test-Port 18789
-        $tts = Test-Http 'http://127.0.0.1:18791/health'
+        $gw = Test-Port $GatewayPort
+        $tts = Test-Http $TtsHealthUrl
         if ($gw -and $tts) { Write-Log 'deps ready (gateway, tts)'; return }
         $waited = [int]((Get-Date) - $t0).TotalSeconds
-        if ($waited -ge $DepsTimeoutSec) { Write-Log ('deps not ready after {0}s (gateway={1} tts={2}), starting anyway' -f $waited, $gw, $tts); return }
+        if ($waited -ge $DepsTimeoutSec) {
+            if (-not $tts) { Invoke-TtsKick }
+            Write-Log ('deps not ready after {0}s (gateway={1} tts={2}), starting anyway' -f $waited, $gw, $tts)
+            return
+        }
         if (-not (Test-ParentAlive)) { Write-Log 'parent gone while waiting deps, exit'; exit 0 }
         Start-Sleep -Seconds 3
     }
