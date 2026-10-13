@@ -134,6 +134,25 @@ check(res.backend == "sensevoice" and res.fallback == "timeout", "slow remote ->
 check(time.perf_counter() - t0 < 1.0, "did not wait for the slow remote")
 check(ev and ev[0][2]["reason"] == "timeout", "timeout event")
 
+# ---------- 5b. 超时随语音时长放宽；服务活着时的超时不计入熔断 ----------
+long_x = np.full(SR * 6, 0.3, dtype=np.float32)
+f, ev, _ = make(FakeRemote(delay=0.35), remote_timeout=0.2, remote_timeout_per_sec=0.1)
+check(abs(f.remote_timeout_for(6.0) - 0.5) < 1e-9 and f.remote_timeout_for(1.0) == 0.2 and f.remote_timeout_for(3.0) == 0.2,
+      "timeout grows with speech beyond 3s only")
+check(f.transcribe_ex(long_x).backend == "fireredasr2", "6s segment: 0.35s decode fits the stretched 0.5s timeout")
+res = f.transcribe_ex(x)
+check(res.backend == "sensevoice" and res.fallback == "timeout", "1s segment: the same delay times out")
+r = FakeRemote(delay=0.4)  # /health 一直是好的
+f, ev, _ = make(r, remote_timeout=0.1)
+for _ in range(BREAKER_FAILS + 2):
+    f.transcribe_ex(x)
+check(f._open_until == 0.0 and f._fails == 0 and len(ev) == BREAKER_FAILS + 2, "slow-but-alive: every timeout falls back, none opens the breaker")
+check(all(e[2]["counted"] is False for e in ev), "events say counted=False")
+r.alive_val = False
+for _ in range(BREAKER_FAILS):
+    f.transcribe_ex(x)
+check(f._open_until > 0, "timeouts while /health is dead do count and open the breaker")
+
 # ---------- 6. 熔断 ----------
 r = FakeRemote(fail=ConnectionError("down"))
 f, ev, clock = make(r)

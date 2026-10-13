@@ -60,7 +60,8 @@ SR = 16000
 # 识别前给音频前后各补这么长的零：VAD 段头静音中位仅 ~40ms、段尾 ~80ms，2025 版 SenseVoice 会因此丢首字/尾字
 # （实测 3/3 丢首字恢复）；流式识别器有 0.5s 预滚与真实尾静音，二次识别以前没有。
 PAD_SEC = 0.4
-REMOTE_TIMEOUT_SEC = 0.8  # GPU 服务单段超时：超过就当段回退 SenseVoice
+REMOTE_TIMEOUT_SEC = 0.8  # GPU 服务单段超时（3 秒以内的语音）：超过就当段回退 SenseVoice
+REMOTE_TIMEOUT_PER_SEC = 0.12  # 超过 3 秒的部分，每秒语音多给这么多超时
 BREAKER_FAILS = 3  # 连续失败这么多次，熔断（暂时只用 SenseVoice）
 BREAKER_PROBE_SEC = 30.0  # 熔断后每隔这么久探一次活
 PREWARM_MIN_INTERVAL_SEC = 1.0  # 预热（给显卡加热）的最小间隔
@@ -117,7 +118,8 @@ class FinalASRConfig:
     use_itn: bool = True
     timeout: float = 3.0  # SenseVoice 单句识别超时（秒），超时回退流式结果
     pad_sec: float = PAD_SEC  # 识别前后各补的零（秒）
-    remote_timeout: float = REMOTE_TIMEOUT_SEC  # GPU 服务单段超时（秒）
+    remote_timeout: float = REMOTE_TIMEOUT_SEC  # GPU 服务单段超时（秒，3 秒以内的语音）
+    remote_timeout_per_sec: float = REMOTE_TIMEOUT_PER_SEC  # 语音超过 3 秒后，每多 1 秒语音多给的超时（秒）
     gaming_free_mb: int = field(default_factory=lambda: int(os.environ.get(GAMING_FREE_MB_ENV, "2048")))  # 游戏态下空闲显存低于它就卸载
 
 
@@ -250,11 +252,16 @@ class FinalASR:
                 return False, "breaker_open"
         return True, ""
 
-    def _remote_failed(self, reason: str, exc: BaseException | None) -> None:
-        self._fails += 1
+    def remote_timeout_for(self, dur_sec: float) -> float:
+        """GPU 服务这一段的超时：解码耗时和说了多少字成正比（实测 ≈ 每秒语音 ~0.1s，3 秒以内 <0.3s），所以长句放宽。"""
+        return self.cfg.remote_timeout + self.cfg.remote_timeout_per_sec * max(0.0, dur_sec - 3.0)
+
+    def _remote_failed(self, reason: str, exc: BaseException | None, count: bool = True) -> None:
+        if count:
+            self._fails += 1
         self._emit("asr.fallback", f"FireRedASR2 {reason}，这一段改用 SenseVoice", level="warn", reason=reason, fails=self._fails,
-                   error=(f"{type(exc).__name__}: {exc}"[:200] if exc else None))
-        if self._fails >= BREAKER_FAILS and not self._open_until:
+                   counted=count, error=(f"{type(exc).__name__}: {exc}"[:200] if exc else None))
+        if count and self._fails >= BREAKER_FAILS and not self._open_until:
             self._open_until = self._clock() + BREAKER_PROBE_SEC
             self._emit("asr.fallback", f"FireRedASR2 连续失败 {self._fails} 次，暂时只用 SenseVoice（每 {BREAKER_PROBE_SEC:.0f}s 探活）",
                        level="warn", reason="breaker_open", fails=self._fails)
@@ -313,10 +320,12 @@ class FinalASR:
         if use_remote:
             fut = self._rpool.submit(self._remote.recognize, pad_audio(x, self.cfg.pad_sec))
             try:
-                r = fut.result(timeout=self.cfg.remote_timeout)
+                r = fut.result(timeout=self.remote_timeout_for(len(x) / SR))
             except FutureTimeout:
                 why = "timeout"
-                self._remote_failed(why, None)
+                # 服务还活着只是这一段慢（长句、没有结束符跑飞的解码）→ 回退这一段，但不算"服务故障"，不计入熔断；
+                # 服务连 /health 都不应才算失败
+                self._remote_failed(why, None, count=not self._remote.alive())
             except Exception as e:  # noqa: BLE001  连接被拒、5xx、JSON 坏了……都当这一段回退
                 why = "error"
                 self._remote_failed(why, e)
