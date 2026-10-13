@@ -175,8 +175,11 @@ class AudioGuard:
                        level="warn", action="none", **zero, **self._describe())
         if pending is not None:
             ev = self.wd.selfcheck(pending[2])
+            desc = dict(self._describe())
+            if "rate" in desc:  # 设备采样率改名：ev["rate"] 是帧率比，两个 ** 展开同名会 TypeError、让语音进程退出
+                desc["device_rate"] = desc.pop("rate")
             self._emit("audio", "audio.selfcheck", f"{pending[1]} 后输入流自检{'正常' if ev['ok'] else '异常'}",
-                       level="info" if ev["ok"] else "warn", reason=pending[1], **ev, **self._describe())
+                       level="info" if ev["ok"] else "warn", reason=pending[1], **ev, **desc)
         return "ok"
 
     def info(self) -> dict:

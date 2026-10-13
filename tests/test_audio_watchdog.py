@@ -207,6 +207,24 @@ clk.t += 20
 check(g.tick(True) == "ok" and not events, "self-check dropped when gaming starts")
 check(g.tick(False) == "ok" and not any(e[1] == "audio.selfcheck" for e in events), "dropped self-check does not come back")
 
+# 回归（2026-10-12/13 两次崩溃）：线上 describe() 带 "rate"（设备采样率），自检结果也有 "rate"（实际帧率/期望帧率），
+# 两个 ** 展开撞名 → TypeError 让语音进程退出。自检事件里设备采样率改叫 device_rate，rate 仍是帧率比。
+clk = Clock()
+events = []
+wd = InputWatchdog(clock=clk)
+wd.arm()
+g = AudioGuard(wd, emit=lambda comp, ev, msg="", **k: events.append((comp, ev, msg, k)), clock=clk,
+               describe=lambda: {"in_name": "fake mic", "out_name": "fake spk", "rate": 16000})
+g.request_selfcheck("launch_app", delay=15.0)
+feed(wd, clk, 16, signal=False)
+try:
+    r = g.tick(False)
+except TypeError as e:
+    r = f"TypeError: {e}"
+check(r == "ok" and [e[1] for e in events] == ["audio.selfcheck"] and 0.9 < events[0][3]["rate"] <= 1.1
+      and events[0][3]["device_rate"] == 16000 and events[0][3]["in_name"] == "fake mic",
+      f"self-check with a describe() that has 'rate' no longer crashes: {r}")
+
 
 # ---------- 3. VoiceDaemon 接线 ----------
 def make():
