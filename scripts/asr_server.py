@@ -269,6 +269,7 @@ def _run(samples: np.ndarray) -> dict:
     except Exception:  # noqa: BLE001  拿不到逐 token 置信度不影响识别结果
         pass
     out["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    print(f"asr {out['dur_s']:.1f}s {out['ms']:.0f}ms conf={out['conf']}", flush=True)  # 每段一行：以后查慢请求用
     return out
 
 

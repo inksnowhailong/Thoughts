@@ -133,6 +133,7 @@ class FinalResult:
     conf: float | None = None  # FireRedASR2 逐 token 概率均值（只记录，暂不参与决策）
     min_conf: float | None = None  # 最没把握的那个 token 的概率
     fallback: str = ""
+    server_ms: float | None = None  # GPU 服务端的推理耗时；ms − server_ms = 传输 + 排队
 
 
 class FireRedClient:
@@ -333,7 +334,7 @@ class FinalASR:
                 self._fails = 0
                 text = _clean(r.get("text") or "")
                 return FinalResult(text or fallback, BACKEND_FIRERED, round((time.perf_counter() - t0) * 1000),
-                                   r.get("conf"), r.get("min_conf"))
+                                   r.get("conf"), r.get("min_conf"), server_ms=r.get("ms"))
         text = self._transcribe_sv(x, fallback, timeout)
         return FinalResult(text, BACKEND_SENSEVOICE, round((time.perf_counter() - t0) * 1000), fallback=why)
 

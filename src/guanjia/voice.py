@@ -599,7 +599,8 @@ class VoiceDaemon:
                                      timings=timings, **asr_fields)
         if seg_sec is not None:
             self.hub.stage(uid, "vad", "done", f"{seg_sec:.1f} 秒")
-        asr_data = ({"backend": asr.backend, "ms": asr.ms, "conf": asr.conf, "min_conf": asr.min_conf, "fallback": asr.fallback or None}
+        asr_data = ({"backend": asr.backend, "ms": asr.ms, "server_ms": asr.server_ms, "conf": asr.conf, "min_conf": asr.min_conf,
+                     "fallback": asr.fallback or None}
                     if asr is not None else {})
         self.hub.stage(uid, "asr", "blocked" if d.stage == "filler" else "done",
                        d.reason if d.stage == "filler" else text[:20], **asr_data)

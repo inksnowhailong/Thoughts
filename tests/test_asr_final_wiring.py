@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory() as dirpath:
     log = elog.init("voice", log_dir=Path(dirpath), sync=True)
     try:
         # ---------- 1. _frontend_step 把 FinalResult 原样交给 _on_heard ----------
-        res = FinalResult("管家开灯", "fireredasr2", 180, 0.97, 0.62)
+        res = FinalResult("管家开灯", "fireredasr2", 180, 0.97, 0.62, server_ms=120.0)
         d = object.__new__(voice.VoiceDaemon)
         d._lock, d._stop_evt = threading.Lock(), threading.Event()
         d.sr, d.state = 16000, "LISTENING"
@@ -103,7 +103,8 @@ with tempfile.TemporaryDirectory() as dirpath:
               f"record carries backend / confidence: {({k: v for k, v in rec.items() if k.startswith('asr_')})}")
         ev = [e for e in events(dirpath, "asr.done") if (e.get("uid") or e["data"].get("uid")) == out["uid"]]
         check(len(ev) == 1 and ev[0]["data"]["backend"] == "fireredasr2" and ev[0]["data"]["ms"] == 180 and ev[0]["data"]["conf"] == 0.97
-              and ev[0]["data"]["min_conf"] == 0.62, f"asr.done event has backend/ms/conf: {ev[0]['data'] if ev else None}")
+              and ev[0]["data"]["min_conf"] == 0.62 and ev[0]["data"]["server_ms"] == 120.0,
+              f"asr.done event has backend/ms/server_ms/conf: {ev[0]['data'] if ev else None}")
         fb = FinalResult("管家开灯", "sensevoice", 240, fallback="timeout")
         out = d2._on_heard("管家开灯", 0.6, source="mic", stream_text="管家开灯", asr=fb)
         rec = d2.hub.record(out["uid"])
