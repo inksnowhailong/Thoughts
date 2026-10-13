@@ -6,16 +6,18 @@
 #   - 每次尝试：启动 wsl.exe；StartTimeoutSec 内端口监听了 = 成功（模型加载约 20~60 秒，服务加载完才开始监听），之后一直等 wsl.exe 结束
 #     （任务保持 Running；MultipleInstancesPolicy=IgnoreNew 靠它防重复启动）
 #   - wsl.exe 提前退出、或超时一直没监听 → 记日志，等 IntervalSec 秒后重试，最多 MaxAttempts 次，用完记 gave up，退出 1
+#   - 起来之后服务异常退出（被 OOM 杀、崩溃）→ 同样算一次失败并重启（TTS 启动器没有这一条，这里加上）
 # 它是语音的「可选依赖」：没起来语音照常启动，二次识别走 SenseVoice 回退（见 asr_final.py），语音看门狗只会在起不来时顺手拉一次任务。
 #
 # 服务本体：scripts/asr_server.py，跑在 WSL 的独立 venv ~/guanjia-asr/venv（不碰 IndexTTS 的环境）。
 # 为什么用 base64 传启动命令：不依赖任何 .sh 文件（git 的 autocrlf 会把 .sh 变成 CRLF 让 bash 报错），也躲开多层引号。
 # 命令内容（可 base64 -d 查看）：
+#   echo 500 > /proc/self/oom_score_adj   (WSL 内存吃紧时先杀 ASR、别杀 TTS)
 #   export GUANJIA_ASR_PORT=18798 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #   exec $HOME/guanjia-asr/venv/bin/python -u /mnt/f/coding/guanjia/scripts/asr_server.py > /mnt/f/coding/guanjia/tmp/asr_wsl.log 2>&1
 param(
     [string]$Exe = 'wsl.exe',
-    [string]$ExeArgs = '-d Ubuntu -- bash -c "echo ZXhwb3J0IEdVQU5KSUFfQVNSX1BPUlQ9MTg3OTggUFlUT1JDSF9DVURBX0FMTE9DX0NPTkY9ZXhwYW5kYWJsZV9zZWdtZW50czpUcnVlCmV4ZWMgJEhPTUUvZ3VhbmppYS1hc3IvdmVudi9iaW4vcHl0aG9uIC11IC9tbnQvZi9jb2RpbmcvZ3VhbmppYS9zY3JpcHRzL2Fzcl9zZXJ2ZXIucHkgPiAvbW50L2YvY29kaW5nL2d1YW5qaWEvdG1wL2Fzcl93c2wubG9nIDI+JjEK | base64 -d | bash"',
+    [string]$ExeArgs = '-d Ubuntu -- bash -c "echo ZWNobyA1MDAgPiAvcHJvYy9zZWxmL29vbV9zY29yZV9hZGoKZXhwb3J0IEdVQU5KSUFfQVNSX1BPUlQ9MTg3OTggUFlUT1JDSF9DVURBX0FMTE9DX0NPTkY9ZXhwYW5kYWJsZV9zZWdtZW50czpUcnVlCmV4ZWMgJEhPTUUvZ3VhbmppYS1hc3IvdmVudi9iaW4vcHl0aG9uIC11IC9tbnQvZi9jb2RpbmcvZ3VhbmppYS9zY3JpcHRzL2Fzcl9zZXJ2ZXIucHkgPiAvbW50L2YvY29kaW5nL2d1YW5qaWEvdG1wL2Fzcl93c2wubG9nIDI+JjEK | base64 -d | bash"',
     [int]$Port = 18798,
     [int]$MaxAttempts = 5,
     [int]$IntervalSec = 30,
@@ -89,6 +91,10 @@ for ($i = 1; $i -le $MaxAttempts; $i++) {
         $code = $p.ExitCode
         Write-Log ("server exited code=$code after {0}s (attempt $i)" -f [int]((Get-Date) - $t0).TotalSeconds)
         Remove-Item $outF, $errF -ErrorAction SilentlyContinue
+        if ($code -eq 0) { exit 0 }
+        # 起来之后异常退出（WSL 内存被 TTS 占满时被 OOM killer 杀掉、崩溃、被手动 pkill）：算一次失败，隔一会重启；
+        # 语音那边在这期间走 SenseVoice 回退，服务起来后探活自动恢复
+        if ($i -lt $MaxAttempts) { Write-Log "attempt ${i}: server died, restart in ${IntervalSec}s"; Start-Sleep -Seconds $IntervalSec; continue }
         exit $code
     }
     $ran = [int]((Get-Date) - $t0).TotalSeconds

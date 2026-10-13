@@ -6,7 +6,7 @@ POST /warm     开始给显卡加热（听见有人开口时调；识别/卸载�
 POST /unload   释放模型与显存（守护进程进入游戏态、显存紧张时调用）
 POST /load     重新加载模型（退出游戏时调用，阻塞到加载完成）
 GET  /health   200，正文 ok / unloaded
-GET  /stats    JSON：模型是否加载、显卡空闲/总显存（MB）、本进程已用显存（MB）
+GET  /stats    JSON：模型是否加载、显卡空闲/总显存（MB）、本进程已用显存（MB）、本进程常驻内存 rss_mb
 
 用 HTTP/1.1 长连接（客户端复用连接，省掉每段一次 TCP 握手）。模型只加载一次；卸载后来的第一个 /asr 会自动加载。
 启动：计划任务 GuanjiaASR-WSL → scripts/wsl-asr-launcher.ps1（带重试）。环境变量：
@@ -120,7 +120,7 @@ def _gpu_mb() -> dict:
         return {}
     free, total = torch.cuda.mem_get_info()
     return {"gpu_free_mb": int(free / 2**20), "gpu_total_mb": int(total / 2**20),
-            "proc_mb": int(torch.cuda.memory_reserved() / 2**20)}
+            "proc_mb": int(torch.cuda.memory_reserved() / 2**20), "rss_mb": _rss_mb()}
 
 
 _heat_go = threading.Event()  # 常驻加热线程的"开工"信号
@@ -165,6 +165,48 @@ def _start_heat(max_sec: float = 10.0) -> None:
 def _stop_heat() -> None:
     _heat_stop.set()  # 加热循环每个小批次检查一次，几毫秒内停；不 join，免得识别请求等它
 
+def _trim_heap() -> None:
+    """把空闲堆还给系统：glibc 释放大块内存后不一定归还，WSL 里内存总共 16GB 要和 TTS（~7.5GB）共用。"""
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _rss_mb() -> int:
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 2**20
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _build_asr(cfg) -> FireRedAsr2:
+    """等价于 FireRedAsr2.from_pretrained("aed", ...)，但内存友好：官方做法把 4GB 的 fp32 权重先整个读进内存、再建一份
+    fp32 模型拷贝、再转 fp16 上 GPU，峰值 ~8GB、之后常驻 ~4GB（实测，并在 WSL 里和 TTS 一起把 16GB 撑爆，被 OOM killer 杀掉）。
+    这里用 mmap 读权重（页缓存，可回收），模型直接建在 GPU 上，权重从 mmap 流式拷进去。"""
+    from fireredasr2.data.asr_feat import ASRFeatExtractor
+    from fireredasr2.models.fireredasr_aed import FireRedAsrAed
+    from fireredasr2.tokenizer.aed_tokenizer import ChineseCharEnglishSpmTokenizer
+
+    feat = ASRFeatExtractor(os.path.join(MODEL_DIR, "cmvn.ark"))
+    path = os.path.join(MODEL_DIR, "model.pth.tar")
+    try:
+        package = torch.load(path, map_location="cpu", mmap=True, weights_only=False)
+    except Exception as e:  # noqa: BLE001  老格式不支持 mmap：退回整个读入
+        print(f"mmap load failed ({e!r}), falling back to a full read", flush=True)
+        package = torch.load(path, map_location="cpu", weights_only=False)
+    with torch.device("cuda"):
+        model = FireRedAsrAed.from_args(package["args"])
+    model.load_state_dict(package["model_state_dict"], strict=False)
+    del package
+    model.eval()
+    tokenizer = ChineseCharEnglishSpmTokenizer(os.path.join(MODEL_DIR, "dict.txt"), os.path.join(MODEL_DIR, "train_bpe1000.model"))
+    return FireRedAsr2("aed", feat, model, tokenizer, None, cfg)  # __init__ 里按配置转 fp16（逐个参数原地转，不会再占一份）
+
+
 def _load() -> None:
     """加载并预热（只在 GPU 工作线程里调用）；已加载则直接返回。"""
     global asr
@@ -173,7 +215,9 @@ def _load() -> None:
     t0 = time.perf_counter()
     cfg = FireRedAsr2Config(use_gpu=True, use_half=DTYPE != "fp32", beam_size=BEAM, nbest=1, decode_max_len=0,
                             softmax_smoothing=1.25, aed_length_penalty=0.6, eos_penalty=1.0, return_timestamp=False)
-    asr = FireRedAsr2.from_pretrained("aed", MODEL_DIR, cfg)
+    asr = _build_asr(cfg)
+    torch.cuda.empty_cache()  # 建模型时 fp32 的临时显存（~4.4GB）转 fp16 后还留在缓存里，还给系统，常驻只剩 ~2.3GB
+    _trim_heap()
     orig = asr.model.transcribe
 
     def wrapped(*a, **k):
@@ -199,6 +243,7 @@ def _unload() -> None:
     _captured.clear()
     gc.collect()
     torch.cuda.empty_cache()
+    _trim_heap()
     print(f"unloaded {_gpu_mb()}", flush=True)
 
 
