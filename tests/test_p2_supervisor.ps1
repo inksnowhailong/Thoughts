@@ -57,11 +57,27 @@ Check (-not ($live -match 'boom-fake-stderr')) 'live stderr file starts clean ag
 # 4. 等 TTS 超时：主动触发一次 TTS 自启任务（只一次，之后每次重启都不再触发）；网关 / TTS 用一个必然连不上的端口模拟
 Remove-Item "$Dir\counter.txt", "$Dir\kick.txt" -ErrorAction SilentlyContinue
 $log = Join-Path $Dir 'kick.log'
-$a = "-NoProfile -ExecutionPolicy Bypass -File `"$Sup`" -Exe `"$Py`" -ArgLine `"tests\fake_voice_child.py $Dir\counter.txt`" -LogPath `"$log`" -MutexName Local\GjSupTest -BackoffStartSec 1 -BackoffMaxSec 2 -DepsTimeoutSec 2 -GatewayPort 1 -TtsHealthUrl http://127.0.0.1:1/health -TtsKickCmd `"echo kicked>>$Dir\kick.txt`""
+Remove-Item "$Dir\asrkick.txt" -ErrorAction SilentlyContinue
+$a = "-NoProfile -ExecutionPolicy Bypass -File `"$Sup`" -Exe `"$Py`" -ArgLine `"tests\fake_voice_child.py $Dir\counter.txt`" -LogPath `"$log`" -MutexName Local\GjSupTest -BackoffStartSec 1 -BackoffMaxSec 2 -DepsTimeoutSec 2 -GatewayPort 1 -TtsHealthUrl http://127.0.0.1:1/health -TtsKickCmd `"echo kicked>>$Dir\kick.txt`" -AsrPort 1 -AsrKickCmd `"echo asrkicked>>$Dir\asrkick.txt`""
 $null = Start-Process powershell.exe -ArgumentList $a -PassThru -NoNewWindow -Wait
 $text = Get-Content $log -Raw -Encoding UTF8
 Check ((([regex]::Matches($text, 'deps not ready after')).Count) -ge 3) 'tts wait times out on every (re)start (child ran 3 times)'
 Check ((([regex]::Matches($text, 'triggered once')).Count) -eq 1) 'tts autostart task triggered exactly once per supervisor'
 Check (@(Get-Content "$Dir\kick.txt").Count -eq 1) 'the kick command really ran once'
 Check ($text -match 'starting anyway') 'voice still starts after the wait times out'
+# 5. ASR（FireRedASR2 GPU 服务）是可选依赖：没起来只拉一次任务、不等它（语音照常启动，走 SenseVoice 回退）；在线就不动
+Check ((([regex]::Matches($text, 'asr not up')).Count) -eq 1) 'asr task kicked exactly once per supervisor when its port is down'
+Check (@(Get-Content "$Dir\asrkick.txt").Count -eq 1) 'the asr kick command really ran once'
+Check (-not ($text -match 'wait(ing)? for asr') -and -not ($text -match 'deps ready \(gateway, tts, asr')) 'asr is never waited for'
+$lis = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$lis.Start()
+$asrPort = $lis.LocalEndpoint.Port
+Remove-Item "$Dir\counter.txt", "$Dir\asrkick.txt" -ErrorAction SilentlyContinue
+$log = Join-Path $Dir 'asrup.log'
+$a = "-NoProfile -ExecutionPolicy Bypass -File `"$Sup`" -Exe `"$Py`" -ArgLine `"tests\fake_voice_child.py $Dir\counter.txt`" -LogPath `"$log`" -MutexName Local\GjSupTest -BackoffStartSec 1 -BackoffMaxSec 2 -DepsTimeoutSec 1 -GatewayPort 1 -TtsHealthUrl http://127.0.0.1:1/health -TtsKickCmd `"echo kicked>>$Dir\kick2.txt`" -AsrPort $asrPort -AsrKickCmd `"echo asrkicked>>$Dir\asrkick.txt`""
+$null = Start-Process powershell.exe -ArgumentList $a -PassThru -NoNewWindow -Wait
+$lis.Stop()
+$text = Get-Content $log -Raw -Encoding UTF8
+Check ($text -match 'asr ready') 'asr port listening: logged as ready'
+Check (-not (Test-Path "$Dir\asrkick.txt")) 'asr already up: task not kicked'
 'ALL PASS test_p2_supervisor'

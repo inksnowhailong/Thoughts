@@ -18,6 +18,8 @@ param(
     [int]$GatewayPort = 18789,
     [string]$TtsHealthUrl = 'http://127.0.0.1:18791/health',
     [string]$TtsKickCmd = 'schtasks.exe /Run /TN GuanjiaTTS-WSL',  # 等 TTS 超时时主动拉起一次开机自启任务（只一次；不改任务定义）
+    [int]$AsrPort = 18798,  # FireRedASR2 GPU 识别服务（WSL）：可选依赖，不等它，没起来只拉一次开机自启任务；语音走 SenseVoice 回退
+    [string]$AsrKickCmd = 'schtasks.exe /Run /TN GuanjiaASR-WSL',
     [int]$BackoffStartSec = 5,
     [int]$BackoffMaxSec = 60,
     [switch]$SkipDeps
@@ -118,8 +120,24 @@ function Invoke-TtsKick {
     } catch { Write-Log "tts kick failed: $($_.Exception.Message)" }
 }
 
+# ASR 是「可选依赖」：永远不等它。本进程生命周期内只检查/触发一次——端口没在监听就拉一次 GuanjiaASR-WSL 任务
+# （已在 Running 时 schtasks /Run 因 IgnoreNew 被忽略，无害）。起不来语音照常启动，二次识别走 SenseVoice，起来后自动恢复（asr_final 探活）。
+$script:AsrChecked = $false
+function Invoke-AsrCheck {
+    if ($script:AsrChecked) { return }
+    $script:AsrChecked = $true
+    if (Test-Port $AsrPort) { Write-Log "asr ready (port $AsrPort)"; return }
+    $outF = Join-Path $LogDir 'asr-kick.out'
+    try {
+        $k = Start-Process -FilePath cmd.exe -ArgumentList "/c $AsrKickCmd" -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError (Join-Path $LogDir 'asr-kick.err')
+        $txt = (([IO.File]::ReadAllText($outF, [Text.Encoding]::Default)) -replace '\s+', ' ').Trim()
+        Write-Log "asr not up (optional, not waiting): kicked once: $AsrKickCmd -> exit=$($k.ExitCode) $txt"
+    } catch { Write-Log "asr kick failed: $($_.Exception.Message)" }
+}
+
 function Wait-Deps {
     if ($SkipDeps) { return }
+    Invoke-AsrCheck
     $t0 = Get-Date
     while ($true) {
         $gw = Test-Port $GatewayPort
