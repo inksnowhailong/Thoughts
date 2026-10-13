@@ -47,7 +47,7 @@ from pyaec import Aec
 
 from guanjia import elog
 from guanjia.asr import StreamingASR
-from guanjia.asr_final import FinalASR
+from guanjia.asr_final import FinalASR, FinalResult
 from guanjia.audio_cues import earcon
 from guanjia.audio_watchdog import AudioGuard, InputWatchdog
 from guanjia.audittail import AuditTail, PendingConfirm
@@ -338,7 +338,8 @@ class VoiceDaemon:
             log.warning("声纹库为空，默认放行所有声音；请先用面板「声纹」卡片或 python -m guanjia.enroll 注册")
             self._spare_gate, self.gate = self.gate, None  # 门不用，但留着给注册（省一次模型加载，也能报出读库失败的原因）
         self.asr = StreamingASR()
-        self.asr_final = FinalASR()  # 整段精识别（SenseVoice int8）：段结束后替换流式结果，失败回退流式
+        # 整段精识别：FireRedASR2（WSL 里的 GPU 服务）为主、SenseVoice 回退；段结束后替换流式结果，失败回退流式
+        self.asr_final = FinalASR(on_event=self._asr_event)
         self.brain = Brain(session_key=MAIN_SESSION_KEY)  # 主线会话；流不可提前关（见 brain.py）
         self.tts = TTSClient(timeout=TTS_TIMEOUT_SEC)
         self.runner = TurnRunner(
@@ -461,6 +462,7 @@ class VoiceDaemon:
         if speaking_now:
             if not self._was_speech:  # 起判沿：VAD 要人声满 0.25s 才翻 true，先把预滚补喂进 ASR
                 self.hub.stage(None, "vad", "active", "有人在说话")
+                self._prewarm_final()  # 让 GPU 识别服务趁这段话还没说完先给显卡加热（空闲时显卡在 P8，冷启动慢一倍多）
                 for c in self._preroll:
                     self.asr.feed(self._asr_stream, c, SR16K)
             self.asr.feed(self._asr_stream, y, SR16K)
@@ -488,7 +490,8 @@ class VoiceDaemon:
                                    zero_frac=round(float(np.mean(raw == 0)), 2) if len(raw) else None)
                 continue
             spk_fut = self._submit_identify(seg.samples)  # 声纹认人与二次识别同时跑（推理释放 GIL），都完成后再判定
-            text = self.asr_final.transcribe(seg.samples, fallback=stream_text)
+            asr_res = self.asr_final.transcribe_ex(seg.samples, fallback=stream_text)
+            text = asr_res.text
             asr_ms = round((time.monotonic() - t_asr) * 1000)
             if is_unconfirmed_by_stream(text, stream_text):  # 流式一个字没出、二次识别却出了中文：疑似幻觉，当没识别出字
                 self._drop_segment(seg, "unconfirmed", "没识别出字（流式没出字，疑似幻觉）", text, text=text, stream_text=stream_text)
@@ -503,7 +506,17 @@ class VoiceDaemon:
             front_ms = round((time.monotonic() - t_asr) * 1000)  # 识别 ∥ 声纹 并行后的总耗时
             log.debug("front asr=%dms speaker=%sms parallel_total=%dms", asr_ms, spk_ms, front_ms)
             self._on_heard(text, score, source="mic", stream_text=stream_text, seg_sec=seg.duration,
-                           asr_ms=asr_ms, spk_ms=spk_ms, front_ms=front_ms, speaker=speaker)
+                           asr_ms=asr_ms, spk_ms=spk_ms, front_ms=front_ms, speaker=speaker, asr=asr_res)
+
+    def _prewarm_final(self) -> None:
+        """起判沿时调：二次识别器若是 GPU 后端，非阻塞地让服务给显卡加热；没有该能力（老式假识别器）或已释放时什么都不做。"""
+        prewarm = getattr(getattr(self, "asr_final", None), "prewarm", None)
+        if prewarm is not None:
+            prewarm()
+
+    def _asr_event(self, name: str, msg: str, level: str = "info", **data) -> None:
+        """二次识别的后端事件（asr.fallback 回退 / asr.backend 熔断恢复、游戏态释放加载）→ 统一事件日志。"""
+        elog.emit("asr", name, msg, level=level, **data)
 
     def _submit_identify(self, samples: np.ndarray) -> tuple[Future, float] | None:
         """把这一段交给声纹线程认人；没有声纹库返回 None。返回 (Future, 提交时刻)。"""
@@ -567,7 +580,8 @@ class VoiceDaemon:
 
     def _on_heard(self, text: str, score: float | None, *, source: str, stream_text: str = "",
                   seg_sec: float | None = None, asr_ms: int | None = None, spk_ms: int | None = None,
-                  front_ms: int | None = None, speaker: str = "", dry_run: bool = False) -> dict:
+                  front_ms: int | None = None, speaker: str = "", dry_run: bool = False,
+                  asr: FinalResult | None = None) -> dict:
         """一句识别结果的去留（麦克风和面板注入共用）：记一条面板记录，放行就交给大脑，只喊唤醒词就应答。
         去留只看碎音、唤醒词、免喊窗口；声纹不拦截，speaker（"主人" / "未知" / 库里的名字 / ""=没有）只做标签，
         随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
@@ -577,13 +591,18 @@ class VoiceDaemon:
                    min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING",
                    alt_text=stream_text or None)  # 二次识别漏掉唤醒词、流式识别抓到了：靠流式结果救回
         timings = {k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms), ("front_ms", front_ms)) if v is not None}
+        # 二次识别用了哪个后端、耗时、置信度（FireRedASR2 才有）：写进记录和事件，以后做"没把握时第二意见"用；暂不参与决策
+        asr_fields = ({"asr_backend": asr.backend, "asr_conf": asr.conf, "asr_min_conf": asr.min_conf, "asr_fallback": asr.fallback or None}
+                      if asr is not None else {})
         uid = self.hub.new_utterance(source, text=text, stream_text=stream_text,
                                      score=None if score is None else round(score, 3), speaker=speaker, in_window=in_window,
-                                     timings=timings)
+                                     timings=timings, **asr_fields)
         if seg_sec is not None:
             self.hub.stage(uid, "vad", "done", f"{seg_sec:.1f} 秒")
+        asr_data = ({"backend": asr.backend, "ms": asr.ms, "conf": asr.conf, "min_conf": asr.min_conf, "fallback": asr.fallback or None}
+                    if asr is not None else {})
         self.hub.stage(uid, "asr", "blocked" if d.stage == "filler" else "done",
-                       d.reason if d.stage == "filler" else text[:20])
+                       d.reason if d.stage == "filler" else text[:20], **asr_data)
         if d.stage == "filler":
             self.hub.stage(uid, "speaker", "skipped")
         elif score is None:
@@ -1291,14 +1310,18 @@ class VoiceDaemon:
             while not q.empty():
                 q.get_nowait()
         self.asr = None
-        self.asr_final = None
+        final = getattr(self, "asr_final", None)
+        if final is not None:  # 精识别保留（SenseVoice 回退很小）；GPU 上的 FireRedASR2 显存紧张时由它自己让服务卸载
+            final.enter_gaming()
         threading.Thread(target=self.tts.control, args=("unload",), name="tts-unload", daemon=True).start()
-        log.info("gaming: 音频流已停，ASR（流式+精识别）已释放")
+        log.info("gaming: 音频流已停，流式 ASR 已释放；精识别按显存余量决定是否卸载 GPU 模型")
 
     def _resume_audio(self, s: sd.Stream) -> None:
         """离开游戏态：重建 ASR/VAD 与前端状态，重开音频流，后台让 TTS 预加载。主循环调用。"""
         self.asr = StreamingASR()
-        self.asr_final = FinalASR()
+        final = getattr(self, "asr_final", None)
+        if final is not None:  # 已卸载的话后台让服务重新加载，加载完成前走 SenseVoice
+            final.leave_gaming()
         self._reset_frontend()
         s.start()
         if self.watchdog is not None:

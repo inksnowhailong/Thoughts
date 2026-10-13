@@ -20,6 +20,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from guanjia.asr_final import FinalResult
 import guanjia.voice as voice  # noqa: E402
 from guanjia import brain, elog, prompts  # noqa: E402
 from guanjia.events import EventHub  # noqa: E402
@@ -143,7 +144,7 @@ class Rig:
             time.sleep(final_delay)
             return final_text
 
-        d.asr_final = SimpleNamespace(transcribe=transcribe)
+        d.asr_final = SimpleNamespace(transcribe=transcribe, transcribe_ex=lambda samples, fallback: FinalResult(transcribe(samples, fallback), "sensevoice"))
         d._raw_for = lambda seg: seg.samples
         d._dump_segment = lambda seg, text: None
         d._barge_step = lambda rms, playing: None

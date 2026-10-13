@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from guanjia.asr_final import FinalResult
 import guanjia.voice as voice
 from guanjia.enroll_session import MIN_TOTAL, SESSION_TIMEOUT_SEC
 from guanjia.events import EventHub
@@ -186,7 +187,7 @@ seg = SimpleNamespace(duration=2.0, samples=loud, start=100.0)
 d.vad = SimpleNamespace(push=lambda y: None, is_speech=lambda: False, pop_segments=lambda: [seg])
 d._asr_stream = object()
 d.asr = SimpleNamespace(new_stream=lambda: object(), feed=lambda *a: None, finish=lambda s: None, text=lambda s: "开灯")
-d.asr_final = SimpleNamespace(transcribe=lambda samples, fallback: "开灯")
+d.asr_final = SimpleNamespace(transcribe_ex=lambda samples, fallback: FinalResult("开灯", "sensevoice"))
 d._dump_segment = lambda seg, text: None
 d._barge_step = lambda rms, playing: None
 d._on_heard = lambda text, score, **kw: heard.append((text, score))

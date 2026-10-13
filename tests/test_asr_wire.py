@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from guanjia.asr_final import FinalResult
 import guanjia.voice as voice
 from guanjia import elog
 from guanjia.events import EventHub
@@ -66,7 +67,7 @@ class Rig:
             self.final_calls.append(fallback)
             return final_text
 
-        d.asr_final = SimpleNamespace(transcribe=transcribe)
+        d.asr_final = SimpleNamespace(transcribe=transcribe, transcribe_ex=lambda samples, fallback: FinalResult(transcribe(samples, fallback), "sensevoice"))
         d._raw_for = lambda seg: seg.samples  # 取证用的原始帧：测试里直接用同一份
         d._dump_segment = lambda seg, text: self.dumped.append(text)
         d._barge_step = lambda rms, playing: None
