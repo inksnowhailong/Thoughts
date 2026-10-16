@@ -17,7 +17,8 @@ import { execFile } from "node:child_process";
 /** 工具搜索不收录、始终直接可见 */
 export const DIRECT_ONLY = "direct-only" as const;
 
-export const APP_NAME_RE = /^[A-Za-z0-9_-]{1,40}$/;
+/** 自然语言名称由固定启动器匹配；拒绝控制字符，仍不进入 shell。 */
+export const APP_NAME_RE = /^[^\u0000-\u001f]{1,80}$/u;
 export const LAUNCH_TIMEOUT_MS = 20_000;
 export const LOCATION_TIMEOUT_MS = 15_000;
 export const WEATHER_TIMEOUT_MS = 8_000;
@@ -69,8 +70,8 @@ export function createLaunchAppTool(opts: PsToolOptions) {
     catalogMode: DIRECT_ONLY,
     description:
       "Launch a game or program registered in apps.json on the home PC (英雄联盟/LOL, Steam, WeGame, 网易云 ...). " +
-      "Input: name = the apps.json key in English, e.g. lol, naraka, bf6, steam, wegame, music. " +
-      "Returns ok, or the list of known keys when the name is not registered.",
+      "Input: apps.json key or a natural Chinese/English/pinyin name. Exact aliases win; " +
+      "a unique fallback match stays inside the same controlled map.",
     parameters: {
       type: "object",
       properties: { name: { type: "string", description: "apps.json 里的英文键，例如 lol" } },
@@ -80,17 +81,19 @@ export function createLaunchAppTool(opts: PsToolOptions) {
     async execute(_toolCallId: string, params: { name?: unknown }) {
       const name = typeof params?.name === "string" ? params.name.trim() : "";
       if (!APP_NAME_RE.test(name)) {
-        return textResult("没有启动：name 只能是 apps.json 里的英文键（字母、数字、下划线、短横），例如 lol。", { ok: false, error: "bad_name" });
+        return textResult("没有启动：名称不能为空、不能含控制字符，且最多 80 个字符。", { ok: false, error: "bad_name" });
       }
       const { stdout, code } = await runPs(script, ["-Name", name], LAUNCH_TIMEOUT_MS);
       const r = lastJson(stdout);
       if (!r) return textResult(`没有启动：启动器没有返回结果（退出码 ${code}）。`, { ok: false, error: "no_output", code });
-      if (r.ok) return textResult(`已启动 ${r.app}。`, { ok: true, app: r.app });
+      if (r.ok) return textResult(`已启动并核实 ${r.app}。`, { ok: true, app: r.app, verified: r.verified });
       const known = Array.isArray(r.known) ? r.known.join("、") : "";
       const text =
         r.error === "not_in_map" ? `没有启动：apps.json 里没有「${name}」。已登记的有：${known}。`
+        : r.error === "ambiguous" ? `没有启动：你说的「${name}」可能是：${Array.isArray(r.candidates) ? r.candidates.join("、") : ""}。请问是哪一个？`
         : r.error === "no_target" ? `没有启动：${r.app} 还没登记路径（${r.note ?? ""}）。`
         : r.error === "missing_file" ? `没有启动：${r.app} 的路径失效了（${r.target}）。`
+        : r.error === "unverified" ? `已发出启动请求，但没有核实到 ${r.app} 的进程或窗口，不能确认已打开。`
         : `没有启动：${r.error ?? "未知错误"}。`;
       return textResult(text, { ok: false, error: r.error ?? "unknown", app: r.app });
     },
@@ -120,6 +123,23 @@ export function createGetLocationTool(opts: PsToolOptions) {
       const loc = await locate(runPs, script);
       const where = loc.source === "fallback-beijing" ? "没定位到，按北京" : "电脑自己定位到的";
       return textResult(`纬度 ${loc.lat}，经度 ${loc.lon}（${where}）。`, loc);
+    },
+  };
+}
+
+/** 只读桌面摘要：固定脚本、零参数，不允许模型拼命令或写 workspace/tools。 */
+export function createGetDesktopStatusTool(opts: PsToolOptions) {
+  const runPs = opts.runPs ?? defaultRunPs;
+  const script = path.join(opts.workspaceDir, "tools", "get-desktop-status.ps1");
+  return {
+    name: "get_desktop_status", label: "Get desktop status", catalogMode: DIRECT_ONLY,
+    description: "Read-only current foreground Windows program/title. Use for asking what is open, watching TV, or gaming.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      const { stdout, code } = await runPs(script, [], LOCATION_TIMEOUT_MS);
+      const result = lastJson(stdout);
+      if (!result?.ok) return textResult("没有读到当前前台窗口。", { ok: false, error: result?.error ?? "no_output", code });
+      return textResult(`当前前台：${result.process ?? "未知"}${result.title ? `（${result.title}）` : ""}。`, result);
     },
   };
 }

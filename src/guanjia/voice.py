@@ -49,8 +49,10 @@ from guanjia import elog
 from guanjia.asr import StreamingASR
 from guanjia.asr_final import FinalASR, FinalResult
 from guanjia.audio_cues import earcon
+from guanjia.announcement import AnnouncementPolicy
 from guanjia.audio_watchdog import AudioGuard, InputWatchdog
 from guanjia.audittail import AuditTail, PendingConfirm
+from guanjia.approval_ipc import ApprovalIpc
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.control import CONTROL_PORT, start_control_server
@@ -59,13 +61,23 @@ from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
 from guanjia.memory_page import MemoryService
 from guanjia.prompts import PromptService
+from guanjia.program_context import classify_media, foreground_app, snapshot
+from guanjia.program_quiet import ProgramQuietMonitor
 from guanjia.runtime_state import ACTIVE, GAMING, RuntimeMonitor
+from guanjia.sleep.rehearsal import SleepRehearsal
+from guanjia.sleep.scheduler import RehearsalScheduler
+from guanjia.sleep.watermark import read_main_watermark
 from guanjia.runtrace import run_summary
 from guanjia.seg_filter import is_hollow_segment, is_unconfirmed_by_stream
 from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import DISPLAY_NAME, Health, HealthMonitor, TrayView, tcp_alive, tray_view
+from guanjia.task_manager import TaskManager
+from guanjia.task_dispatch import TaskDispatchScheduler
+from guanjia.task_executor import TaskNotice, TaskWorkerExecutor
+from guanjia.task_ipc import TaskIpc
+from guanjia.task_service import TaskService
 from guanjia.tts_client import TTSClient
 from guanjia.turns import (NUDGE_TEXT, NUDGE_TEXT_FAKE_BLOCK, Heard, SayItem, TurnRunner, claims_blocked, has_promise,
                            needs_fake_block_nudge, needs_nudge)
@@ -127,6 +139,26 @@ MIN_UTT_SEC = 0.4        # 短于此的语音段不当作指令
 PREROLL_MS = 500         # ASR 预滚：VAD 起判前这段音频先补喂 ASR，防首字丢失
 STATS_EVERY_SEC = 30     # 丢帧 / 欠载计数的日志周期
 AUDIT_LAG_SEC = 0.8      # 判「零工具调用」前再等这么久：工具调用从审计文件跟随（每 0.5 秒读一次），可能比回复结束晚到
+APPROVAL_FOLLOWUP_SEC = 30.0
+APPROVAL_RETRY_MARKER = "__guanjia_approved_retry__"
+_APPROVE_WORDS = frozenset({"确认", "确定", "允许", "可以", "行", "好", "好的", "好呀", "好啊", "嗯", "对", "执行", "执行吧", "同意", "没问题", "去吧", "弄吧", "做吧", "关吧", "删吧", "装吧", "开吧", "放行"})
+_REJECT_WORDS = frozenset({"不", "不要", "别", "取消", "算了", "等等", "等一下", "暂停", "停", "慢着", "不允许", "不行"})
+_APPROVE_PREFIX = ("允许", "确认", "可以", "行", "好")
+_DENY_OR_QUESTION = ("不", "别", "算了", "取消", "暂停", "等等", "等一下", "停", "慢着", "吗", "？", "?")
+
+
+def approval_decision(text: str) -> str | None:
+    """确定性审批词表；只在守卫已存在 pending 时调用。"""
+    normalized = re.sub(r"[\s，,。.!！?？~～、】【、]", "", text)
+    if normalized in _REJECT_WORDS or (len(normalized) <= 12 and any(word in normalized for word in _REJECT_WORDS)):
+        return "reject"
+    if any(word in normalized for word in _DENY_OR_QUESTION):
+        return None
+    if normalized.startswith(("好了好了", "好家伙")):
+        return None
+    if len(normalized) <= 12 and (normalized in _APPROVE_WORDS or any(normalized.startswith(prefix) for prefix in _APPROVE_PREFIX)):
+        return "approve"
+    return None
 
 # ---- 打断（只在我们出声时判定；不看声纹、不看 VAD，原因见 barge.py；下限在设置 barge_rms_min）----
 BARGE_MS = 180           # 累计过线时长达到此值即打断
@@ -144,6 +176,7 @@ EXIT_DEADMAN_SEC = 8.0  # 退出清理（关音频流、停托盘…）超过这
 GATEWAY_PORT = 18789
 EXIT_QUIT, EXIT_CRASH, EXIT_RESTART = 0, 1, 3  # 与 scripts/voice-supervisor.ps1 约定
 LOG_MAX_BYTES = 5_000_000  # voice.log 轮转大小（留 3 份）
+TASK_JOURNAL_PATH = Path(__file__).resolve().parents[2] / "data" / "tasks.jsonl"
 
 
 _hard_exit = os._exit  # 单独留个名字：测试里换成假的，别真把测试进程杀了
@@ -282,6 +315,7 @@ class VoiceDaemon:
     guard = None  # AudioGuard | None：run() 里创建；主循环每 0.5 秒 tick()，确认回调停摆就以重启码退出
     _audio_names = {}  # 输入 / 输出设备名（流打开后查一次），随 audio.* 事件一起记；run() 里整个换掉（不加类型注解：不是 dataclass 字段）
     pending = PendingConfirm()  # 待确认状态（托盘变色 + 气泡）；__post_init__ 换成每个进程自己的一份
+    approval_ipc = None
     _turn_gen = -1
     enroll = None  # EnrollSession | None：声纹注册模式，非 None 时前端线程的段只拿来注册（见 _frontend_step）
     _spare_gate = None  # SpeakerGate | None：库为空/读不出时守护进程不用的那把声纹门，留给注册用
@@ -290,6 +324,13 @@ class VoiceDaemon:
     _last_play_t = -1.0  # 前端线程：最近一次真正出声时的 VAD 时间轴（秒），用来判断一段话有没有和播放重叠
     _turn_marks = None
     _last_health: dict | None = None  # 上一次记过的依赖状态（B4 dep.change 只记变化）
+    _last_program_snapshot: dict | None = None
+    program_quiet = None
+    announcements = None
+    task_manager = None
+    tasks = None
+    task_ipc = None
+    task_executor = None
     _followup_until = 0.0
     _ack_pcm = None
 
@@ -324,8 +365,22 @@ class VoiceDaemon:
         self.last_error = ""  # 最近一轮的错误（网关 / TTS），托盘显示；下一轮成功出声后清空
         self.health = Health()  # 网关、TTS 是否在线（HealthMonitor 更新）
         self.runtime = RuntimeMonitor(self._on_runtime)
+        # 当前没有覆盖微信/其他入口的全主线实时水位，故即使开关打开也 fail-closed。
+        self._main_activity_at: float | None = None
+        self.sleep_rehearsal = RehearsalScheduler(
+            SleepRehearsal(), watermark=lambda: read_main_watermark().last_activity_at,
+            watermark_reliable=lambda: read_main_watermark().valid,
+            emit=lambda event, message, data: elog.emit("sleep", event, message, **data),
+            enabled=os.environ.get("GUANJIA_SLEEP_REHEARSAL", "") == "1",
+        )
 
         self.store = SettingsStore(SETTINGS_PATH)
+        self.program_quiet = ProgramQuietMonitor(lambda: self.store.current.program_quiet, on_change=self._on_program_quiet_change)
+        self.announcements = AnnouncementPolicy(lambda: self.program_quiet.quiet_active)
+        self.task_manager = TaskManager.restore(TASK_JOURNAL_PATH)
+        self.tasks = TaskService(self.task_manager)
+        self.task_executor = TaskWorkerExecutor(self.tasks, policy=self.announcements, on_notice=self._on_task_notice)
+        self.task_dispatch = TaskDispatchScheduler(self._emit_task_dispatch)
         self.hub = EventHub(records_file=RECORDS_FILE, elog=elog.get())  # 面板记录的每次变化同时派生统一事件日志
         s = self.store.current
         self.wake = WakeMatcher(s.wake_words)
@@ -362,6 +417,7 @@ class VoiceDaemon:
         self.panel.attach_prompts(PromptService(ws_files), self._param_consts)  # B2：参数表 + 提示词编辑
         self.panel.attach_flags(elog.get())  # 「这句有问题」+ 面板改设置 / 控制进事件流
         self.pending = PendingConfirm()
+        self.approval_ipc = ApprovalIpc()
         self.audit = AuditTail(self._on_tool, on_gate=self._on_gate)
         self.store.subscribe(self._apply_settings)
         self.tray = None  # run() 里按 tray_on 创建
@@ -626,9 +682,28 @@ class VoiceDaemon:
             log.info("拒绝：%s text=%r (stream: %r)", d.reason, text, stream_text)
         result = {"uid": uid, "verdict": d.verdict, "stage": d.stage, "reason": d.reason, "text": d.text,
                   "wake": d.wake, "in_window": in_window, "dry_run": dry_run, "speaker": speaker}
+        # pending 存在时，确认词先走守卫 IPC；原话绝不进模型，参数也始终留在守卫。
+        ipc = getattr(self, "approval_ipc", None)
+        pending = ipc.latest() if ipc is not None else None
+        decision = approval_decision(d.text or text) if pending else None
+        if decision:
+            ok = ipc.decide(pending["id"], decision)
+            if not ok:
+                self.hub.finish(uid, verdict="rejected", reason="审批 IPC 拒绝或已过期")
+                return {**result, "verdict": "rejected", "reason": "审批 IPC 拒绝或已过期"}
+            self._followup_until = time.monotonic() + APPROVAL_FOLLOWUP_SEC
+            if decision == "approve":
+                self.hub.update(uid, verdict="approval", reason="已批准，要求重试原调用", sent=APPROVAL_RETRY_MARKER)
+                self._accept_utterance(APPROVAL_RETRY_MARKER, uid, speaker)
+            else:
+                self.hub.finish(uid, verdict="approval", reason="已拒绝")
+            return {**result, "verdict": "approval", "reason": "已批准" if decision == "approve" else "已拒绝"}
         if dry_run:
             self.hub.finish(uid, verdict=d.verdict, reason=d.reason + "（模拟，未执行）", sent=d.text)
         elif d.verdict == "accept":
+            monitor = getattr(self, "sleep_rehearsal", None)
+            if monitor is not None:
+                monitor.note_activity()
             self.hub.update(uid, verdict="accept", reason=d.reason, sent=d.text)
             self._accept_utterance(d.text, uid, speaker)
         elif d.verdict == "wake_only":
@@ -788,6 +863,12 @@ class VoiceDaemon:
             while gen == self._gen and self._playing() and not self._stop_evt.is_set():
                 time.sleep(0.05)
             current = gen == self._gen
+            # O5b：仅本轮 task_start 经 IPC 登记的候选，且首句真实入队并完整播完才领取。
+            # 任何模型/TTS 错误或主人打断都会清空候选，任务保持 queued。
+            scheduler = getattr(self, "task_dispatch", None)
+            if scheduler is not None and not isinstance(item, SayItem):
+                delivered = bool(res.spoken) and not res.error and not res.aborted and current
+                scheduler.finish_turn(uid, reply_delivered=delivered, submit=self.start_task_worker)
             if current and not isinstance(item, SayItem):  # 主程序让念的话不是在跟主人对话，不开免喊窗口
                 self._open_followup()
             if not nudged and current and not isinstance(item, SayItem):
@@ -842,6 +923,8 @@ class VoiceDaemon:
 
     def _should_nudge(self, res: TurnResult) -> bool:
         """本轮是否「只说没做」：回复含承诺词、零工具调用、没被打断没出错；主人已排了新话、静音、游戏中也不追。"""
+        if self.pending.current():
+            return self._nudge_check("promise", False, "pending_approval", res)
         if not has_promise(res.reply):
             return False
         if not self._nudge_allowed(res):
@@ -865,6 +948,13 @@ class VoiceDaemon:
     def _send_nudge(self, kind: str = "promise", parent_uid: str | None = None) -> None:
         """在同一会话追发一条语音标记的话（只说没做 → 让模型把说过的事做完；编造拦截 → 告诉它没有任何东西拦着）；
         它的回复照常念出来，面板上单独一条记录。parent_uid 是被追问的那一轮，记进 nudge.sent 方便 logq 串起来。"""
+        decision = self.should_announce("nudge", user_initiated=False)
+        if not decision.speak:
+            elog.emit("program", "program.quiet_suppressed", "影音中，未自动追问", kind="nudge", reason=decision.reason,
+                      parent=parent_uid)
+            if self.tray and not self._paused.is_set():
+                self.tray.notify(f"{DISPLAY_NAME}：影音中，未自动追问")
+            return
         if kind == "fake-block":
             text, reason = NUDGE_TEXT_FAKE_BLOCK, "称被拦但没有拦截记录，自动追问一次"
             log.info("nudge sent: fake-block")
@@ -995,9 +1085,13 @@ class VoiceDaemon:
         if change == "opened":
             summary = self.pending.current()
             gaming = self._paused.is_set()
+            decision = self.should_announce("pending", user_initiated=False)
             log.info("pending confirm: %s%s", summary, "（游戏中，只变色不弹气泡）" if gaming else "")
             elog.emit("tool", "pending.open", summary, level="warn", uid=self._turn_uid, decision=ev["decision"],
                       gaming=gaming or None)
+            if not decision.speak:
+                elog.emit("program", "program.quiet_suppressed", "影音中，待确认只托盘提示", kind="pending",
+                          reason=decision.reason, summary=summary)
             if self.tray and not gaming:
                 self.tray.notify(f"{DISPLAY_NAME}在等你确认：{summary}")
         elif change == "closed":
@@ -1006,6 +1100,13 @@ class VoiceDaemon:
         if change:
             self._refresh_tray()
             self.hub.status(self.status())
+
+    def should_announce(self, event_kind: str, user_initiated: bool):
+        """Q2 唯一播报门；任务完成/失败待 O3 真实接线后才会调用，不能伪造任务行为。"""
+        policy = getattr(self, "announcements", None)
+        if policy is None:
+            return AnnouncementPolicy(lambda: False).should_announce(event_kind, user_initiated)
+        return policy.should_announce(event_kind, user_initiated)
 
     def _enqueue_pcm(self, gen: int, pcm: np.ndarray, sr: int) -> None:
         """TurnRunner 的入队回调：重采样到流采样率；本轮第一句前补静音前导并记首音延迟。"""
@@ -1183,12 +1284,118 @@ class VoiceDaemon:
     def status(self) -> dict:
         """控制口 /status 与面板状态栏。"""
         v = self.view()
+        monitor = getattr(self, "program_quiet", None)
+        program = monitor.snapshot() if monitor is not None else self._program_status()
         return {"view": v.key, "label": v.label, "state": self.state, "muted": self._muted.is_set(),
                 "gaming": self._paused.is_set(), "runtime": self.runtime.state, "gateway": self.health.gateway,
                 "tts": self.health.tts, "error": self.last_error, "sleep": self.sleep_state, "pending": self.text_q.qsize(),
                 "followup_left": max(0.0, round(self._followup_until - time.monotonic(), 1)),
                 "wake_words": list(self.store.current.wake_words), "panel": PANEL_URL,
-                "audio": self.guard.info() if self.guard else None}  # 输入流看门狗：回调年龄 / 帧数 / 最近一次确认的停摆
+                "audio": self.guard.info() if self.guard else None,
+                "program": program,
+                "tasks": self._panel_tasks() if self.tasks is not None else None,
+                "sleep_rehearsal": getattr(self, "sleep_rehearsal", None).snapshot() if getattr(self, "sleep_rehearsal", None) else None}
+
+    def _panel_tasks(self) -> dict:
+        """面板专用任务 DTO：不把目标、worker session 或任何工具参数送进浏览器。"""
+        raw = self.tasks.task_status()
+
+        def public(task: dict) -> dict:
+            item = {key: task[key] for key in ("summary", "status", "progress", "progress_percent", "result", "error",
+                                                "created_at", "updated_at") if key in task}
+            item["id"] = task["id"][-8:]  # 只作人工核对，不可用于任何控制接口
+            if task.get("approval"):
+                item["approval"] = {key: task["approval"][key] for key in ("description", "expires_at")
+                                    if key in task["approval"]}
+            return item
+
+        return {key: raw[key] for key in ("counts", "max_concurrent", "running_slots")
+                if key in raw} | {key: [public(task) for task in raw.get(key, [])]
+                                  for key in ("active_tasks", "interrupted_tasks", "recent_tasks")}
+
+    # ---------- O3 任务接口（仅供后续受控 OpenClaw 工具接线；本批不派发模型或进程） ----------
+    def task_start(self, summary: str, goal: str) -> dict:
+        """创建 queued 任务，立即返回；主线不等待任何任务执行。"""
+        return self._task_service().task_start(summary, goal)
+
+    def task_status(self, task_id: str | None = None) -> dict:
+        """查看任务摘要或单项状态。"""
+        return self._task_service().task_status(task_id)
+
+    def task_cancel(self, task_id: str, reason: str = "") -> dict:
+        """记录取消请求；本批不终止任何进程。"""
+        executor = getattr(self, "task_executor", None)
+        return executor.request_cancel(task_id, reason) if executor is not None else self._task_service().task_cancel(task_id, reason)
+
+    def task_report(self, task_id: str, progress: str, percent: float | None = None) -> dict:
+        """未来 worker 经受控执行器领取后才能上报进度。"""
+        return self._task_service().task_report(task_id, progress, percent)
+
+    def start_task_worker(self, task_id: str):
+        """O5 唯一执行入口；未暴露给主线工具，后续调度器必须显式调用。"""
+        executor = getattr(self, "task_executor", None)
+        if executor is None:
+            executor = TaskWorkerExecutor(self._task_service(), policy=self.announcements, on_notice=self._on_task_notice)
+            self.task_executor = executor
+        return executor.submit(task_id)
+
+    def _on_task_created(self, task: dict) -> None:
+        """Task IPC 的 /start 成功回调：只接受正在处理的主线语音轮。"""
+        if self._turn_is_say:
+            return
+        self.task_dispatch.record_start(self._turn_uid, task["id"])
+
+    def _on_task_approval_decision(self, task_id: str, decision: str) -> None:
+        """审批 IPC 已按 pending id 确认后才到这里；UI 和语音不接触 worker session。"""
+        if decision == "approve":
+            self.task_executor.resume_after_approval(task_id)
+        else:
+            self.task_executor.request_cancel(task_id, "用户拒绝审批")
+
+    def _emit_task_dispatch(self, event: str, task_id: str, reason: str) -> None:
+        """调度证据只记摘要和 id；不记录任务目标、会话正文或工具参数。"""
+        level = "info" if event == "task.dispatched" else "warn"
+        elog.emit("task", event, reason, level=level, task_id=task_id, uid=self._turn_uid)
+
+    def _task_service(self) -> TaskService:
+        service = getattr(self, "tasks", None)
+        if service is not None:
+            return service
+        manager = TaskManager.restore(TASK_JOURNAL_PATH)
+        self.task_manager, self.tasks = manager, TaskService(manager)
+        return self.tasks
+
+    def _on_task_notice(self, notice: TaskNotice) -> None:
+        """O5 worker 完成/失败通知统一经过 Q2 唯一播报门。"""
+        task = notice.task
+        failed = notice.kind == "task_failed"
+        text = f"任务{task['summary']}{'失败' if failed else '完成'}"
+        elog.emit("task", "task.notice", text, level="warn" if failed else "info", task_id=task["id"], kind=notice.kind,
+                  spoken=notice.speak, status=task["status"])
+        if notice.speak:
+            self.say(text)
+        elif self.tray:
+            self.tray.notify(f"{DISPLAY_NAME}：{text}")
+
+    def _on_program_quiet_change(self, old: str, new: str, program: dict) -> None:
+        """Q1 仅留状态变化证据；Q2 才能把 quiet_active 接到播报门。"""
+        event = "program.quiet_enter" if new == "quiet_active" else "program.quiet_exit"
+        elog.emit("program", event, f"{old} -> {new}", old=old, new=new, rule=program.get("media_rule"),
+                  exe=program.get("exe_name") or None, state_for_sec=program.get("state_for_sec"))
+
+    def _program_status(self) -> dict:
+        """前台程序/影音候选仅供状态与诊断；失败 fail-open，不参与任何语音决策。"""
+        app = foreground_app()
+        item = snapshot(app, classify_media(app, self.store.current.program_quiet))
+        previous = getattr(self, "_last_program_snapshot", None)
+        if item != previous:
+            self._last_program_snapshot = item
+            level = "warn" if item["error"] else "info"
+            elog.emit("program", "program.foreground", item["exe_name"] or "未知前台程序", level=level,
+                      pid=item["pid"], exe=item["exe_name"] or None, title=item["title"] or None,
+                      fullscreen=item["fullscreen"], visible=item["visible"], error=item["error"] or None,
+                      media_candidate=item["media_candidate"], media_rule=item["media_rule"])
+        return item
 
     def set_sleep_state(self, state: str) -> bool:
         """控制口 /sleep-state：P4 休眠状态位，只做显示。"""
@@ -1362,11 +1569,20 @@ class VoiceDaemon:
             elog.emit("voice", "voice.exit", "控制口绑不上", level="error", code=EXIT_CRASH, reason="control_port_busy",
                       port=self.control_port, error=str(e))
             sys.exit(EXIT_CRASH)
+        try:
+            self.task_ipc = TaskIpc(self._task_service(), on_started=self._on_task_created,
+                                    on_cancelled=self.task_cancel, on_approval_decision=self._on_task_approval_decision)
+            self.task_ipc.start()
+        except OSError as e:
+            self.task_ipc = None
+            log.warning("任务 IPC 启动失败；task_* 工具将 fail-closed：%s", e)
+            elog.emit("task", "task.ipc_unavailable", "任务 IPC 启动失败", level="warn", error=str(e))
         threads = [threading.Thread(target=self._frontend, name="frontend", daemon=True),
                    threading.Thread(target=self._brainloop, name="brain", daemon=True)]
         for t in threads:
             t.start()
         self.monitor.start()
+        self.sleep_rehearsal.start()
         self.audit.start()
         if self.tray_on:
             from guanjia.tray import Tray  # 延迟导入：--no-tray 时不需要 pystray/Pillow
@@ -1393,6 +1609,7 @@ class VoiceDaemon:
                       boot_ms=round((time.monotonic() - _PROC_T0) * 1000), latency_in=round(s.latency[0], 3),
                       latency_out=round(s.latency[1], 3))
             self.runtime.start()  # 开机补写离线区间 + 5 分钟静默；之后每 2s 检测游戏态
+            self.program_quiet.start()  # Q1：只读前台候选状态，不抑制任何语音
             try:
                 while not self._stop_evt.is_set():
                     time.sleep(0.5)
@@ -1457,8 +1674,13 @@ class VoiceDaemon:
         if self._spk_pool is not None:
             self._spk_pool.shutdown(wait=False, cancel_futures=True)  # 声纹线程若卡在推理里，不拖住退出
         self.runtime.stop()  # 最后一次心跳，下次开机据此算离线区间
+        self.program_quiet.stop()
         self.monitor.stop()
         self.audit.stop()
+        if self.task_ipc is not None:
+            self.task_ipc.stop()
+        if self.task_executor is not None:
+            self.task_executor.shutdown()
         if self.tray:
             self.tray.stop()
         self.control.shutdown()

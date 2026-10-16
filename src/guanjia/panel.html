@@ -85,25 +85,111 @@
   .hist-list { max-height:180px; overflow:auto; margin:4px 0; }
   .hist-list div { cursor:pointer; padding:2px 6px; font:12px Consolas,monospace; } .hist-list div:hover { background:#1e2935; }
   .flagrow { display:flex; gap:10px; align-items:center; margin:8px 0; } .flagnote { color:var(--warn); }
+  .quiet-header { padding-block:8px; }
+  .quiet-header h1 { letter-spacing:.08em; }
+  .workbench { display:grid; gap:12px; }
+  .status-hero { display:grid; grid-template-columns:minmax(260px, 1.2fr) minmax(300px, 1fr); gap:16px; align-items:center; border-color:#365064; }
+  .ear-state { display:flex; align-items:center; gap:10px; }
+  .ear-state .pill { font-size:15px; padding:5px 12px; }
+  .state-title { font-size:22px; font-weight:700; letter-spacing:.04em; }
+  .state-note { color:var(--dim); margin-top:4px; }
+  .health-line { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; color:var(--dim); }
+  .health-line .dep { white-space:nowrap; }
+  .now-strip { border-left:3px solid var(--busy); background:linear-gradient(90deg,#172534,#18202a 55%); }
+  .now-strip h2 { color:#9bc7ec; }
+  .now-main { font-size:16px; font-weight:600; }
+  .now-note { margin-top:4px; color:var(--dim); }
+  .task-details { margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }
+  .task-details summary { cursor:pointer; color:#9bc7ec; font-weight:600; }
+  .task-summary { color:var(--dim); margin:5px 0; font-size:12px; }
+  .task-list { display:grid; gap:0; }
+  .task-line { display:grid; grid-template-columns:92px minmax(0,1fr); gap:8px; border-top:1px solid var(--line); padding:6px 0; }
+  .task-line:first-child { border-top:0; } .task-state { color:#9bc7ec; font-size:12px; }
+  .task-note { color:var(--dim); font-size:12px; margin-top:2px; word-break:break-word; }
+  .gen1-controls { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:8px 0; }
+  .gen1-controls select { background:#0c1116; color:var(--text); border:1px solid var(--line); border-radius:5px; padding:4px 6px; font:inherit; }
+  .gen1-row { border-top:1px solid var(--line); padding:8px 0; }
+  .gen1-meta { color:var(--dim); font-size:12px; margin:3px 0; }
+  .gen1-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .gen1-decision { color:#9bc7ec; font-size:12px; }
+  .workbench-grid { display:grid; grid-template-columns:minmax(280px,.8fr) minmax(360px,1.2fr); gap:12px; }
+  .workbench-grid section { min-height:116px; }
+  .pending-card { border-color:#70549e; background:linear-gradient(90deg,#211d31,#18202a 68%); }
+  .pending-card.idle { border-color:var(--line); background:var(--card); }
+  .pending-label { color:#cbb7ff; font-weight:600; }
+  .result-line { font-size:15px; font-weight:600; }
+  .result-note, .pending-note { margin-top:6px; color:var(--dim); }
+  .activity-line { display:grid; grid-template-columns:62px 1fr; gap:8px; font:12px/1.45 Consolas,"Microsoft YaHei UI",monospace; padding:2px 0; }
+  .activity-time { color:var(--dim); }
+  .workbench-nav { display:flex; flex-wrap:wrap; gap:7px; padding:2px 0; }
+  .workbench-nav button { border-radius:999px; padding:4px 11px; color:var(--dim); }
+  .secondary-label { margin:12px 0 -4px; color:var(--dim); font-size:12px; letter-spacing:.08em; }
+  @media (max-width: 760px) { .status-hero, .workbench-grid { grid-template-columns:1fr; } .state-title { font-size:20px; } }
 </style>
 </head>
 <body>
-<header>
+<header class="quiet-header">
   <h1>思绪面板</h1>
-  <span id="pill" class="pill">连接中</span>
-  <span class="dep">网关 <b id="gw">…</b></span>
-  <span class="dep">TTS <b id="tts">…</b></span>
-  <span class="dep">休眠 <b id="sleep">…</b></span>
-  <span class="dep">免喊 <b id="follow">0</b> 秒</span>
-  <span class="dep">唤醒词 <b id="wake">…</b></span>
   <span class="spacer"></span>
-  <button id="btnMute">静音</button>
-  <button id="btnRestart">重启语音</button>
-  <button id="btnQuit" class="danger">退出语音</button>
+  <button id="btnMute" data-alt="toggle-mute">静音</button>
+  <button id="btnOpenSettings" data-alt="open-settings">设置与维护</button>
 </header>
 <main>
   <div id="banner"></div>
-  <section>
+  <div class="workbench" data-alt="workbench-overview">
+    <section class="status-hero" data-alt="ear-status">
+      <div>
+        <div class="ear-state">
+          <span id="pill" class="pill">连接中</span>
+          <span id="stateTitle" class="state-title">正在连接</span>
+        </div>
+        <div id="stateNote" class="state-note">正在读取思绪的当前状态…</div>
+      </div>
+      <div class="health-line" data-alt="dependency-health">
+        <span class="dep">网关 <b id="gw">…</b></span>
+        <span class="dep">TTS <b id="tts">…</b></span>
+        <span class="dep">休眠 <b id="sleep">…</b></span>
+        <span class="dep">免喊 <b id="follow">0</b> 秒</span>
+        <span class="dep">唤醒词 <b id="wake">…</b></span>
+      </div>
+    </section>
+    <section class="now-strip" data-alt="current-work">
+      <h2>现在在做什么</h2>
+      <div id="workNow" class="now-main">正在读取现有语音链路状态…</div>
+      <div id="workNowNote" class="now-note"></div>
+      <details id="taskDetails" class="task-details" data-alt="task-summary" hidden>
+        <summary>任务摘要</summary>
+        <div id="taskCounts" class="task-summary"></div>
+        <div id="taskList" class="task-list"></div>
+      </details>
+    </section>
+    <div class="workbench-grid">
+      <section id="pendingCard" class="pending-card idle" data-alt="pending-confirm">
+        <h2>等你确认</h2>
+        <div id="pendingLabel" class="pending-label">现有 PendingConfirm</div>
+        <div id="pendingText" class="pending-note">正在读取…</div>
+      </section>
+      <section data-alt="last-result">
+        <h2>上一件事结果</h2>
+        <div id="lastResult" class="result-line">还没有可显示的语音记录</div>
+        <div id="lastResultNote" class="result-note"></div>
+      </section>
+    </div>
+    <section data-alt="recent-activity">
+      <h2>最近活动</h2>
+      <div id="activityList" class="hint">正在读取事件…</div>
+    </section>
+  </div>
+  <nav class="workbench-nav" aria-label="面板分区">
+    <button type="button" data-alt="open-records" data-target="recordSection">记录与排障</button>
+    <button type="button" data-alt="open-prompts" data-target="flowSection">提示词与流程</button>
+    <button type="button" data-alt="open-speaker" data-target="speakerSection">声纹</button>
+    <button type="button" data-alt="open-settings-section" data-target="settingsSection">设置与维护</button>
+    <button type="button" data-alt="open-memory" data-target="memSection">记忆</button>
+    <button type="button" data-alt="open-gen1-staging" data-target="gen1Section">初代画像暂存</button>
+  </nav>
+  <div class="secondary-label">维护与排障</div>
+  <section id="flowSection">
     <h2>一次说话的流程（正在进行的环节闪黄，放行变绿，被拦下变红并写原因）</h2>
     <div class="flow" id="flow"></div>
     <div id="current">还没有人说话</div>
@@ -156,7 +242,7 @@
       </div>
     </div>
   </section>
-  <div class="grid2">
+  <div id="recordSection" class="grid2">
     <section>
       <h2>每句话 <label class="hint"><input type="checkbox" id="onlyAccepted"> 只看进了主程序的</label>
         <label class="hint"><input type="checkbox" id="followNewest" checked> 自动跟随最新一句</label></h2>
@@ -170,7 +256,7 @@
       <div id="detail" class="hint">点左边一行看细节</div>
     </section>
   </div>
-  <section>
+  <section id="logsSection">
     <h2>实时日志</h2>
     <div class="filters" id="modFilters"></div>
     <div class="filters">
@@ -181,7 +267,7 @@
     </div>
     <div id="logs"></div>
   </section>
-  <div id="spkHome" data-alt="speaker-home">
+  <div id="speakerSection" data-alt="speaker-home">
   <section id="spkCard" data-alt="speaker-card">
     <h2>声纹（让它认得出是你的声音）</h2>
     <div id="spkIdle" data-alt="speaker-idle">
@@ -210,7 +296,7 @@
     </div>
   </section>
   </div>
-  <section>
+  <section id="settingsSection">
     <h2>设置（保存后立即生效，不用重启）</h2>
     <div class="form">
       <label for="s_wake">唤醒词</label><div><input type="text" id="s_wake" size="30"> <span class="hint">多个用逗号隔开，按读音容错（管家/关家/管加都算）</span></div>
@@ -221,7 +307,19 @@
       <label for="s_min">最少字数</label><div><input type="number" id="s_min" min="1" max="6" step="1"> <span class="hint">更短的片段当碎音忽略</span></div>
       <label for="s_earcon">提示音</label><div><input type="checkbox" id="s_earcon"> <span class="hint">说完话立刻"叮咚"一声</span></div>
       <label for="s_ack">只喊唤醒词时的应答</label><div><input type="text" id="s_ack" size="10"></div>
+      <label for="s_pq_enabled">程序感知静默</label><div><input type="checkbox" id="s_pq_enabled"> <span class="hint">Q1 仅观测前台影音候选，不会压制说话</span></div>
+      <label for="s_pq_media">影音程序 exe</label><div><input type="text" id="s_pq_media" size="40"> <span class="hint">逗号分隔，仅前台命中才候选</span></div>
+      <label for="s_pq_browser">浏览器 exe</label><div><input type="text" id="s_pq_browser" size="40"> <span class="hint">需同时全屏且标题关键词命中</span></div>
+      <label for="s_pq_titles">影音标题关键词</label><div><input type="text" id="s_pq_titles" size="40"></div>
+      <label for="s_pq_enter">进入/退出滞后</label><div><input type="number" id="s_pq_enter" min="0" max="120" step="1"> / <input type="number" id="s_pq_exit" min="0" max="120" step="1"> 秒</div>
+      <label>当前前台诊断</label><div id="programDiag" class="hint">正在读取…</div>
       <span></span><div><button id="btnSave">保存设置</button> <span id="msg" class="hint"></span></div>
+    </div>
+    <h2 style="margin-top:14px">运行控制</h2>
+    <div class="filters">
+      <button id="btnRestart" data-alt="restart-voice">重启语音</button>
+      <button id="btnQuit" class="danger" data-alt="quit-voice">退出语音</button>
+      <span class="hint">这些操作会中断当前语音；保留原有二次确认。</span>
     </div>
     <h2 style="margin-top:14px">模拟一句话（当作听到了这段文字，看它会不会被放行）</h2>
     <div class="filters">
@@ -271,6 +369,20 @@
       </div>
     </div>
   </section>
+  <section id="gen1Section" data-alt="gen1-staging">
+    <h2>初代画像暂存（待确认）</h2>
+    <div class="hint">这里只查看本机蒸馏后的暂存候选；采纳、修改、拒绝或改层只会写该暂存目录的 decisions.json，不会写入记忆或重载管家。</div>
+    <div class="gen1-controls">
+      <select id="gen1Stage" data-alt="gen1-stage-select"></select>
+      <button id="btnGen1Refresh" data-alt="gen1-refresh">刷新暂存</button>
+      <label>层 <select id="gen1Layer" data-alt="gen1-layer-filter"><option value="">全部</option><option value="L1">L1 核心</option><option value="L3">L3 长期</option></select></label>
+      <label>目标 <select id="gen1Target" data-alt="gen1-target-filter"><option value="">全部</option></select></label>
+      <label>主题 <select id="gen1Topic" data-alt="gen1-topic-filter"><option value="">全部</option></select></label>
+      <label><input id="gen1Pending" type="checkbox" checked> 只看待确认</label>
+    </div>
+    <div id="gen1Message" class="hint">正在读取暂存目录…</div>
+    <div id="gen1List" data-alt="gen1-candidate-list"></div>
+  </section>
 </main>
 <script>
 "use strict";
@@ -290,6 +402,11 @@ function el(tag, props, ...kids) {
   return n;
 }
 function hhmmss(t) { const d = new Date(t * 1000); return d.toTimeString().slice(0, 8); }
+function eventTime(t) {
+  if (typeof t === "number") return hhmmss(t);
+  const d = new Date(t);
+  return isNaN(d) ? "刚刚" : d.toTimeString().slice(0, 8);
+}
 function ms(v) { return v == null ? "—" : (v >= 1000 ? (v / 1000).toFixed(1) + "s" : v + "ms"); }
 
 async function api(path, body) {
@@ -306,14 +423,139 @@ function renderStatus() {
   const pill = $("pill");
   pill.className = "pill " + (st.view || "");
   pill.textContent = st.label || "未知";
+  const state = st.view === "error" ? "有故障"
+    : st.view === "pending" ? "等你确认"
+    : st.muted || st.view === "muted" ? "已静音"
+    : st.state === "SPEAKING" || st.view === "busy" ? "正在说话"
+    : st.view === "listening" ? "正在听"
+    : st.label || "状态未知";
+  $("stateTitle").textContent = state;
+  $("stateNote").textContent = st.view === "pending"
+    ? "思绪正在等你一句明确的话；这不是尚未接线的 O1 审批闩锁。"
+    : (st.label || "等待新的状态事件");
   const dep = (id, v) => { const b = $(id); b.className = v ? "on" : (v === false ? "off" : ""); b.textContent = v ? "在线" : (v === false ? "离线" : "…"); };
   dep("gw", st.gateway); dep("tts", st.tts);
   $("sleep").textContent = { awake: "醒着", sleeping: "休眠中", consolidating: "整理记忆中" }[st.sleep] || st.sleep || "…";
   $("wake").textContent = (st.wake_words || []).join(" / ") || "…";
   $("btnMute").textContent = st.muted ? "取消静音" : "静音";
   S.followUntil = Date.now() + (st.followup_left || 0) * 1000;
+  const p = st.program || {};
+  $("programDiag").textContent = `状态 ${p.state || "normal"}；前台 ${p.exe_name || "未知"}${p.fullscreen ? "（全屏）" : ""}；规则 ${p.media_rule || "—"}${p.error ? "；探测：" + p.error : ""}`;
 }
 setInterval(() => { $("follow").textContent = Math.max(0, Math.round(((S.followUntil || 0) - Date.now()) / 1000)); }, 500);
+
+// ---------- Workbench 概览：状态全来自语音链路与 TaskManager，不猜测 O1 ----------
+const TASK_STATE = {
+  queued: "排队中", running: "进行中", waiting_approval: "等确认",
+  interrupted: "已中断", completed: "已完成", failed: "失败", cancelled: "已取消"
+};
+function taskRows(tasks) {
+  const rows = new Map();
+  for (const task of [...(tasks.active_tasks || []), ...(tasks.interrupted_tasks || []), ...(tasks.recent_tasks || [])]) {
+    if (task && task.id && !rows.has(task.id)) rows.set(task.id, task);
+  }
+  return [...rows.values()];
+}
+function taskNote(task) {
+  const percent = task.progress_percent == null ? "" : ` ${task.progress_percent}%`;
+  if (task.status === "waiting_approval" && task.approval) return `等待确认：${task.approval.description}`;
+  if (task.progress) return `进度${percent}：${task.progress}`;
+  if (task.result) return task.result;
+  if (task.error) return task.error;
+  return task.goal || "暂无更多进度";
+}
+function renderTaskSummary(tasks) {
+  const details = $("taskDetails"), countsBox = $("taskCounts"), list = $("taskList");
+  if (!tasks || !tasks.counts) { details.hidden = true; return null; }
+  const counts = tasks.counts;
+  const queued = counts.queued || 0, running = counts.running || 0, waiting = counts.waiting_approval || 0;
+  const interrupted = counts.interrupted || 0, completed = counts.completed || 0;
+  details.hidden = false;
+  countsBox.textContent = `队列 ${queued}　进行中 ${running}　等确认 ${waiting}　中断 ${interrupted}　完成 ${completed}`;
+  list.textContent = "";
+  const rows = taskRows(tasks);
+  if (!rows.length) list.append(el("div", { class: "task-note", text: "当前没有任务。任务创建、取消与 O1 IPC 审批均不在此面板接线。" }));
+  for (const task of rows) {
+    list.append(el("div", { class: "task-line" },
+      el("span", { class: "task-state", text: TASK_STATE[task.status] || task.status || "未知" }),
+      el("div", null, el("div", { text: task.summary || "未命名任务" }), el("div", { class: "task-note", text: taskNote(task) }))));
+  }
+  const active = (tasks.active_tasks || []);
+  const runningTask = active.find(task => task.status === "running");
+  const waitingTask = active.find(task => task.status === "waiting_approval");
+  if (runningTask) return { title: `正在处理任务：${runningTask.summary}`, note: taskNote(runningTask) };
+  if (waitingTask) return { title: `任务等待确认：${waitingTask.summary}`, note: taskNote(waitingTask) + "。这只是 O3 任务状态，不是 O1 IPC 审批卡。" };
+  if (queued) return { title: `任务队列中有 ${queued} 件`, note: "尚未有执行器领取；面板不创建或取消任务。" };
+  return null;
+}
+function newestResult() {
+  for (let i = S.order.length - 1; i >= 0; i--) {
+    const r = S.records.get(S.order[i]);
+    if (r && r.source !== "say" && r.verdict) return r;
+  }
+  return null;
+}
+function newestLive() {
+  let latest = null;
+  for (const stage of S.stages) {
+    const live = S.live[stage];
+    if (live && live.state === "active" && (!latest || live.t > latest.live.t)) latest = { stage, live };
+  }
+  return latest;
+}
+function renderWorkbench() {
+  const st = S.status;
+  const live = newestLive();
+  const work = $("workNow"), workNote = $("workNowNote");
+  const task = renderTaskSummary(st.tasks);
+  if (task) {
+    work.textContent = task.title;
+    workNote.textContent = task.note;
+  } else if (live) {
+    const name = S.names[live.stage] || live.stage;
+    work.textContent = `正在${name}${live.live.note ? "：" + live.live.note : ""}`;
+    workNote.textContent = "来自当前语音链路的实时阶段；任务摘要由 TaskManager 单独显示。";
+  } else if (st.state === "SPEAKING" || st.view === "busy") {
+    work.textContent = "正在说话";
+    workNote.textContent = "语音回复正在播放；没有额外推断任务进度。";
+  } else {
+    work.textContent = "现在没有正在替你办的事";
+    workNote.textContent = st.tasks ? "当前没有运行或排队的任务。" : "任务摘要尚未由当前语音进程提供。";
+  }
+
+  const pending = st.view === "pending";
+  $("pendingCard").className = "pending-card" + (pending ? "" : " idle");
+  $("pendingLabel").textContent = pending ? "现有 PendingConfirm 正在等待" : "现有 PendingConfirm";
+  $("pendingText").textContent = pending
+    ? (st.label || "思绪正在等你确认。") + "　请直接口头确认或拒绝；O1 一次性审批闩锁尚未接线。"
+    : "当前没有待确认事项。这里接的是已有语音 PendingConfirm；O1 一次性审批闩锁尚未接线。";
+
+  const result = newestResult();
+  if (!result) {
+    $("lastResult").textContent = "还没有可显示的上一轮结果";
+    $("lastResultNote").textContent = "有新的语音记录后会在这里更新。";
+  } else if (result.error) {
+    $("lastResult").textContent = "上一轮出错";
+    $("lastResultNote").textContent = result.error;
+  } else if (result.verdict === "accept" && result.reply) {
+    $("lastResult").textContent = "已回应上一句";
+    $("lastResultNote").textContent = result.reply;
+  } else if (result.verdict === "accept") {
+    $("lastResult").textContent = "上一句已交给主程序";
+    $("lastResultNote").textContent = "结果尚未回到现有面板记录，不能把它当作已完成。";
+  } else {
+    $("lastResult").textContent = VERDICT[result.verdict] || "上一轮已结束";
+    $("lastResultNote").textContent = result.reason || result.text || "没有更多结果说明。";
+  }
+
+  const activity = $("activityList");
+  activity.textContent = "";
+  const items = S.logs.slice(-5).reverse();
+  if (!items.length) activity.append(el("div", { class: "hint", text: "还没有近期活动" }));
+  for (const item of items) activity.append(el("div", { class: "activity-line" },
+    el("span", { class: "activity-time", text: eventTime(item.t) }),
+    el("span", { text: `[${item.module || "系统"}] ${item.msg || ""}` })));
+}
 
 // ---------- 流程图 ----------
 function currentRecord() {
@@ -464,13 +706,22 @@ function fillSettings() {
   $("s_wake").value = (s.wake_words || []).join("，"); $("s_req").checked = !!s.wake_required;
   $("s_follow").value = s.follow_up_sec; $("s_spk").value = s.spk_threshold; $("s_barge").value = s.barge_rms_min;
   $("s_min").value = s.min_chars; $("s_earcon").checked = !!s.earcon; $("s_ack").value = s.ack_text || "";
+  const pq = s.program_quiet || {};
+  $("s_pq_enabled").checked = !!pq.enabled; $("s_pq_media").value = (pq.media_apps || []).join("，");
+  $("s_pq_browser").value = (pq.browser_apps || []).join("，"); $("s_pq_titles").value = (pq.browser_title_keywords || []).join("，");
+  $("s_pq_enter").value = pq.enter_hold_sec == null ? 5 : pq.enter_hold_sec;
+  $("s_pq_exit").value = pq.exit_hold_sec == null ? 15 : pq.exit_hold_sec;
 }
 // 空着的数字框发 null（后端拒绝），不能让 Number("") 变成 0——声纹门槛 0 等于关掉声纹
 const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
 $("btnSave").addEventListener("click", async () => {
   const patch = { wake_words: $("s_wake").value, wake_required: $("s_req").checked, follow_up_sec: num("s_follow"),
                   spk_threshold: num("s_spk"), barge_rms_min: num("s_barge"),
-                  min_chars: num("s_min"), earcon: $("s_earcon").checked, ack_text: $("s_ack").value };
+                  min_chars: num("s_min"), earcon: $("s_earcon").checked, ack_text: $("s_ack").value,
+                  program_quiet: { enabled: $("s_pq_enabled").checked, media_apps: $("s_pq_media").value.replace(/，/g, ",").split(",").map(x => x.trim()).filter(Boolean),
+                    browser_apps: $("s_pq_browser").value.replace(/，/g, ",").split(",").map(x => x.trim()).filter(Boolean),
+                    browser_title_keywords: $("s_pq_titles").value.replace(/，/g, ",").split(",").map(x => x.trim()).filter(Boolean),
+                    enter_hold_sec: num("s_pq_enter"), exit_hold_sec: num("s_pq_exit") } };
   const r = await api("/api/settings", patch);
   $("msg").textContent = r.ok ? "已保存，立即生效" : "没保存：" + (r.data.reason || "未知错误");
   if (r.ok) { S.settings = r.data.settings; fillSettings(); }
@@ -891,9 +1142,16 @@ function upsert(rec) {
   if (!S.records.has(rec.id)) { S.order.push(rec.id); if (S.order.length > 50) S.records.delete(S.order.shift()); }
   S.records.set(rec.id, rec);
 }
-function renderAll() { renderStatus(); renderFlow(); renderRows(); renderDetail(); }
+function renderAll() { renderStatus(); renderWorkbench(); renderFlow(); renderRows(); renderDetail(); }
 let renderQueued = false;
-function scheduleRender() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderFlow(); renderRows(); renderDetail(); }); } }
+function scheduleRender() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderWorkbench(); renderFlow(); renderRows(); renderDetail(); }); } }
+async function refreshReadOnlyStatus() {
+  const r = await getJson("/api/status");
+  if (!r.ok || !r.data.status) return;
+  S.status = r.data.status;
+  renderStatus();
+  renderWorkbench();
+}
 
 async function start() {
   const r = await fetch("/api/snapshot?token=" + encodeURIComponent(TOKEN));
@@ -906,7 +1164,7 @@ async function start() {
   buildFilters(); fillSettings(); renderAll(); renderLogs(); refreshSpeaker();
   const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
   es.addEventListener("hello", () => banner(""));
-  es.addEventListener("status", (e) => { S.status = JSON.parse(e.data).status; renderStatus(); });
+  es.addEventListener("status", (e) => { S.status = JSON.parse(e.data).status; renderStatus(); renderWorkbench(); });
   es.addEventListener("record", (e) => { upsert(JSON.parse(e.data).record); scheduleRender(); });
   es.addEventListener("stage", (e) => {
     const ev = JSON.parse(e.data);
@@ -914,11 +1172,13 @@ async function start() {
     else { const rec = S.records.get(ev.uid); if (rec) { const st = rec.stages[ev.stage] || { t0: ev.t }; Object.assign(st, { state: ev.state, note: ev.note, t1: ev.t }); rec.stages[ev.stage] = st; } }
     scheduleRender();
   });
-  es.addEventListener("log", (e) => pushLog(JSON.parse(e.data)));
+  es.addEventListener("log", (e) => { pushLog(JSON.parse(e.data)); renderWorkbench(); });
   es.onerror = () => {
     if (es.readyState === EventSource.CLOSED) { banner("和语音进程的连接断了（重启或退出了）。语音回来后会自动刷新。"); waitBack(); }
     else banner("连接中断，正在重连……");
   };
+  // TaskManager 本身不向 EventHub 推送事件；只读轮询现有 status，展示真实队列与最近进度。
+  setInterval(refreshReadOnlyStatus, 2000);
 }
 function waitBack() {
   const t = setInterval(async () => {
@@ -927,11 +1187,19 @@ function waitBack() {
 }
 for (const id of ["onlyAccepted", "followNewest"]) $(id).addEventListener("change", () => { if ($("followNewest").checked) S.selected = null; renderAll(); });
 for (const id of ["level", "search"]) $(id).addEventListener("input", renderLogs);
+$("btnOpenSettings").addEventListener("click", () => $("settingsSection").scrollIntoView({ behavior: "smooth", block: "start" }));
+for (const button of document.querySelectorAll("[data-target]")) button.addEventListener("click", () => {
+  $(button.dataset.target).scrollIntoView({ behavior: "smooth", block: "start" });
+});
 start().catch((e) => { banner("面板启动失败：" + e); waitBack(); });
 </script>
 <script>
 "use strict";
 /*__PANEL_MEMORY_JS__*/
+</script>
+<script>
+"use strict";
+/*__PANEL_GEN1_JS__*/
 </script>
 </body>
 </html>

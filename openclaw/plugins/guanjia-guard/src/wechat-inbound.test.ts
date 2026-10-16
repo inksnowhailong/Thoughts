@@ -1,0 +1,35 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { captureWechatInboundIdentity, diagnoseWechatInboundContext, extractWechatInboundIdentity } from "./wechat-inbound.ts";
+
+const check = (value: unknown, label: string) => { if (!value) throw new Error(`FAIL ${label}`); console.log(`PASS ${label}`); };
+const account = "18f8cd8761c6-im-bot";
+const peer = "o9cq804p69hz5bwbyqkbcsvuq67u@im.wechat";
+const ctx = { channel: "openclaw-weixin", accountId: account, senderId: "Owner_Exact@im.wechat" };
+const record = extractWechatInboundIdentity(ctx, new Date("2026-10-14T12:00:00.000Z"));
+check(record?.accountId === "18f8cd8761c6-im-bot" && record.senderUserId === "Owner_Exact@im.wechat", "extracts exact account and sender");
+check(record?.senderSource === "context", "non-empty context sender takes priority");
+const session = `agent:main:openclaw-weixin:${account}:direct:${peer}`;
+const fallback = extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: account, senderId: "", sessionKey: session });
+check(fallback?.senderUserId === peer && fallback.senderSource === "sessionKey", "real direct session supplies empty sender");
+check(!extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: "other", senderId: "", sessionKey: session }), "session account mismatch rejected");
+check(!extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: account, senderId: "", sessionKey: `agent:main:openclaw-weixin:${account}:group:${peer}` }), "group session rejected");
+check(!extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: account, senderId: "", sessionKey: `agent:main:openclaw-weixin:${account}:direct:` }), "empty peer rejected");
+check(!extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: account, senderId: "", sessionKey: `agent:main:openclaw-weixin:${account}:direct:../evil` }), "path characters rejected");
+check(!extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: account, senderId: "", sessionKey: `${session}:extra` }), "extra segments rejected");
+check(!extractWechatInboundIdentity({ channel: "openclaw-weixin", accountId: "x" }), "missing sender fails closed");
+check(!extractWechatInboundIdentity({ channel: "other", accountId: "x", senderId: "y" }), "unknown channel rejected");
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guanjia-wechat-test-"));
+const state: any[] = [];
+const store: any = { file: (name: string) => path.join(dir, name), audit: (entry: any) => state.push(entry) };
+captureWechatInboundIdentity(store, { ...ctx, sessionKey: "agent:main:main" }, new Date("2026-10-14T12:00:00.000Z"));
+const text = fs.readFileSync(path.join(dir, "wechat-inbound-identities.jsonl"), "utf8");
+check(text.includes("Owner_Exact@im.wechat") && !text.includes("正文"), "identity record contains no message body");
+check(state[0].decision === "captured", "capture is audited");
+diagnoseWechatInboundContext(store, { channel: "openclaw-weixin", currentUserMessage: "正文不能审计" }, ctx);
+const probe = state.at(-1);
+check(probe.decision === "context-probe" && !JSON.stringify(probe).includes("正文不能审计"), "probe records field shape without body");
+fs.rmSync(dir, { recursive: true, force: true });
+console.log("ALL PASS wechat-inbound.test");

@@ -32,10 +32,12 @@ HISTORY_DIR = Path(__file__).resolve().parents[2] / "data" / "ws-history"
 HARD_MAX_CHARS = 20000  # OpenClaw 单个启动文件超出会被截断
 HISTORY_KEEP = 20
 # 只认登记过的相对路径和每日笔记；B3 的记忆页复用同一张表
-ALLOWED = ("SOUL.md", "IDENTITY.md", "AGENTS.md", "USER.md", "MEMORY.md", "memory/timeline.md",
+ALLOWED = ("SOUL.md", "IDENTITY.md", "AGENTS.md", "USER.md", "MEMORY.md", "memory/index.md", "memory/timeline.md",
            "skills/guanjia-notes/SKILL.md", "skills/guanjia-lookup/SKILL.md", "skills/guanjia-launch/SKILL.md",
            "guanjia/family-facts.json")
 _DAILY = re.compile(r"^memory/\d{4}-\d{2}-\d{2}\.md$")
+_PERSON = re.compile(r"^memory/people/(主人|老婆)\.md$")
+_TOPIC = re.compile(r"^memory/topics/[A-Za-z0-9._-]+\.md$")
 _VERSION = re.compile(r"\d{8}-\d{6}-\d{9}")
 
 
@@ -57,7 +59,7 @@ class WorkspaceFiles:
     def resolve(self, rel: str) -> Path:
         """白名单 + 必须仍在工作区目录下；不合格抛 ValueError。"""
         rel = rel.replace("\\", "/")
-        if rel not in ALLOWED and not _DAILY.match(rel):
+        if rel not in ALLOWED and not _DAILY.match(rel) and not _PERSON.match(rel) and not _TOPIC.match(rel):
             raise ValueError(f"不允许的文件：{rel}")
         p = (self.root / rel).resolve()
         if self.root.resolve() not in p.parents:
@@ -98,8 +100,8 @@ class WorkspaceFiles:
         if raw is not None and "\r\n" in raw and "\n" in raw.replace("\r\n", ""):
             # CRLF 和 LF 混用的文件：统一换行会改动我们没编辑的行，宁可拒绝
             raise ValueError(f"{rel} 的换行风格混用（CRLF 和 LF 都有），先人工统一再用面板改")
-        if raw is not None:
-            self._backup(rel, raw)
+        # P4-6c 的新长期文件也保留一个空白前像，确保每个提交目标都有可追溯历史。
+        self._backup(rel, raw or "")
         out = text.replace("\n", "\r\n") if raw is not None and "\r\n" in raw else text  # 保持原文件换行风格
         p.parent.mkdir(parents=True, exist_ok=True)
         # 备份花了点时间，模型这期间可能又写了文件：替换前最后比对一次（剩下的只有毫秒级窗口）

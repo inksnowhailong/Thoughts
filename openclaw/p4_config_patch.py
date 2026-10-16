@@ -1,9 +1,12 @@
-"""P4-1 配置瘦身补丁：只去掉「明显无用的堆积」，改线上 openclaw.json（在家里电脑上跑；先读一遍再 --apply）。
+"""P4 配置补丁：P4-1 瘦身与 P4-1b 直接记忆工具面（在家里电脑上跑；先读一遍再 --apply）。
 
 用法（不带模式什么都不做）：
   python openclaw\\p4_config_patch.py --check      # 只看会改什么、预计省多少 token；不写任何文件
   python openclaw\\p4_config_patch.py --apply      # 备份为 openclaw.json.bak-p4-1 后写入；网关必须先停
   python openclaw\\p4_config_patch.py --rollback   # 把备份拷回去；同样要网关停着
+  python openclaw\\p4_config_patch.py --step 1b --check     # 只核对 P4-1b；不写任何文件
+  python openclaw\\p4_config_patch.py --step 1b --apply     # 备份为 openclaw.json.bak-p4-1b 后写入；网关必须先停
+  python openclaw\\p4_config_patch.py --step 1b --rollback  # 只回滚 P4-1b，保留 P4-1
   --file <路径>      指向别的 openclaw.json（测试用；此时不查网关端口、不调 openclaw CLI）
   --baseline <json>  prompt_size.py 生成的基线（默认取 tmp\\prompt-size 里最新的），--check 用它估省多少 token
   --force            网关还在监听也硬改（不建议）
@@ -38,6 +41,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_CONFIG = Path.home() / ".openclaw" / "openclaw.json"
 BACKUP_SUFFIX = ".bak-p4-1"
+P4_1B_BACKUP_SUFFIX = ".bak-p4-1b"
 GATEWAY_PORT = 18789
 NODE = Path.home() / "AppData/Roaming/fnm/node-versions/v24.21.0/installation/node.exe"
 OPENCLAW_MJS = NODE.parent / "node_modules" / "openclaw" / "openclaw.mjs"
@@ -51,6 +55,16 @@ OPENCLAW_MJS = NODE.parent / "node_modules" / "openclaw" / "openclaw.mjs"
 SKILLS_KEEP = ["guanjia-launch", "guanjia-lookup", "guanjia-notes", "weather", "windows-host-tasks", "browser-automation", "skill-creator"]
 # 主线直接可见工具里明显用不到的三个
 DENY_TOOLS = ["apply_patch", "openclaw", "sessions_yield"]
+# P4-1b：关闭 Tool Search 后仅保留现有常用能力与设计指定的记忆检索能力。
+# 该白名单只改变工具面，不扩大既有目录中的权限；process 明确保留。
+P4_1B_ALLOW_TOOLS = [
+    "exec", "process", "read", "write", "edit", "ls",
+    "web_fetch", "web_search", "browser", "automations", "intent", "session_status",
+    "memory_search", "memory_get", "sessions_search", "sessions_history",
+    "speak", "launch_app", "get_location", "get_weather", "get_desktop_status",
+    "task_start", "task_status", "task_cancel", "task_report",
+]
+TASK_TOOLS = ["task_start", "task_status", "task_cancel", "task_report"]
 
 CHANGES = [
     {
@@ -89,6 +103,27 @@ CHANGES = [
     },
 ]
 
+P4_1B_CHANGES = [
+    {
+        "id": "tool-search",
+        "what": "tools.toolSearch = false：恢复白名单工具的直接 schema。",
+        "why": "memory_search / memory_get 不再需要先经 tool_search 才能调用。",
+        "risk": "直接 schema 会增加固定提示词体积；上线窗口用 prompt_size.py 复测。",
+    },
+    {
+        "id": "tools-allow",
+        "what": "agents.entries.main.tools.allow = P4_1B_ALLOW_TOOLS。",
+        "why": "防止关闭 Tool Search 后暴露未审查工具；process 保留，现有 deny 原样保留。",
+        "risk": "白名单遗漏会让对应工具不可用；上线后的 inspect 用于核实。",
+    },
+    {
+        "id": "dreaming",
+        "what": "plugins.entries.memory-core.config.dreaming.enabled = false。",
+        "why": "MEMORY.md 只由后续 P4 休眠整理器写入，避免双写者。",
+        "risk": "停止 memory-core 托管的 dreaming sweep；显式 rollback 可恢复原状。",
+    },
+]
+
 
 def apply(cfg: dict) -> dict:
     """返回打过补丁的新配置（不改入参，幂等）。只动 agents.defaults.heartbeat.every、agents.entries.main.{skills,tools.deny}、session.reset.mode。"""
@@ -101,6 +136,20 @@ def apply(cfg: dict) -> dict:
     deny = list(tools.get("deny") or [])
     tools["deny"] = deny + [t for t in DENY_TOOLS if t not in deny]
     new.setdefault("session", {}).setdefault("reset", {})["mode"] = "none"
+    return new
+
+
+def apply_1b(cfg: dict) -> dict:
+    """只应用 P4-1b：保留已部署 allow 的未知手工项，只补四个受审查 task 工具。"""
+    new = copy.deepcopy(cfg)
+    new.setdefault("tools", {})["toolSearch"] = False
+    main_tools = new.setdefault("agents", {}).setdefault("entries", {}).setdefault("main", {}).setdefault("tools", {})
+    current = list(main_tools.get("allow") or [])
+    for tool in P4_1B_ALLOW_TOOLS + TASK_TOOLS:
+        if tool not in current:
+            current.append(tool)
+    main_tools["allow"] = current
+    new.setdefault("plugins", {}).setdefault("entries", {}).setdefault("memory-core", {}).setdefault("config", {}).setdefault("dreaming", {})["enabled"] = False
     return new
 
 
@@ -183,12 +232,19 @@ def atomic_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def print_ledger(sv: dict | None, patch_obj: dict) -> None:
-    for c in CHANGES:
-        print(f"[{c['id']}]\n  是什么：{c['what']}\n  为什么：{c['why']}\n  省多少：{c['saves']}\n  风险：{c['risk']}\n")
+def print_ledger(sv: dict | None, patch_obj: dict, *, step: str) -> None:
+    changes = CHANGES if step == "1" else P4_1B_CHANGES
+    for c in changes:
+        print(f"[{c['id']}]\n  是什么：{c['what']}\n  为什么：{c['why']}")
+        if step == "1":
+            print(f"  省多少：{c['saves']}")
+        print(f"  风险：{c['risk']}\n")
     print("将写入的键（旧 → 新由补丁对象决定，其余逐字节保留）：")
     for path, val in flatten(patch_obj):
         print(f"  {path} = {json.dumps(val, ensure_ascii=False)}")
+    if step == "1b":
+        print("\nP4-1b 保护：process 不在 deny；既有 deny 和 allow 的未知手工项均不覆盖；只追加缺失 task 工具。")
+        return
     if not sv:
         print("\n（没有基线：先跑 scripts\\prompt_size.py 再 --check，才能算省多少 token）")
         return
@@ -208,15 +264,20 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     mode = next((m for m in ("--check", "--apply", "--rollback") if m in args), None)
     if not mode:
-        print("用法：python p4_config_patch.py --check | --apply | --rollback [--file <openclaw.json>] [--baseline <json>] [--force]（详见文件头注释）")
+        print("用法：python p4_config_patch.py [--step 1b] --check | --apply | --rollback [--file <openclaw.json>] [--baseline <json>] [--force]（详见文件头注释）")
         return 2
 
     def value(flag: str) -> str | None:
         return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
 
+    step_arg = value("--step")
+    if step_arg not in (None, "1b"):
+        print(f"未知步骤 {step_arg!r}；只支持默认 P4-1 或 --step 1b。")
+        return 2
+    step = step_arg or "1"
     target = Path(value("--file") or LIVE_CONFIG)
     live = value("--file") is None
-    backup = target.with_name(target.name + BACKUP_SUFFIX)
+    backup = target.with_name(target.name + (P4_1B_BACKUP_SUFFIX if step == "1b" else BACKUP_SUFFIX))
     if mode != "--check" and live and port_open(GATEWAY_PORT) and "--force" not in args:
         print(f"网关还在监听 {GATEWAY_PORT}：先 openclaw gateway stop --force，确认不监听再来（或加 --force，不建议）。")
         return 1
@@ -234,15 +295,15 @@ def main(argv: list[str] | None = None) -> int:
     if dump(cfg).encode("utf-8") != raw:
         print(f"{target} 不是 2 空格缩进 + 末尾换行的标准 JSON，重写会改动无关格式：拒绝。请先人工确认后手改。")
         return 1
-    new = apply(cfg)
+    new = apply_1b(cfg) if step == "1b" else apply(cfg)
     po = patch_object(cfg, new)
     if mode == "--check":
         bl = Path(value("--baseline")) if value("--baseline") else latest_baseline()
-        sv = saving(json.loads(bl.read_text(encoding="utf-8")), new) if bl and bl.exists() else None
-        print(f"== --check {target}（不写任何文件；基线：{bl.name if sv else '无'}）==\n")
-        print_ledger(sv, po)
+        sv = saving(json.loads(bl.read_text(encoding="utf-8")), new) if step == "1" and bl and bl.exists() else None
+        print(f"== P4-{step} --check {target}（不写任何文件；基线：{bl.name if sv else '不适用'}）==\n")
+        print_ledger(sv, po, step=step)
         if not po:
-            print("\n配置已经是补丁后的样子，无需改动。")
+            print(f"\nP4-{step} 配置已经是补丁后的样子，无需改动。")
         elif live:
             ok, msg = dry_run_validate(po)
             print(f"\nopenclaw config patch --dry-run：{'通过' if ok else '失败'} {msg}")
@@ -270,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
             atomic_write(target, backup.read_bytes())
             print(f"写入后 config validate 失败，已恢复备份：{((r.stdout or '') + (r.stderr or ''))[-300:]}")
             return 1
-    print(f"已写入 {target}（备份 {backup.name}）。改动：{', '.join(p for p, _ in flatten(po))}\n重启网关生效；回滚：python p4_config_patch.py --rollback（网关停着时）。")
+    rollback = "python p4_config_patch.py --step 1b --rollback" if step == "1b" else "python p4_config_patch.py --rollback"
+    print(f"已写入 {target}（备份 {backup.name}）。改动：{', '.join(p for p, _ in flatten(po))}\n重启网关生效；回滚：{rollback}（网关停着时）。")
     return 0
 
 

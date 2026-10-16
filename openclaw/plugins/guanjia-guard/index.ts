@@ -5,10 +5,14 @@ import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { createStore } from "./src/store";
 import { createGuard } from "./src/guard";
+import { startApprovalIpc } from "./src/approval-ipc";
 import { startRedactProxy } from "./src/redact";
 import { onUserTurn as habitOnUserTurn } from "./src/habits";
 import { createSpeakTool, stripVoiceTag } from "./src/speak";
-import { createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
+import { createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
+import { bindTaskApproval, decideTaskApproval, createTaskCancelTool, createTaskReportTool, createTaskStartTool, createTaskStatusTool } from "./src/tasks";
+import { recordMainWatermark } from "./src/main-watermark";
+import { captureWechatInboundIdentity, diagnoseWechatInboundContext } from "./src/wechat-inbound";
 import type { LevelsFile } from "./src/levels";
 
 /**
@@ -35,8 +39,9 @@ export default definePluginEntry({
     };
     const workspaceDir = cfg.workspaceDir ?? path.join(os.homedir(), ".openclaw", "workspace");
     const store = createStore(workspaceDir, defaultsDir);
+    store.audit({ kind: "wechat-inbound-identity", decision: "capture-hook-loaded" });
     const defaults = JSON.parse(fs.readFileSync(path.join(defaultsDir, "levels.json"), "utf8")) as LevelsFile;
-    const guard = createGuard(store, defaults);
+    const guard = createGuard(store, defaults, (pending) => { void bindTaskApproval(workspaceDir, pending); });
 
     /** 网关服务启动时拿到的调度器 getter；用户确认习惯草案时用它建 cron */
     let getCron: (() => any) | undefined;
@@ -60,7 +65,14 @@ export default definePluginEntry({
       const rawText: string = event.currentUserMessage ?? event.prompt ?? "";
       const userText = stripVoiceTag(rawText);
       if (!userText.trim()) return;
-      const confirmNote = guard.onUserTurn(ctx?.sessionKey, rawText);
+      diagnoseWechatInboundContext(store, event, ctx);
+      captureWechatInboundIdentity(store, ctx);
+      recordMainWatermark(store, { sessionKey: ctx?.sessionKey, text: rawText, channel: ctx?.channel, accountId: ctx?.accountId });
+      const provenanceConfirm = guard.onProvenanceWechatTurn(ctx, rawText);
+      if (provenanceConfirm) return { appendContext: provenanceConfirm };
+      const wechatConfirm = guard.onOwnerWechatTurn(ctx?.sessionKey, rawText, ctx?.requester);
+      if (wechatConfirm) return { appendContext: wechatConfirm };
+      const confirmNote = guard.onUserTurn(ctx?.sessionKey, rawText, ctx?.runId);
       if (confirmNote) return { appendContext: confirmNote };
       const cron = getCron?.();
       const habitNote = await habitOnUserTurn(store, userText, cron ? (input) => cron.add(input) : undefined, cfg.habitTz ?? "Asia/Shanghai");
@@ -71,14 +83,22 @@ export default definePluginEntry({
     api.registerTool(createSpeakTool({ url: cfg.speakUrl }));
     api.registerTool(createLaunchAppTool({ workspaceDir }));
     api.registerTool(createGetLocationTool({ workspaceDir }));
+    api.registerTool(createGetDesktopStatusTool({ workspaceDir }));
     api.registerTool(createGetWeatherTool({ workspaceDir }));
+    api.registerTool(createTaskStartTool({ workspaceDir }));
+    api.registerTool(createTaskStatusTool({ workspaceDir }));
+    api.registerTool(createTaskCancelTool({ workspaceDir }));
+    api.registerTool(createTaskReportTool({ workspaceDir }));
 
     // 2) 脱敏代理随网关起停
     let stopProxy: (() => Promise<void>) | undefined;
+    let stopApprovalIpc: (() => Promise<void>) | undefined;
     api.registerService({
       id: "guanjia-guard-service",
       start(ctx: any) {
         getCron = ctx.getCron;
+        stopApprovalIpc = startApprovalIpc(store, guard.approvals, api.logger,
+          (record, decision) => { void decideTaskApproval(workspaceDir, { sessionKey: record.sessionKey, decision }); });
         const p = cfg.proxy ?? {};
         if (p.enabled === false) return;
         stopProxy = startRedactProxy({
@@ -90,6 +110,8 @@ export default definePluginEntry({
       },
       async stop() {
         getCron = undefined;
+        await stopApprovalIpc?.();
+        stopApprovalIpc = undefined;
         await stopProxy?.();
         stopProxy = undefined;
       },

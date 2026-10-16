@@ -43,6 +43,13 @@ TEXT = json.dumps(CFG, ensure_ascii=False, indent=2) + "\n"
 
 KEEP = ["guanjia-launch", "guanjia-lookup", "guanjia-notes", "weather", "windows-host-tasks", "browser-automation", "skill-creator"]
 DENY = {"apply_patch", "openclaw", "sessions_yield"}
+ALLOW_1B = [
+    "exec", "process", "read", "write", "edit", "ls",
+    "web_fetch", "web_search", "browser", "automations", "intent", "session_status",
+    "memory_search", "memory_get", "sessions_search", "sessions_history",
+    "speak", "launch_app", "get_location", "get_weather", "get_desktop_status",
+    "task_start", "task_status", "task_cancel", "task_report",
+]
 
 # ---- 纯函数 apply ----
 c2 = patch.apply(CFG)
@@ -60,6 +67,18 @@ check(c2["agents"]["defaults"]["model"] == CFG["agents"]["defaults"]["model"] an
 check("hooks" not in c2, "hooks (session-memory excerpt count) not added in this batch")
 check(CFG["agents"]["entries"]["main"] == {}, "apply does not mutate its input")
 check(patch.apply(c2) == c2, "idempotent")
+
+c1b = patch.apply_1b(c2)
+tools_1b = c1b["agents"]["entries"]["main"]["tools"]
+check(c1b["tools"]["toolSearch"] is False, "P4-1b disables Tool Search")
+check(tools_1b["allow"] == ALLOW_1B, "P4-1b allowlist is exactly the reviewed direct tool set")
+check({"memory_search", "memory_get", "automations", "process"} <= set(tools_1b["allow"]), "P4-1b keeps memory, reminders, and process")
+check(tools_1b["deny"] == c2["agents"]["entries"]["main"]["tools"]["deny"] and "process" not in tools_1b["deny"],
+      "P4-1b preserves existing deny and does not deny process")
+check(c1b["plugins"]["entries"]["memory-core"]["config"]["dreaming"] == {"enabled": False}, "P4-1b disables memory dreaming")
+check(c1b["session"] == c2["session"] and c1b["agents"]["defaults"] == c2["agents"]["defaults"], "P4-1b leaves P4-1 settings untouched")
+check(patch.apply_1b(c1b) == c1b, "P4-1b is idempotent")
+check(c2 == patch.apply(CFG), "P4-1b does not mutate its input")
 
 pre = copy.deepcopy(CFG)
 pre["agents"]["entries"]["main"] = {"tools": {"deny": ["canvas", "openclaw"]}, "model": "keep-me"}
@@ -120,6 +139,20 @@ check(r.returncode == 0 and "无需改动" in r.stdout and bak.read_bytes() == T
       "second --apply is a no-op and keeps the original backup")
 r = run("--rollback", "--file", str(f))
 check(r.returncode == 0 and f.read_bytes() == TEXT.encode("utf-8"), "--rollback restores original byte for byte")
+
+r = run("--step", "1b", "--check", "--file", str(f))
+bak_1b = tmp / "openclaw.json.bak-p4-1b"
+check(r.returncode == 0 and f.read_bytes() == TEXT.encode("utf-8") and not bak_1b.exists(), "P4-1b --check writes nothing")
+check("toolSearch" in r.stdout and "memory_search" in r.stdout and "process 不在 deny" in r.stdout, "P4-1b --check explains direct memory tools and safety")
+r = run("--step", "1b", "--apply", "--file", str(f))
+check(r.returncode == 0 and bak_1b.read_bytes() == TEXT.encode("utf-8"), "P4-1b --apply preserves its own original backup")
+patched_1b = json.loads(f.read_text(encoding="utf-8"))
+check(patched_1b == patch.apply_1b(CFG), "P4-1b --apply writes only its expected changes")
+r = run("--step", "1b", "--apply", "--file", str(f))
+check(r.returncode == 0 and "无需改动" in r.stdout and f.read_text(encoding="utf-8") == json.dumps(patched_1b, ensure_ascii=False, indent=2) + "\n",
+      "second P4-1b --apply is a no-op")
+r = run("--step", "1b", "--rollback", "--file", str(f))
+check(r.returncode == 0 and f.read_bytes() == TEXT.encode("utf-8"), "P4-1b --rollback restores its own original byte for byte")
 
 odd = tmp / "odd.json"
 odd.write_bytes(b'{\n\t"agents": {"entries": {"main": {}}}\n}\n')  # 制表符缩进：重写会改格式，拒绝

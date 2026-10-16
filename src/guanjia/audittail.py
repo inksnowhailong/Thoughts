@@ -23,16 +23,19 @@ DECISION_STATE = {  # 审计 decision → 面板「工具/审批」方框的状�
     "allow": "done", "allow-confirmed": "done", "allow-inner-dedup": "done", "approval-allow-once": "done",
     "approval-requested": "active", "block-need-confirm": "blocked", "block-no-confirmer": "blocked",
     "approval-deny": "blocked", "approval-timeout": "blocked", "approval-cancelled": "blocked",
+    "pending.open": "active", "pending.approved": "active", "pending.rejected": "blocked",
+    "pending.expired": "blocked", "pending.executed": "done", "allow-approved-latch": "done",
 }
 
 
 # ---- 「待确认」状态：来自分级插件审计里的拦截 / 确认记录 ----
 # 打开：工具被拦下、等主人口头同意（v2 的 block-need-confirm；approval-requested 是 v1 遗留，v2 插件不再产生）。
-PENDING_OPEN = frozenset({"block-need-confirm", "approval-requested"})
+PENDING_OPEN = frozenset({"block-need-confirm", "approval-requested", "pending.open"})
 # 了结：主人说了允许 / 别的话、同意后重试放行、或旧审批有了结果。l2-* 这几行没有 tool 字段，tool_entry 看不到，靠 gate_event。
 PENDING_CLOSE = frozenset({
     "l2-confirmed", "l2-dropped", "l2-remembered", "l2-remember-refused", "l2-remember-failed", "allow-confirmed",
     "approval-allow-once", "approval-deny", "approval-timeout", "approval-cancelled",
+    "pending.approved", "pending.rejected", "pending.expired", "pending.executed", "allow-approved-latch",
 })
 # 拦截 / 确认类记录的全集：回复里声称「被拦、要审批」时，本轮见过其中任何一条才算有据（block-no-confirmer / block-refused 是真拦，但没人能确认，不进待确认）
 GATE_DECISIONS = PENDING_OPEN | PENDING_CLOSE | {"block-no-confirmer", "block-refused"}
@@ -41,7 +44,7 @@ PENDING_TTL_SEC = 180.0  # 与插件 guard.ts 的 PENDING_TTL_MS（3 分钟）�
 
 def gate_event(raw: object) -> dict | None:
     """一行审计 → 拦截 / 确认事件 {ts, decision, summary}；不是主线会话的、或不是 GATE_DECISIONS 里的返回 None。"""
-    if not isinstance(raw, dict) or raw.get("kind") != "tool" or raw.get("sessionKey") != MAIN_SESSION_KEY:
+    if not isinstance(raw, dict) or raw.get("kind") not in {"tool", "pending"} or raw.get("sessionKey") != MAIN_SESSION_KEY:
         return None
     decision = str(raw.get("decision", ""))
     if decision not in GATE_DECISIONS:

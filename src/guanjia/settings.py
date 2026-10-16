@@ -21,6 +21,18 @@ SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "voice-settings.j
 
 
 @dataclass(frozen=True)
+class ProgramQuietSettings:
+    """影音静默候选配置；Q0 只观测，不改变语音或播放。"""
+
+    enabled: bool = False
+    enter_hold_sec: float = 5.0
+    exit_hold_sec: float = 15.0
+    media_apps: tuple[str, ...] = ()
+    browser_apps: tuple[str, ...] = ()
+    browser_title_keywords: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Settings:
     wake_words: tuple[str, ...] = ("管家",)  # 识别文字里含其一才进主线（按拼音容错匹配）
     wake_required: bool = True  # False = 不要唤醒词（P2 的行为）
@@ -31,6 +43,7 @@ class Settings:
     earcon: bool = True  # 说完话立即放提示音
     ack_text: str = "在呢"  # 只喊唤醒词时的应答（TTS 不在时改放提示音）
     speech_max_sentences: int = 2  # 语音轮最多念几句（口语整形，见 speech_shape.py）；多的只在面板看；0 = 不整形、全念
+    program_quiet: ProgramQuietSettings = ProgramQuietSettings()
 
 
 _LIMITS = {
@@ -52,6 +65,7 @@ def from_dict(data: dict, base: Settings = Settings()) -> Settings:
         raise ValueError(f"不认识的设置项：{', '.join(sorted(unknown))}")
     vals = asdict(base)
     vals["wake_words"] = tuple(vals["wake_words"])
+    vals["program_quiet"] = base.program_quiet
     if "wake_words" in data:
         raw = data["wake_words"]
         words = raw.replace("，", ",").split(",") if isinstance(raw, str) else raw
@@ -82,12 +96,53 @@ def from_dict(data: dict, base: Settings = Settings()) -> Settings:
         if not 1 <= len(text) <= 10:
             raise ValueError("应答语要 1～10 个字")
         vals["ack_text"] = text
+    if "program_quiet" in data:
+        raw = data["program_quiet"]
+        if not isinstance(raw, dict):
+            raise ValueError("program_quiet 必须是对象")
+        unknown_quiet = set(raw) - set(asdict(base.program_quiet))
+        if unknown_quiet:
+            raise ValueError(f"program_quiet 不认识的设置项：{', '.join(sorted(unknown_quiet))}")
+        quiet = base.program_quiet
+        if "enabled" in raw:
+            if not isinstance(raw["enabled"], bool):
+                raise ValueError("program_quiet.enabled 只能是 true 或 false")
+            quiet = replace(quiet, enabled=raw["enabled"])
+        for key, default in (("enter_hold_sec", 5.0), ("exit_hold_sec", 15.0)):
+            if key not in raw:
+                continue
+            try:
+                value = float(raw[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"program_quiet.{key} 要是数字") from None
+            if not 0.0 <= value <= 120.0:
+                raise ValueError(f"program_quiet.{key} 要在 0.0～120.0 之间")
+            quiet = replace(quiet, **{key: value})
+        for key in ("media_apps", "browser_apps", "browser_title_keywords"):
+            if key not in raw:
+                continue
+            items = raw[key]
+            if not isinstance(items, (list, tuple)) or not all(isinstance(item, str) for item in items):
+                raise ValueError(f"program_quiet.{key} 必须是字符串列表")
+            cleaned = tuple(dict.fromkeys(item.strip() for item in items if item.strip()))
+            if len(cleaned) > 30 or any(len(item) > 120 for item in cleaned):
+                raise ValueError(f"program_quiet.{key} 最多 30 项，每项不超过 120 字")
+            quiet = replace(quiet, **{key: cleaned})
+        vals["program_quiet"] = quiet
     return replace(base, **vals)
 
 
 def to_dict(s: Settings) -> dict:
     d = asdict(s)
     d["wake_words"] = list(s.wake_words)
+    d["program_quiet"] = {
+        "enabled": s.program_quiet.enabled,
+        "enter_hold_sec": s.program_quiet.enter_hold_sec,
+        "exit_hold_sec": s.program_quiet.exit_hold_sec,
+        "media_apps": list(s.program_quiet.media_apps),
+        "browser_apps": list(s.program_quiet.browser_apps),
+        "browser_title_keywords": list(s.program_quiet.browser_title_keywords),
+    }
     return d
 
 

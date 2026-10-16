@@ -20,6 +20,7 @@ from guanjia.params import describe
 from guanjia.prompts import PromptService
 from guanjia.remembered_overrides import LEVELS_PATH, list_remembered, revoke
 from guanjia.settings import SettingsStore, to_dict
+from guanjia.staging_review import StagingReview
 from guanjia.wsfiles import HISTORY_DIR
 
 PANEL_HTML = Path(__file__).with_name("panel.html")
@@ -46,6 +47,8 @@ class PanelBackend:
         self._elog: elog.EventLog | elog.NullLog = elog.NullLog()  # 统一事件日志；attach_flags 时接上，之前是空操作
         self.levels_path = levels_path  # 线上分级表（测试传临时文件）
         self.audit_dir = audit_dir  # 撤销审计写到这里的 audit.jsonl（与工作区文件改动同一份审计）
+        # P1 首页轮询这里拿 O3 的只读 TaskManager 摘要；不注册任何任务写操作。
+        self.register_get("/api/status", lambda query: (200, {"ok": True, "status": self._status()}))
         self.register_get("/api/overrides", self._overrides_list)
         self.register_post("/api/overrides", self._overrides_post)
 
@@ -113,6 +116,11 @@ class PanelBackend:
         self.register_get("/api/memory/file", svc.get)
         self.register_post("/api/memory/file", svc.post)
 
+    def attach_gen1_staging(self, svc: StagingReview) -> None:
+        """P4-6b：只读候选与 decisions.json，不注册 workspace 提交接口。"""
+        self.register_get("/api/staging/gen1", svc.list_all)
+        self.register_post("/api/staging/gen1", svc.decide)
+
     def attach_flags(self, log: elog.EventLog | elog.NullLog) -> None:
         """面板每句话旁的「这句有问题」：写一条 user_flag 事件（logq --flags 列出），并在记录上标记。
         同时让改设置 / 控制（静音、重启、退出）也进事件流（panel.settings / panel.control）。"""
@@ -143,9 +151,10 @@ class PanelBackend:
     def html(self) -> bytes:
         """每次现读文件（改了页面刷新即可看到），把令牌填进占位符。"""
         page = self.html_path.read_text(encoding="utf-8")
-        # 记忆页的脚本拆在同目录的 panel_memory.js（控制口只静态服务 /panel 一个页面，所以读出来内联进去）
-        js = self.html_path.with_name("panel_memory.js")
-        page = page.replace("/*__PANEL_MEMORY_JS__*/", js.read_text(encoding="utf-8") if js.exists() else "")
+        # 分区脚本内联：控制口只静态服务 /panel 一个页面。
+        for marker, name in (("/*__PANEL_MEMORY_JS__*/", "panel_memory.js"), ("/*__PANEL_GEN1_JS__*/", "panel_gen1.js")):
+            js = self.html_path.with_name(name)
+            page = page.replace(marker, js.read_text(encoding="utf-8") if js.exists() else "")
         return page.replace("__GUANJIA_TOKEN__", self.token).encode("utf-8")
 
     def snapshot(self) -> dict:

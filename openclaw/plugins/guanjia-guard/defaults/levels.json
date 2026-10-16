@@ -25,6 +25,10 @@
     "tts": "L1",
     "speak": "L1",
     "launch_app": "L1",
+    "task_start": "L1",
+    "task_status": "L1",
+    "task_cancel": "L1",
+    "task_report": "L1",
     "browser": "L1",
     "cron": "L1",
     "automations": "L1",
@@ -42,37 +46,260 @@
     "gateway": "L2",
     "plugins": "L2",
     "secrets": "L2",
-    "terminal": "L2"
+    "terminal": "L2",
+    "get_desktop_status": "L0"
   },
   "rules": [
-    { "tool": "read", "param": "$path", "pattern": "(?:^|[\\s\"',(=])(?:\\\\\\\\|//)[^\\\\/\\s]|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\s\"'\\\\/](?!guanjia(?:$|[\\s\"'\\\\/]))))|(?:^|[\\s\"'=(,\\\\/])\\.\\.(?:$|[\\s\"'\\\\/])|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?guanjia[\\\\/]|\\benv:|openclaw-weixin|\\.bak-|[\\\\/]\\.ssh(?:$|[\\\\/])|(?:^|[\\\\/])\\.env(?:\\.[\\w-]+)?$", "level": "L2", "category": "secret", "remember": false, "note": "读敏感路径：UNC、.openclaw 下 workspace 以外或 workspace/guanjia、..、env:、openclaw-weixin、.bak-、.ssh、.env" },
-    { "tool": "ls", "param": "$path", "pattern": "(?:^|[\\s\"',(=])(?:\\\\\\\\|//)[^\\\\/\\s]|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\s\"'\\\\/](?!guanjia(?:$|[\\s\"'\\\\/]))))|(?:^|[\\s\"'=(,\\\\/])\\.\\.(?:$|[\\s\"'\\\\/])|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?guanjia[\\\\/]|\\benv:|openclaw-weixin|\\.bak-|[\\\\/]\\.ssh(?:$|[\\\\/])|(?:^|[\\\\/])\\.env(?:\\.[\\w-]+)?$", "level": "L2", "category": "secret", "remember": false, "note": "同上（列目录）" },
-    { "tool": "exec", "param": "command", "pattern": "(?:^|[\\s\"',(=])(?:\\\\\\\\|//)[^\\\\/\\s]|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\s\"'\\\\/](?!guanjia(?:$|[\\s\"'\\\\/]))))|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?guanjia[\\\\/]|openclaw-weixin|\\.bak-|openclaw\\.json|openclaw(?:-agent)?\\.sqlite|[\\\\/]credentials[\\\\/]|auth-profiles?\\b|[\\\\/]\\.ssh(?:$|[\\\\/\\s\"'])|\\bid_(?:rsa|ed25519|ecdsa|dsa)\\b|(?:^|[\\s\"'\\\\/])\\.env(?:\\.[\\w-]+)?(?=$|[\\s\"'])|(?:^|[\\s;|&(])(?:get-childitem|gci|dir|ls|get-item|gi|get-content|gc|type|cat)\\s+env:|\\$env:\\w*(?:key|token|secret|passw|pwd|cred)|\\[(?:system\\.)?environment\\]::getenvironmentvariables|(?:^|[;&|]\\s*)(?:set|printenv)\\s*(?:$|[;&|>])", "level": "L2", "category": "secret", "remember": false, "note": "命令里碰到含密钥的配置：.openclaw 下 workspace 以外、guanjia/、openclaw.json、会话库、凭据、.ssh、.env、环境变量里的密钥" },
-    { "tool": "exec", "param": "command", "pattern": "^\\s*(?:&\\s*)?(?:(?:(?:c:[\\\\/]windows[\\\\/]system32[\\\\/]windowspowershell[\\\\/]v1\\.0[\\\\/])?powershell(?:\\.exe)?|pwsh(?:\\.exe)?)(?:\\s+(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted)|-windowstyle\\s+hidden))*\\s+-file\\s+)?[\"']?(?:c:[\\\\/]users[\\\\/]inksn[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]|\\.[\\\\/])?tools[\\\\/]launch-app\\.ps1[\"']?\\s+-name\\s+[\"']?[a-z0-9_-]+[\"']?(?:\\s+2>&1)?\\s*$", "level": "L1", "note": "启动器（开游戏/开程序）：引号、-NoProfile 等常见开关、相对路径都认，参数只许一个 -Name <英文键>" },
-    { "tool": "exec", "param": "command", "pattern": "^\\s*(?:&\\s*)?(?:(?:(?:c:[\\\\/]windows[\\\\/]system32[\\\\/]windowspowershell[\\\\/]v1\\.0[\\\\/])?powershell(?:\\.exe)?|pwsh(?:\\.exe)?)(?:\\s+(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted)|-windowstyle\\s+hidden))*\\s+-file\\s+)?[\"']?(?:c:[\\\\/]users[\\\\/]inksn[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]|\\.[\\\\/])?tools[\\\\/]get-location\\.ps1[\"']?(?:\\s+2>&1)?\\s*$", "level": "L0", "note": "定位脚本（只读取当前位置，不接受参数）" },
-    { "tool": "exec", "param": "command", "pattern": "[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/](?:tools|guanjia)(?:$|[\\\\/\\s\"'])|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?(?:tools|guanjia)[\\\\/]|\\b(?:apps|levels|openclaw)\\.json\\b|[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?=$|[\\\\/\\s\"'])", "also": [{"param":"command","pattern":"\\b(?:set-content|sc|add-content|ac|out-file|clear-content|clc|new-item|ni|copy-item|cpi|copy|cp|move-item|mi|move|mv|rename-item|rni|ren|rename|remove-item|ri|rm|del|erase|rd|rmdir|tee-object|tee|set-itemproperty|xcopy|robocopy|mklink|attrib|icacls|expand-archive|compress-archive)\\b|(?<!\\d)>|::(?:write|append)all|\\bgit\\b[^\\r\\n]*\\b(?:checkout|switch|reset|restore|apply|am|pull|merge|rebase|stash|clean|rm|mv|revert|cherry-pick|commit)\\b"}], "level": "L2", "category": "self-config", "remember": false, "note": "用命令改管家自己的规则/工具：workspace/tools、guanjia/、apps.json、levels.json、openclaw.json、F:/coding/guanjia（tmp 除外）" },
-    { "tool": "exec", "param": "command", "pattern": "\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b", "level": "L2", "category": "delete", "note": "删除文件或目录" },
-    { "tool": "exec", "param": "command", "pattern": "(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid)", "level": "L2", "category": "system", "note": "格式化/分区/引导/注册表/账户/权限/系统服务等影响系统稳定的操作" },
-    { "tool": "exec", "param": "command", "pattern": "\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b", "level": "L2", "category": "power", "note": "关机/重启/注销（取消关机 shutdown /a 不算）" },
-    { "tool": "exec", "param": "command", "pattern": "\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b", "level": "L2", "category": "kill", "note": "结束进程" },
-    { "tool": "exec", "param": "command", "pattern": "^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s]", "level": "L2", "category": "download-run", "note": "下载后直接运行、把可执行文件/脚本下载到本地、打开网络共享上的程序（file://主机/…）" },
-    { "tool": "exec", "param": "command", "pattern": "\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string", "level": "L2", "category": "opaque", "note": "看不清内容的命令（-EncodedCommand、base64 解码后执行）" },
-    { "tool": "exec", "param": "command", "pattern": "^\\s*(?:start|start-process)\\s+(?:\"?(?!(?:logoff|tsdiscon|shutdown|rstrui|systemreset|cmd|powershell|pwsh|wscript|cscript|mshta|rundll32|regsvr32|msiexec|msdt|wsl|bash|ftp|fodhelper|computerdefaults|sdclt|reg|regedit|schtasks|sc|net|wmic|certutil|bitsadmin)(?:\\.exe)?\"?\\s*$)[a-z0-9_.+-]+\"?|\"?(?:https?|steam)://[^\\s;&|\\`$<>(){}\\[\\]@%\"']*\"?)\\s*$", "level": "L1", "note": "启动程序/游戏/网页（裸程序名或 协议:// 地址）" },
-    { "tool": "exec", "param": "command", "pattern": "^\\s*(dir|type|get-childitem|get-content|get-process|tasklist|get-date|whoami|hostname|ipconfig|echo)(?=\\s|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*$", "level": "L0", "note": "只读查询命令" },
-    { "tool": "exec", "param": "command", "pattern": "^\\s*(?:(?:powershell|pwsh)(?:\\.exe)?\\s+(?:(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted))\\s+)*-c(?:ommand)?\\s+\"?)?(?:\\(\\s*(?:get-(?:process|service|childitem|item|itemproperty|content|date|ciminstance|wmiobject|computerinfo|volume|psdrive|netipaddress|netadapter|command|scheduledtask|hotfix|location)|test-path|tasklist|dir|ls|type|hostname|whoami|ipconfig|systeminfo|where\\.exe)(?=\\s|\\)|\"\\s*$|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*\\)(?:\\.[a-z_][a-z0-9_]*)*|(?:get-(?:process|service|childitem|item|itemproperty|content|date|ciminstance|wmiobject|computerinfo|volume|psdrive|netipaddress|netadapter|command|scheduledtask|hotfix|location)|test-path|tasklist|dir|ls|type|hostname|whoami|ipconfig|systeminfo|where\\.exe)(?=\\s|\\)|\"\\s*$|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*)(?:\\s*\\|\\s*(?:select-object|select|where-object|where|sort-object|sort|format-table|ft|format-list|fl|measure-object|measure|group-object|select-string|out-string|convertto-json|findstr)(?=\\s|\"\\s*$|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*)*\"?\\s*$", "level": "L0", "note": "只读 PowerShell 管道" },
-    { "tool": "process", "param": "action", "pattern": "^(list|poll|log)$", "level": "L0", "note": "只看后台进程列表和输出" },
-    { "tool": "process", "param": "action", "pattern": "^(?:write|send-keys|submit|paste)$", "also": [{"param":"$text","pattern":"(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"}], "level": "L2", "category": "script", "note": "往后台命令行里输入的内容有删除/关机等先问的操作" },
-    { "tool": "write", "param": "$path", "pattern": "^(?:\\.[\\\\/])?tools[.\\s]*[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]tools[.\\s]*[\\\\/]|(?:^|[\\\\/])(?:apps|levels)\\.json(?=[.\\s]*$|[\\s\"':])|^(?:\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia(?:$|[\\\\/])|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\\\/]))|^\\.\\.(?:$|[\\\\/])|[\\\\/]\\.\\.(?:$|[\\\\/])|^[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?:$|[\\\\/])", "level": "L2", "category": "self-config", "remember": false, "note": "改管家自己的规则/工具：workspace/tools、guanjia/、apps.json、levels.json、.openclaw 下 workspace 以外、F:/coding/guanjia（tmp 除外）" },
-    { "tool": "edit", "param": "$path", "pattern": "^(?:\\.[\\\\/])?tools[.\\s]*[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]tools[.\\s]*[\\\\/]|(?:^|[\\\\/])(?:apps|levels)\\.json(?=[.\\s]*$|[\\s\"':])|^(?:\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia(?:$|[\\\\/])|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\\\/]))|^\\.\\.(?:$|[\\\\/])|[\\\\/]\\.\\.(?:$|[\\\\/])|^[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?:$|[\\\\/])", "level": "L2", "category": "self-config", "remember": false, "note": "同上（edit）" },
-    { "tool": "apply_patch", "param": "$anyDerivedPaths", "pattern": "^(?:\\.[\\\\/])?tools[.\\s]*[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]tools[.\\s]*[\\\\/]|(?:^|[\\\\/])(?:apps|levels)\\.json(?=[.\\s]*$|[\\s\"':])|^(?:\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia(?:$|[\\\\/])|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\\\/]))|^\\.\\.(?:$|[\\\\/])|[\\\\/]\\.\\.(?:$|[\\\\/])|^[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?:$|[\\\\/])", "level": "L2", "category": "self-config", "remember": false, "note": "补丁动到管家自己的规则/工具" },
-    { "tool": "apply_patch", "param": "$text", "pattern": "\\*\\*\\* delete file:", "level": "L2", "category": "delete", "note": "补丁里删除文件" },
-    { "tool": "write", "param": "$path", "pattern": "\\.(?:bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|py|pyw|sh|reg)(?=[.\\s]*$|[\\s\"':])", "also": [{"param":"$text","pattern":"(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"}], "level": "L2", "category": "script", "note": "写的脚本里有删除/关机/结束进程等先问的操作" },
-    { "tool": "edit", "param": "$path", "pattern": "\\.(?:bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|py|pyw|sh|reg)(?=[.\\s]*$|[\\s\"':])", "also": [{"param":"$text","pattern":"(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"}], "level": "L2", "category": "script", "note": "同上（edit）" },
-    { "tool": "apply_patch", "param": "$anyDerivedPaths", "pattern": "\\.(?:bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|py|pyw|sh|reg)(?=[.\\s]*$|[\\s\"':])", "also": [{"param":"$text","pattern":"(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"}], "level": "L2", "category": "script", "note": "同上（补丁）" },
-    { "tool": "gateway", "level": "L2", "category": "self-config", "remember": false, "note": "网关配置/重启" },
-    { "tool": "plugins", "level": "L2", "category": "self-config", "remember": false, "note": "装/卸插件" },
-    { "tool": "secrets", "level": "L2", "category": "secret", "remember": false, "note": "密钥" },
-    { "tool": "terminal", "level": "L2", "category": "opaque", "note": "交互终端输入看不到具体命令" }
+    {
+      "tool": "read",
+      "param": "$path",
+      "pattern": "(?:^|[\\s\"',(=])(?:\\\\\\\\|//)[^\\\\/\\s]|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\s\"'\\\\/](?!guanjia(?:$|[\\s\"'\\\\/]))))|(?:^|[\\s\"'=(,\\\\/])\\.\\.(?:$|[\\s\"'\\\\/])|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?guanjia[\\\\/]|\\benv:|openclaw-weixin|\\.bak-|[\\\\/]\\.ssh(?:$|[\\\\/])|(?:^|[\\\\/])\\.env(?:\\.[\\w-]+)?$",
+      "level": "L2",
+      "category": "secret",
+      "remember": false,
+      "note": "读敏感路径：UNC、.openclaw 下 workspace 以外或 workspace/guanjia、..、env:、openclaw-weixin、.bak-、.ssh、.env"
+    },
+    {
+      "tool": "ls",
+      "param": "$path",
+      "pattern": "(?:^|[\\s\"',(=])(?:\\\\\\\\|//)[^\\\\/\\s]|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\s\"'\\\\/](?!guanjia(?:$|[\\s\"'\\\\/]))))|(?:^|[\\s\"'=(,\\\\/])\\.\\.(?:$|[\\s\"'\\\\/])|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?guanjia[\\\\/]|\\benv:|openclaw-weixin|\\.bak-|[\\\\/]\\.ssh(?:$|[\\\\/])|(?:^|[\\\\/])\\.env(?:\\.[\\w-]+)?$",
+      "level": "L2",
+      "category": "secret",
+      "remember": false,
+      "note": "同上（列目录）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "(?:^|[\\s\"',(=])(?:\\\\\\\\|//)[^\\\\/\\s]|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\s\"'\\\\/](?!guanjia(?:$|[\\s\"'\\\\/]))))|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?guanjia[\\\\/]|openclaw-weixin|\\.bak-|openclaw\\.json|openclaw(?:-agent)?\\.sqlite|[\\\\/]credentials[\\\\/]|auth-profiles?\\b|[\\\\/]\\.ssh(?:$|[\\\\/\\s\"'])|\\bid_(?:rsa|ed25519|ecdsa|dsa)\\b|(?:^|[\\s\"'\\\\/])\\.env(?:\\.[\\w-]+)?(?=$|[\\s\"'])|(?:^|[\\s;|&(])(?:get-childitem|gci|dir|ls|get-item|gi|get-content|gc|type|cat)\\s+env:|\\$env:\\w*(?:key|token|secret|passw|pwd|cred)|\\[(?:system\\.)?environment\\]::getenvironmentvariables|(?:^|[;&|]\\s*)(?:set|printenv)\\s*(?:$|[;&|>])",
+      "level": "L2",
+      "category": "secret",
+      "remember": false,
+      "note": "命令里碰到含密钥的配置：.openclaw 下 workspace 以外、guanjia/、openclaw.json、会话库、凭据、.ssh、.env、环境变量里的密钥"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "^\\s*(?:&\\s*)?(?:(?:(?:c:[\\\\/]windows[\\\\/]system32[\\\\/]windowspowershell[\\\\/]v1\\.0[\\\\/])?powershell(?:\\.exe)?|pwsh(?:\\.exe)?)(?:\\s+(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted)|-windowstyle\\s+hidden))*\\s+-file\\s+)?[\"']?(?:c:[\\\\/]users[\\\\/]inksn[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]|\\.[\\\\/])?tools[\\\\/]launch-app\\.ps1[\"']?\\s+-name\\s+[\"']?[a-z0-9_-]+[\"']?(?:\\s+2>&1)?\\s*$",
+      "level": "L1",
+      "note": "启动器（开游戏/开程序）：引号、-NoProfile 等常见开关、相对路径都认，参数只许一个 -Name <英文键>"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "^\\s*(?:&\\s*)?(?:(?:(?:c:[\\\\/]windows[\\\\/]system32[\\\\/]windowspowershell[\\\\/]v1\\.0[\\\\/])?powershell(?:\\.exe)?|pwsh(?:\\.exe)?)(?:\\s+(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted)|-windowstyle\\s+hidden))*\\s+-file\\s+)?[\"']?(?:c:[\\\\/]users[\\\\/]inksn[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]|\\.[\\\\/])?tools[\\\\/]get-location\\.ps1[\"']?(?:\\s+2>&1)?\\s*$",
+      "level": "L0",
+      "note": "定位脚本（只读取当前位置，不接受参数）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/](?:tools|guanjia)(?:$|[\\\\/\\s\"'])|(?:^|[\\s\"'=(,])(?:\\.[\\\\/])?(?:tools|guanjia)[\\\\/]|\\b(?:apps|levels|openclaw)\\.json\\b|[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?=$|[\\\\/\\s\"'])",
+      "also": [
+        {
+          "param": "command",
+          "pattern": "\\b(?:set-content|sc|add-content|ac|out-file|clear-content|clc|new-item|ni|copy-item|cpi|copy|cp|move-item|mi|move|mv|rename-item|rni|ren|rename|remove-item|ri|rm|del|erase|rd|rmdir|tee-object|tee|set-itemproperty|xcopy|robocopy|mklink|attrib|icacls|expand-archive|compress-archive)\\b|(?<!\\d)>|::(?:write|append)all|\\bgit\\b[^\\r\\n]*\\b(?:checkout|switch|reset|restore|apply|am|pull|merge|rebase|stash|clean|rm|mv|revert|cherry-pick|commit)\\b"
+        }
+      ],
+      "level": "L2",
+      "category": "self-config",
+      "remember": false,
+      "note": "用命令改管家自己的规则/工具：workspace/tools、guanjia/、apps.json、levels.json、openclaw.json、F:/coding/guanjia（tmp 除外）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b",
+      "level": "L2",
+      "category": "delete",
+      "note": "删除文件或目录"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid)",
+      "level": "L2",
+      "category": "system",
+      "note": "格式化/分区/引导/注册表/账户/权限/系统服务等影响系统稳定的操作"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b",
+      "level": "L2",
+      "category": "power",
+      "note": "关机/重启/注销（取消关机 shutdown /a 不算）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b",
+      "level": "L2",
+      "category": "kill",
+      "note": "结束进程"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s]",
+      "level": "L2",
+      "category": "download-run",
+      "note": "下载后直接运行、把可执行文件/脚本下载到本地、打开网络共享上的程序（file://主机/…）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string",
+      "level": "L2",
+      "category": "opaque",
+      "note": "看不清内容的命令（-EncodedCommand、base64 解码后执行）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "^\\s*(?:start|start-process)\\s+(?:\"?(?!(?:logoff|tsdiscon|shutdown|rstrui|systemreset|cmd|powershell|pwsh|wscript|cscript|mshta|rundll32|regsvr32|msiexec|msdt|wsl|bash|ftp|fodhelper|computerdefaults|sdclt|reg|regedit|schtasks|sc|net|wmic|certutil|bitsadmin)(?:\\.exe)?\"?\\s*$)[a-z0-9_.+-]+\"?|\"?(?:https?|steam)://[^\\s;&|\\`$<>(){}\\[\\]@%\"']*\"?)\\s*$",
+      "level": "L1",
+      "note": "启动程序/游戏/网页（裸程序名或 协议:// 地址）"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "^\\s*(dir|type|get-childitem|get-content|get-process|tasklist|get-date|whoami|hostname|ipconfig|echo)(?=\\s|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*$",
+      "level": "L0",
+      "note": "只读查询命令"
+    },
+    {
+      "tool": "exec",
+      "param": "command",
+      "pattern": "^\\s*(?:(?:powershell|pwsh)(?:\\.exe)?\\s+(?:(?:-noprofile|-nologo|-noninteractive|-executionpolicy\\s+(?:bypass|remotesigned|unrestricted))\\s+)*-c(?:ommand)?\\s+\"?)?(?:\\(\\s*(?:get-(?:process|service|childitem|item|itemproperty|content|date|ciminstance|wmiobject|computerinfo|volume|psdrive|netipaddress|netadapter|command|scheduledtask|hotfix|location)|test-path|tasklist|dir|ls|type|hostname|whoami|ipconfig|systeminfo|where\\.exe)(?=\\s|\\)|\"\\s*$|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*\\)(?:\\.[a-z_][a-z0-9_]*)*|(?:get-(?:process|service|childitem|item|itemproperty|content|date|ciminstance|wmiobject|computerinfo|volume|psdrive|netipaddress|netadapter|command|scheduledtask|hotfix|location)|test-path|tasklist|dir|ls|type|hostname|whoami|ipconfig|systeminfo|where\\.exe)(?=\\s|\\)|\"\\s*$|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*)(?:\\s*\\|\\s*(?:select-object|select|where-object|where|sort-object|sort|format-table|ft|format-list|fl|measure-object|measure|group-object|select-string|out-string|convertto-json|findstr)(?=\\s|\"\\s*$|$)[^;&|\\`$<>(){}\\[\\]@%\\r\\n]*)*\"?\\s*$",
+      "level": "L0",
+      "note": "只读 PowerShell 管道"
+    },
+    {
+      "tool": "process",
+      "param": "action",
+      "pattern": "^(list|poll|log)$",
+      "level": "L0",
+      "note": "只看后台进程列表和输出"
+    },
+    {
+      "tool": "process",
+      "param": "action",
+      "pattern": "^(?:write|send-keys|submit|paste)$",
+      "also": [
+        {
+          "param": "$text",
+          "pattern": "(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"
+        }
+      ],
+      "level": "L2",
+      "category": "script",
+      "note": "往后台命令行里输入的内容有删除/关机等先问的操作"
+    },
+    {
+      "tool": "write",
+      "param": "$path",
+      "pattern": "^(?:\\.[\\\\/])?tools[.\\s]*[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]tools[.\\s]*[\\\\/]|(?:^|[\\\\/])(?:apps|levels)\\.json(?=[.\\s]*$|[\\s\"':])|^(?:\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia(?:$|[\\\\/])|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\\\/]))|^\\.\\.(?:$|[\\\\/])|[\\\\/]\\.\\.(?:$|[\\\\/])|^[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?:$|[\\\\/])",
+      "level": "L2",
+      "category": "self-config",
+      "remember": false,
+      "note": "改管家自己的规则/工具：workspace/tools、guanjia/、apps.json、levels.json、.openclaw 下 workspace 以外、F:/coding/guanjia（tmp 除外）"
+    },
+    {
+      "tool": "edit",
+      "param": "$path",
+      "pattern": "^(?:\\.[\\\\/])?tools[.\\s]*[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]tools[.\\s]*[\\\\/]|(?:^|[\\\\/])(?:apps|levels)\\.json(?=[.\\s]*$|[\\s\"':])|^(?:\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia(?:$|[\\\\/])|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\\\/]))|^\\.\\.(?:$|[\\\\/])|[\\\\/]\\.\\.(?:$|[\\\\/])|^[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?:$|[\\\\/])",
+      "level": "L2",
+      "category": "self-config",
+      "remember": false,
+      "note": "同上（edit）"
+    },
+    {
+      "tool": "apply_patch",
+      "param": "$anyDerivedPaths",
+      "pattern": "^(?:\\.[\\\\/])?tools[.\\s]*[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]tools[.\\s]*[\\\\/]|(?:^|[\\\\/])(?:apps|levels)\\.json(?=[.\\s]*$|[\\s\"':])|^(?:\\.[\\\\/])?guanjia[\\\\/]|[\\\\/]\\.openclaw[\\\\/]workspace[\\\\/]guanjia(?:$|[\\\\/])|[\\\\/]\\.openclaw[\\\\/](?!workspace(?:$|[\\\\/]))|^\\.\\.(?:$|[\\\\/])|[\\\\/]\\.\\.(?:$|[\\\\/])|^[a-z]:[\\\\/]coding[\\\\/]guanjia(?![\\\\/]tmp(?:$|[\\\\/]))(?:$|[\\\\/])",
+      "level": "L2",
+      "category": "self-config",
+      "remember": false,
+      "note": "补丁动到管家自己的规则/工具"
+    },
+    {
+      "tool": "apply_patch",
+      "param": "$text",
+      "pattern": "\\*\\*\\* delete file:",
+      "level": "L2",
+      "category": "delete",
+      "note": "补丁里删除文件"
+    },
+    {
+      "tool": "write",
+      "param": "$path",
+      "pattern": "\\.(?:bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|py|pyw|sh|reg)(?=[.\\s]*$|[\\s\"':])",
+      "also": [
+        {
+          "param": "$text",
+          "pattern": "(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"
+        }
+      ],
+      "level": "L2",
+      "category": "script",
+      "note": "写的脚本里有删除/关机/结束进程等先问的操作"
+    },
+    {
+      "tool": "edit",
+      "param": "$path",
+      "pattern": "\\.(?:bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|py|pyw|sh|reg)(?=[.\\s]*$|[\\s\"':])",
+      "also": [
+        {
+          "param": "$text",
+          "pattern": "(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"
+        }
+      ],
+      "level": "L2",
+      "category": "script",
+      "note": "同上（edit）"
+    },
+    {
+      "tool": "apply_patch",
+      "param": "$anyDerivedPaths",
+      "pattern": "\\.(?:bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|py|pyw|sh|reg)(?=[.\\s]*$|[\\s\"':])",
+      "also": [
+        {
+          "param": "$text",
+          "pattern": "(?:\\bremove-item\\b|\\b(?:ri|rm|del|erase|rmdir|rd)\\b(?=\\s)|\\.delete\\(\\)|\\[(?:system\\.)?io\\.(?:file|directory)\\]::delete|\\bclear-content\\b|\\bclear-recyclebin\\b|\\bsdelete\\b|\\brobocopy\\b[^\\r\\n]*\\s/(?:mir|purge)\\b|\\bos\\.(?:remove|unlink|rmdir|removedirs)\\s*\\(|\\bshutil\\.rmtree\\s*\\(|\\.unlink\\s*\\(|\\bfs\\.(?:rm|rmsync|unlink|unlinksync|rmdir|rmdirsync)\\s*\\(|\\brimraf\\b|\\bgit\\s+clean\\b)|(?:(?<!-)\\bformat(?:-volume)?(?=\\s|$)|\\bdiskpart\\b|\\b(?:clear-disk|initialize-disk|(?:new|remove|resize|set)-partition)\\b|\\bbcd(?:edit|boot)\\b|\\bbootrec\\b|\\breg(?:\\.exe)?\\s+(?:add|delete|import|load|unload|restore|copy)\\b|\\bregedit(?:\\.exe)?\\s+/s\\b|\\b(?:set|new|remove|rename)-itemproperty\\b|\\b(?:new-item|set-item)\\b[^\\r\\n]*\\b(?:hklm|hkcu|hkcr|hku|hkey_[a-z_]+|registry::)|\\bnet(?:\\.exe)?\\s+(?:user|localgroup)\\b|\\b(?:new|remove|set|enable|disable)-localuser\\b|\\b(?:add|remove)-localgroupmember\\b|\\bwmic\\s+useraccount\\b|\\bicacls\\b|\\btakeown\\b|\\bcacls\\b|\\bset-acl\\b|\\bcipher(?:\\.exe)?\\s+/w\\b|\\bsfc\\b|\\bdism\\b|\\bvssadmin\\s+(?:delete|resize)\\b|\\bwbadmin\\s+delete\\b|\\bset-executionpolicy\\b|\\b(?:set|add)-mppreference\\b|\\bsc(?:\\.exe)?\\s+(?:delete|config)\\b|\\bremove-service\\b|\\bipconfig\\b[^\\r\\n]*[/-](?:release|renew|flushdns|registerdns|setclassid))|(?:\\bshutdown(?:\\.exe)?\\b(?=[^\\r\\n]*\\s[/-](?:s|r|p|h|g|l|sg|o)\\b)|\\b(?:restart|stop|suspend)-computer\\b|\\blogoff\\b|\\btsdiscon\\b)|(?:\\b(?:stop-process|spps|taskkill|tskill|pskill)\\b|\\.kill\\(\\)|\\bforeach-object\\s+kill\\b|(?:^|[|;&]\\s*)kill\\b|\\bkill\\s+(?:-|\\d)|-(?:name|methodname)\\s+terminate\\b|\\bwmic\\s+process\\b[^\\r\\n]*\\b(?:delete|terminate)\\b)|(?:^(?=[\\s\\S]*(?:\\b(?:invoke-webrequest|iwr|curl(?:\\.exe)?|wget|invoke-restmethod|irm|start-bitstransfer|bitsadmin)\\b|downloadfile|downloadstring|downloaddata|net\\.webclient|certutil[^\\r\\n]*-urlcache))(?=[\\s\\S]*(?:\\b(?:iex|invoke-expression|start-process|saps|invoke-item|msiexec)\\b|(?:^|[;&|]\\s*)(?:start|&|\\.)\\s|\\|\\s*(?:powershell|pwsh|cmd|sh|bash|python|node)\\b|\\.(?:exe|msi|bat|cmd|ps1|vbs|scr)\\b))|\\bfile:(?:/{2}|\\\\{2})[^/\\\\\\s])|(?:\\b(?:powershell|pwsh)(?:\\.exe)?\\b[^\\r\\n]*[\\s'\"]-e(?:c|n[a-z]*)?[\\s'\"]+[a-z0-9+/=]{8,}|frombase64string[\\s\\S]*\\b(?:iex|invoke-expression)\\b|\\b(?:iex|invoke-expression)\\b[\\s\\S]*frombase64string)"
+        }
+      ],
+      "level": "L2",
+      "category": "script",
+      "note": "同上（补丁）"
+    },
+    {
+      "tool": "gateway",
+      "level": "L2",
+      "category": "self-config",
+      "remember": false,
+      "note": "网关配置/重启"
+    },
+    {
+      "tool": "plugins",
+      "level": "L2",
+      "category": "self-config",
+      "remember": false,
+      "note": "装/卸插件"
+    },
+    {
+      "tool": "secrets",
+      "level": "L2",
+      "category": "secret",
+      "remember": false,
+      "note": "密钥"
+    },
+    {
+      "tool": "terminal",
+      "level": "L2",
+      "category": "opaque",
+      "note": "交互终端输入看不到具体命令"
+    }
   ],
   "overrides": []
 }

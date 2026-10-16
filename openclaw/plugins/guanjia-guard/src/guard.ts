@@ -3,6 +3,8 @@ import { classify, resolveToolCallTarget, type AskCategory, type Classification,
 import type { Store } from "./store";
 import { hasVoiceTag, stripVoiceTag } from "./speak";
 import { CATEGORY_CN, appendOverride, buildRememberedOverride } from "./remember";
+import { APPROVAL_RETRY_MARKER, createApprovalLatches } from "./approvals";
+import { consumeOwnerWechatProvenance } from "./wechat-provenance";
 
 /**
  * 分级中间层（确认策略 v2）：before_tool_call 里定级并放行 / 先问 / 拒绝。
@@ -49,10 +51,8 @@ interface OuterGrant {
 const PENDING_TTL_MS = 3 * 60_000;
 /** 外层放行后才登记，60 秒内参数一致的内层调用去重一次 */
 const OUTER_GRANT_TTL_MS = 60_000;
-/** 开头是同意词；"好/对/行"这类单字后面只能跟标点或语气词，挡住"好了好了""好吃吗" */
-const CONFIRM_RE = /^(?:嗯|啊|哦|呃)?[，,。\s]*(?:确认|确定|执行|同意|允许|放行|(?:好的|好|可以|行|是的|对|ok|yes)(?=$|[\s，,。.!！~～、的吧啊呀嘞哒]))/i;
-/** 语音里叫停、反悔、反问常以"好/嗯/可以"开头（"好了好了""嗯，不要了""可以吗"），出现这些就不算同意 */
-const DENY_RE = /不|别|算了|取消|等等|等一下|一下|停|吗|\?|？/;
+const APPROVE_SHORT = new Set(["允许","确认","确定","可以","行","好","好的","好呀","好啊","嗯","对","同意","没问题","去吧","弄吧","做吧","执行","执行吧","关吧","删吧","装吧","开吧","放行"]);
+const DENY_RE = /不|别|算了|取消|暂停|等等|等一下|停|慢着|吗|\?|？/;
 /** "以后都允许 / 一直允许 / 以后不用问了"：同意并记住；前面可以先带一个同意词 */
 const REMEMBER_RE =
   /^(?:嗯|啊|哦|呃)?[，,。\s]*(?:(?:好的?|可以|行|允许|同意|确认|对)[，,。!！\s]*)?(?:(?:以后|今后|往后|之后)(?:就|也|都)*|一直|永远|总是)[，,\s]*(?:允许|可以|同意|放行|行|直接(?:做|弄|执行)?|(?:不用|别|不要|无需|甭)(?:再)?问)/;
@@ -61,12 +61,20 @@ const REMEMBER_DENY_RE = /算了|取消|等等|等一下|停|吗|\?|？|不(?:�
 
 export function isConfirmation(userText: string): boolean {
   const t = stripVoiceTag(userText).trim();
-  return isRememberRequest(t) || (CONFIRM_RE.test(t) && !DENY_RE.test(t));
+  const normalized = t.replace(/[\s，,。.!！?？~～、】【、]/g, "");
+  if (isRememberRequest(t) || DENY_RE.test(normalized) || normalized.length > 12) return isRememberRequest(t);
+  if (normalized.startsWith("好了好了") || normalized.startsWith("好家伙")) return false;
+  return APPROVE_SHORT.has(normalized) || ["允许","确认","可以","行","好"].some((prefix) => normalized.startsWith(prefix));
 }
 
 export function isRememberRequest(userText: string): boolean {
   const t = stripVoiceTag(userText).trim();
   return REMEMBER_RE.test(t) && !REMEMBER_DENY_RE.test(t);
+}
+
+export function isRejection(userText: string): boolean {
+  const t = stripVoiceTag(userText).trim().replace(/[\s，,。.!！?？~～、】【、]/g, "");
+  return t.length <= 12 && (/^(?:不|不要|别|取消|算了|等等|等一下|暂停|停|慢着|不允许|不行)/.test(t));
 }
 
 /** 决定"是不是同一件事"的目标参数，按优先级取第一个存在的 */
@@ -116,8 +124,14 @@ const REMEMBER_FAIL_CN: Record<string, string> = {
   kill_without_name: "这次是按进程号结束的，没有程序名可记",
 };
 
-export function createGuard(store: Store, defaults: LevelsFile) {
+export function createGuard(
+  store: Store,
+  defaults: LevelsFile,
+  onTaskApproval?: (input: { sessionKey?: string; approvalId: string; description: string; expiresAt: number }) => void,
+) {
   const pending = new Map<string, PendingAction>();
+  const approvals = createApprovalLatches(store);
+  const runSources = new Map<string, string>();
   /** runId → 触发来源（user/cron/heartbeat），由 prompt 阶段钩子登记；工具钩子上下文里没有 trigger */
   const runTriggers = new Map<string, string>();
   /** 清洗后的外层 toolCallId → 放行登记，只保留最近 500 条 */
@@ -141,8 +155,15 @@ export function createGuard(store: Store, defaults: LevelsFile) {
    * @param userText 用户原话（可带「[语音 …]」标记，这里剥）
    * @returns 给模型的追加上下文
    */
-  function onUserTurn(sessionKey: string | undefined, userText: string): string | undefined {
+  function onUserTurn(sessionKey: string | undefined, userText: string, runId?: string): string | undefined {
     if (!sessionKey) return undefined;
+    if (runId) {
+      runSources.set(runId, hasVoiceTag(userText) ? "voice" : "user");
+      if (runSources.size > 500) runSources.delete(runSources.keys().next().value!);
+    }
+    if (stripVoiceTag(userText).trim() === APPROVAL_RETRY_MARKER) return approvals.instruction(sessionKey);
+    // O1-B 不再接受模型上下文里的口头确认：只能由本机 IPC 写入闩锁。
+    if (isConfirmation(userText)) return undefined;
     const p = pending.get(sessionKey);
     if (!p || p.expiresAt < Date.now()) return undefined;
     const voice = hasVoiceTag(userText);
@@ -174,6 +195,27 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     }
     store.audit({ kind: "tool", decision: "l2-remembered", sessionKey, summary: p.summary, overrideId: saved.id, existed: saved.existed, voice });
     return `（系统：用户已口头同意「${p.summary}」并要求以后不用再问，已记住（可在管家面板撤销）。${retry}做完后用一句话告诉用户：以后这件事直接做。）`;
+  }
+
+  /** 微信主人确认只由可信 requester 直接写入闩锁，不经过模型猜测。 */
+  function onOwnerWechatTurn(sessionKey: string | undefined, userText: string, requester: any): string | undefined {
+    if (sessionKey !== "agent:main:main" || requester?.channel !== "openclaw-weixin" || requester?.senderIsOwner !== true) return undefined;
+    const decision = isConfirmation(userText) ? "approve" : isRejection(userText) ? "reject" : undefined;
+    if (!decision) return undefined;
+    const pendingRecord = approvals.latest(sessionKey);
+    if (!pendingRecord || !approvals.decide(pendingRecord.id, decision, sessionKey)) return undefined;
+    store.audit({ kind: "pending", decision: `wechat-${decision}`, sessionKey, pendingId: pendingRecord.id, summary: pendingRecord.summary });
+    return decision === "approve" ? approvals.instruction(sessionKey) : "（系统：主人已拒绝刚才待确认操作，不要重试。）";
+  }
+
+  /** main binding 会抹掉 senderId 时，只信任同 run 的一次性签名 provenance。 */
+  function onProvenanceWechatTurn(ctx: any, userText: string): string | undefined {
+    const decision = isConfirmation(userText) ? "approve" : isRejection(userText) ? "reject" : undefined;
+    if (!decision || !consumeOwnerWechatProvenance(store, ctx)) return undefined;
+    const pendingRecord = approvals.latest(ctx.sessionKey);
+    if (!pendingRecord || !approvals.decide(pendingRecord.id, decision, ctx.sessionKey)) return undefined;
+    store.audit({ kind: "pending", decision: `wechat-${decision}`, sessionKey: ctx.sessionKey, pendingId: pendingRecord.id, summary: pendingRecord.summary });
+    return decision === "approve" ? approvals.instruction(ctx.sessionKey) : "（系统：主人已拒绝刚才待确认操作，不要重试。）";
   }
 
   /** 外层 tool_call 放行时登记；外层没有 toolCallId 时 OpenClaw 用 "direct" 作父 id */
@@ -228,6 +270,7 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     const toolName = target?.toolName ?? rawToolName;
     const params = target?.params ?? rawParams;
     const sessionKey: string | undefined = ctx?.sessionKey;
+    const source = runSources.get(ctx?.runId ?? event.runId) ?? String(ctx?.trigger ?? "user");
     const proactive = isProactive(ctx?.runId ?? event.runId, sessionKey);
     // client 工具没有内层钩子；裸名字可能按名字匹配到 client 工具；选择器矛盾时真实目标不确定——三种都拒绝
     const forceL3 = target?.source === "client" || target?.source === "ambiguous" || (!!target && target.source === undefined && !levels.tools[target.toolName]);
@@ -252,6 +295,14 @@ export function createGuard(store: Store, defaults: LevelsFile) {
     const grantIfOuter = () => {
       if (target) grantOuter(callId, { toolName, fingerprint: fingerprintOf(toolName, params), level: c.level, sessionKey });
     };
+
+    // O1-B：批准后的下一次调用只能消耗同会话、同来源、同工具、同规范参数的一次性闩锁。
+    // 这里不调用工具；仍由 OpenClaw 的正常执行路径执行，故无法绕过原始工具权限模型。
+    if (approvals.consume(sessionKey, source, toolName, params)) {
+      grantIfOuter();
+      store.audit({ ...base, decision: "allow-approved-latch" });
+      return askRewrite;
+    }
 
     if (c.level === "L0" || c.level === "L1") {
       grantIfOuter();
@@ -286,15 +337,17 @@ export function createGuard(store: Store, defaults: LevelsFile) {
       };
     }
     pending.set(sessionKey, { sessionKey, fingerprint: fp, summary, toolName, params, category: c.category, rememberable, expiresAt: Date.now() + PENDING_TTL_MS, approved: false });
+    const opened = approvals.open({ toolName, params, sessionKey, source, summary });
+    onTaskApproval?.({ sessionKey, approvalId: opened.id, description: opened.summary, expiresAt: opened.expiresAt });
     store.audit({ ...base, decision: "block-need-confirm" });
     const how = rememberable
-      ? "用户说「允许 / 可以 / 行」就做这一次；说「以后都允许」就做并记住，下次不再问。"
-      : "用户说「允许 / 可以 / 行」就做这一次；这类每次都要问，不要提「以后都允许」。";
+      ? "用户用自然短句同意即可，例如「行你关吧」「好去弄吧」「允许关机」；说「以后都允许」才会记住。不要要求用户必须单独说某两个字。"
+      : "用户用自然短句同意即可，例如「行你关吧」「好去弄吧」「允许关机」；这类每次都要问。不要要求用户必须单独说某两个字。";
     return {
       block: true,
       blockReason: `需要确认（${what}）：${summary}。先用一句口语问用户要不要这么做，不要让用户去微信或网页里点。${how}用户同意后，用完全相同的参数再调用一次；不要换写法绕过。`,
     };
   }
 
-  return { beforeToolCall, onUserTurn, noteRun, isProactive };
+  return { beforeToolCall, onUserTurn, onOwnerWechatTurn, onProvenanceWechatTurn, noteRun, isProactive, approvals };
 }

@@ -147,10 +147,13 @@ for id_ in ("flow", "rows", "detail", "logs", "btnMute", "btnRestart", "btnQuit"
 node = os.environ.get("GUANJIA_NODE") or shutil.which("node") or \
     r"C:\Users\inksn\AppData\Roaming\fnm\node-versions\v24.21.0\installation\node.exe"
 if Path(node).exists() or shutil.which(node):
-    # B3 之后页面有两段脚本：主脚本 + 记忆页脚本（panel_memory.js 在服务时内联到占位符处），逐段检查语法
+    # P4-6b 后页面有三段脚本：主脚本 + 记忆页 + gen1 暂存审阅（服务时内联），逐段检查语法
     memory_js = (Path(__file__).resolve().parents[1] / "src" / "guanjia" / "panel_memory.js").read_text(encoding="utf-8")
-    scripts = [s.replace("/*__PANEL_MEMORY_JS__*/", memory_js) for s in re.findall(r"<script>(.*?)</script>", html, re.S)]
-    check(len(scripts) == 2 and "memLoad" in scripts[1], "page has the main script and the memory script (inlined)")
+    gen1_js = (Path(__file__).resolve().parents[1] / "src" / "guanjia" / "panel_gen1.js").read_text(encoding="utf-8")
+    scripts = [s.replace("/*__PANEL_MEMORY_JS__*/", memory_js).replace("/*__PANEL_GEN1_JS__*/", gen1_js)
+               for s in re.findall(r"<script>(.*?)</script>", html, re.S)]
+    check(len(scripts) == 3 and "memLoad" in scripts[1] and "gen1Refresh" in scripts[2],
+          "page has the main, memory and gen1 staging scripts (inlined)")
     for n, script in enumerate(scripts):
         js = Path(tempfile.mkdtemp(prefix="gj_p21p_")) / f"panel{n}.js"
         js.write_text(script, encoding="utf-8")
