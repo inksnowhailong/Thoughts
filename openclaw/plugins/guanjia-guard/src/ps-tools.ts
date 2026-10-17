@@ -211,3 +211,90 @@ export function createGetWeatherTool(opts: PsToolOptions) {
     },
   };
 }
+
+export const CAMERA_TIMEOUT_MS = 20_000;
+
+export function createCameraPtzTool(opts: PsToolOptions) {
+  return {
+    name: "camera_ptz",
+    label: "Control camera PTZ",
+    catalogMode: DIRECT_ONLY,
+    description:
+      "Rotate or stop the home camera gimbal locally via ONVIF (left/right/up/down/stop). " +
+      "Use when the owner says '往左看/往右转/抬头/低头/转一下摄像头'.",
+    parameters: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: ["left", "right", "up", "down", "stop"],
+          description: "转动方向：left(左)、right(右)、up(上)、down(下)、stop(停止)",
+        },
+        duration_sec: {
+          type: "number",
+          description: "转动持续秒数（默认 0.45 秒，范围 0.15~2.0 秒，短时点动后自动停止）",
+        },
+      },
+      required: ["direction"],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: { direction?: unknown; duration_sec?: unknown }) {
+      const dir = typeof params?.direction === "string" ? params.direction.trim().toLowerCase() : "";
+      const dur = typeof params?.duration_sec === "number" && Number.isFinite(params.duration_sec) ? String(params.duration_sec) : "0.45";
+      const script = path.join(opts.workspaceDir, "tools", "camera-tool.py");
+      const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
+        execFile(
+          "F:\\coding\\guanjia\\.venv\\Scripts\\python.exe",
+          ["-X", "utf8", script, "ptz", dir, dur],
+          { windowsHide: true, timeout: CAMERA_TIMEOUT_MS, encoding: "utf8" },
+          (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
+        );
+      });
+      const r = lastJson(out.stdout);
+      if (!r?.ok) return textResult(`摄像头没转成功：${r?.error ?? "未知错误"}`, { ok: false, error: r?.error ?? "failed" });
+      return textResult(String(r.message ?? "摄像头已转动。"), r);
+    },
+  };
+}
+
+export function createCameraLookTool(opts: PsToolOptions) {
+  return {
+    name: "camera_look",
+    label: "Look through home camera",
+    catalogMode: DIRECT_ONLY,
+    description:
+      "Capture a live snapshot from the home camera (optionally rotating left/right/up/down first) and describe what is visible. " +
+      "Use whenever the owner asks '看看屋里有什么/用摄像头看一下/往左看看是谁/你在看哪儿'.",
+    parameters: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "想看什么问题，例如 '看看画面里有什么' 或 '看看桌子上有什么'",
+        },
+        direction: {
+          type: "string",
+          enum: ["left", "right", "up", "down"],
+          description: "可选：抓拍前先往哪个方向转一下（left/right/up/down）",
+        },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: { question?: unknown; direction?: unknown }) {
+      const q = typeof params?.question === "string" && params.question.trim() ? params.question.trim() : "看看现在画面里有什么";
+      const dir = typeof params?.direction === "string" ? params.direction.trim().toLowerCase() : "";
+      const script = path.join(opts.workspaceDir, "tools", "camera-tool.py");
+      const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
+        execFile(
+          "F:\\coding\\guanjia\\.venv\\Scripts\\python.exe",
+          ["-X", "utf8", script, "look", q, dir],
+          { windowsHide: true, timeout: CAMERA_TIMEOUT_MS, encoding: "utf8" },
+          (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
+        );
+      });
+      const r = lastJson(out.stdout);
+      if (!r?.ok) return textResult(`没能看到摄像头画面：${r?.error ?? "未知错误"}`, { ok: false, error: r?.error ?? "failed" });
+      return textResult(`${r.moved ?? ""}${r.description}`, r);
+    },
+  };
+}

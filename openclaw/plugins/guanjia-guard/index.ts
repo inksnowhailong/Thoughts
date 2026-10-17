@@ -9,7 +9,7 @@ import { startApprovalIpc } from "./src/approval-ipc";
 import { startRedactProxy } from "./src/redact";
 import { onUserTurn as habitOnUserTurn } from "./src/habits";
 import { createSpeakTool, stripVoiceTag } from "./src/speak";
-import { createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
+import { createCameraLookTool, createCameraPtzTool, createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
 import { bindTaskApproval, decideTaskApproval, createTaskCancelTool, createTaskReportTool, createTaskStartTool, createTaskStatusTool } from "./src/tasks";
 import { recordMainWatermark } from "./src/main-watermark";
 import { captureWechatInboundIdentity, diagnoseWechatInboundContext } from "./src/wechat-inbound";
@@ -96,6 +96,8 @@ export default definePluginEntry({
     api.registerTool(createGetLocationTool({ workspaceDir }));
     api.registerTool(createGetDesktopStatusTool({ workspaceDir }));
     api.registerTool(createGetWeatherTool({ workspaceDir }));
+    api.registerTool(createCameraPtzTool({ workspaceDir }));
+    api.registerTool(createCameraLookTool({ workspaceDir }));
     api.registerTool(createTaskStartTool({ workspaceDir }));
     api.registerTool(createTaskStatusTool({ workspaceDir }));
     api.registerTool(createTaskCancelTool({ workspaceDir }));

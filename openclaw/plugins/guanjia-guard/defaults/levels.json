@@ -47,7 +47,9 @@
     "plugins": "L2",
     "secrets": "L2",
     "terminal": "L2",
-    "get_desktop_status": "L0"
+    "get_desktop_status": "L0",
+    "camera_look": "L0",
+    "camera_ptz": "L1"
   },
   "rules": [
     {

@@ -2,24 +2,47 @@
   "id": "guanjia-guard",
   "name": "Guanjia Guard",
   "description": "L0-L3 tool gating, cloud redaction proxy, habit confirmation flow.",
-  "activation": { "onStartup": true },
-  "contracts": { "tools": ["speak", "launch_app", "get_location", "get_weather"] },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "speak",
+      "launch_app",
+      "get_location",
+      "get_weather",
+      "camera_ptz",
+      "camera_look"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "workspaceDir": { "type": "string" },
+      "workspaceDir": {
+        "type": "string"
+      },
       "proxy": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "enabled": { "type": "boolean" },
-          "port": { "type": "number" },
-          "upstreamOrigin": { "type": "string" }
+          "enabled": {
+            "type": "boolean"
+          },
+          "port": {
+            "type": "number"
+          },
+          "upstreamOrigin": {
+            "type": "string"
+          }
         }
       },
-      "habitTz": { "type": "string" },
-      "speakUrl": { "type": "string" }
+      "habitTz": {
+        "type": "string"
+      },
+      "speakUrl": {
+        "type": "string"
+      }
     }
   }
 }
