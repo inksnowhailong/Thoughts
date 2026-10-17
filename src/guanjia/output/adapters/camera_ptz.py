@@ -154,3 +154,174 @@ class LocalCameraPtzAdapter:
         if name.lower() in {'controlptz', 'control_ptz', 'controlmoveptz', 'controllocationptz'}:
             raise AttributeError(f'{name} is forbidden; use local move/stop/locate only')
         raise AttributeError(name)
+
+import base64
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import time
+import urllib.request
+import xml.etree.ElementTree as ET
+
+
+DEFAULT_CAMERA_CONFIG_PATH = Path.home() / '.openclaw' / 'camera-local.json'
+
+
+@dataclass(frozen=True)
+class LocalCameraConfig:
+    """Local LAN camera credentials loaded outside the repository."""
+
+    ip: str
+    username: str = 'admin'
+    password: str = ''
+    rtsp_port: int = 554
+    http_port: int = 80
+    channel: int = 1
+    subtype: int = 1  # 1 = sub-stream (low bandwidth for 1-2fps local change detection), 0 = main HD stream
+    profile_token: str = 'MediaProfile00000'
+
+    @classmethod
+    def from_local_env(cls, config_path: Path | None = None) -> 'LocalCameraConfig':
+        path = config_path or Path(os.environ.get('GUANJIA_CAMERA_CONFIG', str(DEFAULT_CAMERA_CONFIG_PATH)))
+        data: dict[str, object] = {}
+        if path.exists():
+            data = json.loads(path.read_text(encoding='utf-8'))
+        ip = str(os.environ.get('GUANJIA_CAMERA_IP') or data.get('ip') or '192.168.10.11').strip()
+        username = str(os.environ.get('GUANJIA_CAMERA_USER') or data.get('username') or 'admin').strip()
+        password = str(os.environ.get('GUANJIA_CAMERA_PASSWORD') or data.get('password') or '').strip()
+        profile_token = str(os.environ.get('GUANJIA_CAMERA_PROFILE') or data.get('profile_token') or 'MediaProfile00000').strip()
+        return cls(ip=ip, username=username, password=password, profile_token=profile_token)
+
+    def rtsp_url(self, *, hd: bool = False) -> str:
+        stream_sub = 0 if hd else self.subtype
+        return f'rtsp://{self.username}:{self.password}@{self.ip}:{self.rtsp_port}/cam/realmonitor?channel={self.channel}&subtype={stream_sub}'
+
+    @property
+    def onvif_ptz_url(self) -> str:
+        return f'http://{self.ip}:{self.http_port}/onvif/ptz_service'
+
+    @property
+    def onvif_media_url(self) -> str:
+        return f'http://{self.ip}:{self.http_port}/onvif/media_service'
+
+
+def build_wsse_header(username: str, password: str, *, nonce_bytes: bytes | None = None, created: str | None = None) -> str:
+    """Build standard ONVIF WS-UsernameToken PasswordDigest SOAP header."""
+    raw_nonce = nonce_bytes or os.urandom(16)
+    timestamp = created or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    digest = hashlib.sha1(raw_nonce + timestamp.encode('ascii') + password.encode('utf-8')).digest()
+    nonce_b64 = base64.b64encode(raw_nonce).decode('ascii')
+    digest_b64 = base64.b64encode(digest).decode('ascii')
+    return (
+        '<s:Header>'
+        '<Security s:mustUnderstand="1" xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
+        '<UsernameToken>'
+        f'<Username>{username}</Username>'
+        '<Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">'
+        f'{digest_b64}</Password>'
+        '<Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">'
+        f'{nonce_b64}</Nonce>'
+        '<Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+        f'{timestamp}</Created>'
+        '</UsernameToken>'
+        '</Security>'
+        '</s:Header>'
+    )
+
+
+class OnvifPtzDriver:
+    """Local LAN ONVIF PTZ driver (never touches Imou cloud API)."""
+
+    def __init__(
+        self,
+        config: LocalCameraConfig,
+        *,
+        timeout: float = 3.0,
+        sleeper: object = time.sleep,
+    ) -> None:
+        assert_local_ptz_endpoint(config.onvif_ptz_url)
+        self._config = config
+        self._timeout = float(timeout)
+        self._sleep = sleeper
+        self._profile_token: str | None = None
+
+    @property
+    def endpoint(self) -> str:
+        return self._config.onvif_ptz_url
+
+    def _soap_post(self, url: str, body_xml: str) -> str:
+        assert_local_ptz_endpoint(url)
+        header = build_wsse_header(self._config.username, self._config.password)
+        envelope = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+            'xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" '
+            'xmlns:tt="http://www.onvif.org/ver10/schema" '
+            'xmlns:trt="http://www.onvif.org/ver10/media/wsdl">'
+            f'{header}<s:Body>{body_xml}</s:Body></s:Envelope>'
+        )
+        req = urllib.request.Request(
+            url,
+            data=envelope.encode('utf-8'),
+            headers={'Content-Type': 'application/soap+xml; charset=utf-8'},
+            method='POST',
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=self._timeout) as resp:
+            return resp.read().decode('utf-8', errors='replace')
+
+    def resolve_profile_token(self) -> str:
+        if self._profile_token:
+            return self._profile_token
+        try:
+            xml_text = self._soap_post(self._config.onvif_media_url, '<trt:GetProfiles/>')
+            root = ET.fromstring(xml_text)
+            for elem in root.iter():
+                if elem.tag.endswith('Profiles') and 'token' in elem.attrib:
+                    self._profile_token = elem.attrib['token']
+                    return self._profile_token
+        except Exception:  # noqa: BLE001
+            pass
+        self._profile_token = self._config.profile_token
+        return self._profile_token
+
+    def send_move(self, command: PtzMoveCommand) -> None:
+        token = self.resolve_profile_token()
+        body = (
+            '<tptz:ContinuousMove>'
+            f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
+            '<tptz:Velocity>'
+            f'<tt:PanTilt x="{command.horizontal:.2f}" y="{command.vertical:.2f}"/>'
+            '</tptz:Velocity>'
+            '</tptz:ContinuousMove>'
+        )
+        self._soap_post(self._config.onvif_ptz_url, body)
+        if callable(self._sleep) and command.duration > 0:
+            self._sleep(command.duration)
+
+    def send_stop(self) -> None:
+        token = self.resolve_profile_token()
+        body = (
+            '<tptz:Stop>'
+            f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
+            '<tptz:PanTilt>true</tptz:PanTilt>'
+            '<tptz:Zoom>true</tptz:Zoom>'
+            '</tptz:Stop>'
+        )
+        self._soap_post(self._config.onvif_ptz_url, body)
+
+    def query_pose(self) -> PtzPose:
+        token = self.resolve_profile_token()
+        body = f'<tptz:GetStatus><tptz:ProfileToken>{token}</tptz:ProfileToken></tptz:GetStatus>'
+        xml_text = self._soap_post(self._config.onvif_ptz_url, body)
+        root = ET.fromstring(xml_text)
+        x_val, y_val, z_val = 0.0, 0.0, 0.0
+        for elem in root.iter():
+            if elem.tag.endswith('PanTilt'):
+                x_val = max(-1.0, min(1.0, float(elem.attrib.get('x', '0') or 0.0)))
+                y_val = max(-1.0, min(1.0, float(elem.attrib.get('y', '0') or 0.0)))
+            elif elem.tag.endswith('Zoom'):
+                z_val = max(0.0, min(1.0, float(elem.attrib.get('x', '0') or 0.0)))
+        return PtzPose(x_val, y_val, z_val)
