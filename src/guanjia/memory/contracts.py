@@ -248,6 +248,7 @@ class ConflictCase:
     incoming: MemoryCandidate
     status: str = 'uncertain'
     reason: str = 'confidence values are too close'
+    current_hash: str = ''
 
     def __post_init__(self) -> None:
         _text(self.id, 'id')
@@ -256,6 +257,8 @@ class ConflictCase:
             raise ValueError('invalid conflict status')
         if self.current.key != self.key or self.incoming.key != self.key:
             raise ValueError('conflict keys must match')
+        if not isinstance(self.current_hash, str):
+            raise ValueError('current_hash must be a string')
 
 
 @dataclass(frozen=True)

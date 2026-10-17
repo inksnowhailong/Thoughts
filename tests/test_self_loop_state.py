@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
 from guanjia.self_loop.collector import CandidateCollector
-from guanjia.self_loop.contracts import SelfLoopCandidate
+from guanjia.self_loop.contracts import CompressedSelfLoopState, SelfLoopCandidate
 from guanjia.self_loop.state import SelfLoopState
 
 
@@ -52,3 +52,24 @@ def test_collector_retains_a_consistent_snapshot_under_concurrent_adds() -> None
     for thread in threads:
         thread.join()
     assert len(collector.snapshot()) == 20
+
+
+def test_collector_ack_is_compare_and_swap_safe() -> None:
+    now = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    collector = CandidateCollector()
+    first = SelfLoopCandidate('home', 'door opened', 0.5, 0.1, 0.5, 0.1, now)
+    newer = SelfLoopCandidate('home', 'door opened', 0.9, 0.1, 0.5, 0.1, now)
+    collector.add(first)
+    stale_snapshot = collector.snapshot()[0]
+    collector.add(newer)
+    assert not collector.ack(stale_snapshot)
+    assert collector.snapshot()[0].identity == newer.identity
+    assert collector.snapshot()[0].generation > stale_snapshot.generation
+
+
+def test_compressed_state_rejects_non_tuple_or_invalid_elements() -> None:
+    try:
+        CompressedSelfLoopState(('home',), [], (), (), ())
+    except ValueError:
+        return
+    raise AssertionError('list accepted for compressed state field')

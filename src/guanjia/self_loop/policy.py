@@ -35,6 +35,7 @@ class ReviewPolicy:
     def decide(self, candidate: SelfLoopCandidate, state: SelfLoopState, now: datetime) -> PolicyDecision:
         """Decide model-review eligibility independent of any user interruption policy."""
         now = _utc_now(now)
+        state._reload()
         score = self.score(candidate)
         if candidate.urgency >= self.urgent_threshold:
             return PolicyDecision(True, True, score, 'urgent candidate')
@@ -67,6 +68,7 @@ class ExpressionPolicy:
         gaming: bool = False, do_not_disturb: bool = False,
     ) -> PolicyDecision:
         now = _utc_now(now)
+        state._reload()
         score = max(0.0, min(1.0, (
             candidate.value * 0.4 + candidate.urgency * 0.3
             + candidate.freshness * 0.2 - candidate.interruption_cost * 0.1

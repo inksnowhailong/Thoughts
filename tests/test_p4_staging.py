@@ -67,6 +67,8 @@ check(manifest["inputs_stable"] is True and any(row["rel"] == "MEMORY.md" and ro
       "manifest records input SHA and stability")
 check("MEMORY.md" in dry_run["changed"] and "memory/index.md" in dry_run["changed"], "dry-run lists planned changes")
 check("P4-5" in (result.directory / "README.md").read_text(encoding="utf-8"), "staging documents manual P4-5 handoff")
+check(manifest["input_sha256_pre"] == manifest["input_sha256_post"] and manifest["verified_at"],
+      "manifest proves pre and post input SHA match")
 
 changed = snapshot_workspace(workspace)
 (workspace / "MEMORY.md").write_text(memory + "\n# 外部修改\n", encoding="utf-8")
@@ -77,6 +79,49 @@ except SnapshotChanged:
     check(True, "changed input refuses staging")
 else:
     check(False, "changed input refuses staging")
+
+postcheck_snapshot = snapshot_workspace(workspace)
+postcheck_directory = staging / "fixture-postcheck"
+
+def mutate_workspace_after_write(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+    if path.name == "budget.json":
+        (workspace / "MEMORY.md").write_text(memory + "\n# 并发修改\n", encoding="utf-8")
+
+try:
+    stage_index_snapshot(postcheck_snapshot, staging, run_id="fixture-postcheck", writer=mutate_workspace_after_write)
+except SnapshotChanged:
+    check(True, "post-write input change refuses staging")
+else:
+    check(False, "post-write input change refuses staging")
+check(not postcheck_directory.exists(), "post-write change removes this call's partial staging")
+
+final_snapshot = snapshot_workspace(workspace)
+final_directory = staging / "fixture-final-manifest"
+manifest_writes = 0
+
+def mutate_after_final_manifest(path: Path, text: str) -> None:
+    global manifest_writes
+    path.write_text(text, encoding="utf-8", newline="\n")
+    if path.name == "manifest.json":
+        manifest_writes += 1
+        if manifest_writes == 2:
+            (workspace / "MEMORY.md").write_text(memory + "\n# 最终写入竞争\n", encoding="utf-8")
+
+try:
+    stage_index_snapshot(final_snapshot, staging, run_id="fixture-final-manifest", writer=mutate_after_final_manifest)
+except SnapshotChanged:
+    check(True, "final manifest write change refuses staging")
+else:
+    check(False, "final manifest write change refuses staging")
+check(not final_directory.exists(), "final manifest race removes partial staging")
+
+try:
+    stage_index_snapshot(snapshot_workspace(workspace), staging, run_id="fixture-malicious", maintenance_plan=object())
+except ValueError as error:
+    check(str(error) == "maintenance_plan must be a MaintenancePlan", "manifest rejects reflective maintenance objects")
+else:
+    check(False, "manifest rejects reflective maintenance objects")
 
 print("ALL PASS test_p4_staging" if failed == 0 else f"{failed} FAILED test_p4_staging")
 sys.exit(1 if failed else 0)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -26,6 +27,7 @@ from .conflicts import decide_update
 
 
 class MemoryBackend(Protocol):
+    def apply(self, candidate: MemoryCandidate, calibrator: ConfidenceCalibrator) -> MemoryRecord: ...
     def get(self, key: str) -> MemoryRecord | None: ...
     def put(self, record: MemoryRecord) -> None: ...
     def all(self) -> tuple[MemoryRecord, ...]: ...
@@ -45,6 +47,35 @@ class InMemoryBackend:
     def get(self, key: str) -> MemoryRecord | None:
         with self._lock:
             return self._records.get(key)
+
+    def apply(self, candidate: MemoryCandidate, calibrator: ConfidenceCalibrator) -> MemoryRecord:
+        with self._lock:
+            existing = self._records.get(candidate.key)
+            if existing is None:
+                record = MemoryRecord.from_candidate(candidate)
+            elif _candidate_data(candidate) == _candidate_data(_as_candidate(existing)):
+                return existing
+            else:
+                decision = decide_update(existing, candidate, calibrator)
+                record = decision.record
+                if record != existing:
+                    self._drop_conflicts_for_key(candidate.key)
+                if decision.conflict is not None:
+                    conflict = replace(decision.conflict, current_hash=_record_hash(existing))
+                    if not any(
+                        item.key == candidate.key
+                        and item.current_hash == conflict.current_hash
+                        and _candidate_data(item.incoming) == _candidate_data(candidate)
+                        for item in self._conflicts.values()
+                    ):
+                        self._conflicts[conflict.id] = conflict
+            self._records[record.key] = record
+            return record
+
+    def _drop_conflicts_for_key(self, key: str) -> None:
+        for conflict_id, conflict in tuple(self._conflicts.items()):
+            if conflict.key == key:
+                del self._conflicts[conflict_id]
 
     def put(self, record: MemoryRecord) -> None:
         with self._lock:
@@ -66,6 +97,10 @@ class InMemoryBackend:
     def resolve_conflict(self, conflict_id: str, use_incoming: bool) -> MemoryRecord:
         with self._lock:
             conflict = self._conflicts[conflict_id]
+            current = self._records.get(conflict.key)
+            if current is None or current != conflict.current or _record_hash(current) != conflict.current_hash:
+                del self._conflicts[conflict_id]
+                raise ValueError('conflict is stale')
             record = conflict.current.replace_with(conflict.incoming) if use_incoming else conflict.current
             self._records[record.key] = record
             del self._conflicts[conflict_id]
@@ -85,21 +120,135 @@ class InMemoryBackend:
 
 
 class SQLiteBackend:
-    """Small injectable SQLite backend storing immutable domain records as JSON."""
+    """SQLite storage with explicit ownership of transaction and connection lifecycle."""
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, *, manage_connection: bool) -> None:
         self._connection = connection
+        self._manage_connection = manage_connection
         self._lock = RLock()
-        self._connection.execute('PRAGMA journal_mode=WAL')
+        if manage_connection:
+            self._connection.execute('PRAGMA journal_mode=WAL')
+            self._connection.execute('PRAGMA busy_timeout=5000')
         self._connection.execute(
             'CREATE TABLE IF NOT EXISTS guanjia_memories ('
             'key TEXT PRIMARY KEY, payload TEXT NOT NULL)'
         )
         self._connection.execute(
             'CREATE TABLE IF NOT EXISTS guanjia_memory_conflicts ('
-            'id TEXT PRIMARY KEY, status TEXT NOT NULL, payload TEXT NOT NULL)'
+            'id TEXT PRIMARY KEY, key TEXT NOT NULL DEFAULT "", current_hash TEXT NOT NULL DEFAULT "", '
+            'status TEXT NOT NULL, payload TEXT NOT NULL)'
         )
-        self._connection.commit()
+        columns = {row[1] for row in self._connection.execute('PRAGMA table_info(guanjia_memory_conflicts)')}
+        if 'key' not in columns:
+            self._connection.execute('ALTER TABLE guanjia_memory_conflicts ADD COLUMN key TEXT NOT NULL DEFAULT ""')
+        if 'current_hash' not in columns:
+            self._connection.execute('ALTER TABLE guanjia_memory_conflicts ADD COLUMN current_hash TEXT NOT NULL DEFAULT ""')
+        self._connection.execute(
+            'CREATE INDEX IF NOT EXISTS guanjia_memory_conflicts_key_hash '
+            'ON guanjia_memory_conflicts(key, current_hash, status)'
+        )
+        for conflict_id, payload in self._connection.execute(
+            'SELECT id, payload FROM guanjia_memory_conflicts WHERE key = "" OR current_hash = ""'
+        ):
+            conflict = _decode_conflict(payload)
+            self._connection.execute(
+                'UPDATE guanjia_memory_conflicts SET key = ?, current_hash = ? WHERE id = ?',
+                (conflict.key, conflict.current_hash, conflict_id),
+            )
+        if manage_connection:
+            self._connection.commit()
+
+    def _write(self, operation: object) -> object:
+        try:
+            if self._manage_connection:
+                result = operation()
+                self._connection.commit()
+                return result
+            self._connection.execute('SAVEPOINT guanjia_memory')
+            try:
+                result = operation()
+                self._connection.execute('RELEASE SAVEPOINT guanjia_memory')
+                return result
+            except BaseException:
+                self._connection.execute('ROLLBACK TO SAVEPOINT guanjia_memory')
+                self._connection.execute('RELEASE SAVEPOINT guanjia_memory')
+                raise
+        except BaseException:
+            if self._manage_connection:
+                try:
+                    self._connection.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
+
+    def _atomic(self, operation: object) -> object:
+        """Run a complete read/decide/write transition under one SQLite transaction."""
+        try:
+            if self._manage_connection:
+                self._connection.execute('BEGIN IMMEDIATE')
+                result = operation()
+                self._connection.commit()
+                return result
+            self._connection.execute('SAVEPOINT guanjia_memory_atomic')
+            try:
+                result = operation()
+                self._connection.execute('RELEASE SAVEPOINT guanjia_memory_atomic')
+                return result
+            except BaseException:
+                self._connection.execute('ROLLBACK TO SAVEPOINT guanjia_memory_atomic')
+                self._connection.execute('RELEASE SAVEPOINT guanjia_memory_atomic')
+                raise
+        except BaseException:
+            if self._manage_connection:
+                try:
+                    self._connection.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
+
+    def apply(self, candidate: MemoryCandidate, calibrator: ConfidenceCalibrator) -> MemoryRecord:
+        with self._lock:
+            def operation() -> MemoryRecord:
+                row = self._connection.execute(
+                    'SELECT payload FROM guanjia_memories WHERE key = ?', (candidate.key,)
+                ).fetchone()
+                existing = None if row is None else _decode(row[0])
+                if existing is None:
+                    record = MemoryRecord.from_candidate(candidate)
+                elif _candidate_data(candidate) == _candidate_data(_as_candidate(existing)):
+                    return existing
+                else:
+                    decision = decide_update(existing, candidate, calibrator)
+                    record = decision.record
+                    if record != existing:
+                        self._connection.execute(
+                            'DELETE FROM guanjia_memory_conflicts WHERE key = ?',
+                            (candidate.key,),
+                        )
+                    if decision.conflict is not None:
+                        conflict = replace(decision.conflict, current_hash=_record_hash(existing))
+                        duplicates = tuple(
+                            _decode_conflict(item[0])
+                            for item in self._connection.execute(
+                                'SELECT payload FROM guanjia_memory_conflicts '
+                                'WHERE key = ? AND current_hash = ? AND status = ?',
+                                (candidate.key, conflict.current_hash, conflict.status),
+                            )
+                        )
+                        if not any(_candidate_data(item.incoming) == _candidate_data(candidate) for item in duplicates):
+                            self._connection.execute(
+                                'INSERT INTO guanjia_memory_conflicts(id, key, current_hash, status, payload) '
+                                'VALUES(?, ?, ?, ?, ?)',
+                                (conflict.id, conflict.key, conflict.current_hash, conflict.status, _encode_conflict(conflict)),
+                            )
+                self._connection.execute(
+                    'INSERT INTO guanjia_memories(key, payload) VALUES(?, ?) '
+                    'ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
+                    (record.key, _encode(record)),
+                )
+                return record
+
+            return self._atomic(operation)  # type: ignore[return-value]
 
     def get(self, key: str) -> MemoryRecord | None:
         with self._lock:
@@ -110,12 +259,11 @@ class SQLiteBackend:
 
     def put(self, record: MemoryRecord) -> None:
         with self._lock:
-            self._connection.execute(
+            self._write(lambda: self._connection.execute(
                 'INSERT INTO guanjia_memories(key, payload) VALUES(?, ?) '
                 'ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
                 (record.key, _encode(record)),
-            )
-            self._connection.commit()
+            ))
 
     def all(self) -> tuple[MemoryRecord, ...]:
         with self._lock:
@@ -124,11 +272,10 @@ class SQLiteBackend:
 
     def add_conflict(self, conflict: ConflictCase) -> None:
         with self._lock:
-            self._connection.execute(
-                'INSERT OR REPLACE INTO guanjia_memory_conflicts(id, status, payload) VALUES(?, ?, ?)',
-                (conflict.id, conflict.status, _encode_conflict(conflict)),
-            )
-            self._connection.commit()
+            self._write(lambda: self._connection.execute(
+                'INSERT OR REPLACE INTO guanjia_memory_conflicts(id, key, current_hash, status, payload) VALUES(?, ?, ?, ?, ?)',
+                (conflict.id, conflict.key, conflict.current_hash, conflict.status, _encode_conflict(conflict)),
+            ))
 
     def conflicts(self, unresolved_only: bool) -> tuple[ConflictCase, ...]:
         sql = 'SELECT payload FROM guanjia_memory_conflicts' + (' WHERE status = ?' if unresolved_only else '')
@@ -139,26 +286,29 @@ class SQLiteBackend:
 
     def resolve_conflict(self, conflict_id: str, use_incoming: bool) -> MemoryRecord:
         with self._lock:
-            row = self._connection.execute(
-                'SELECT payload FROM guanjia_memory_conflicts WHERE id = ?', (conflict_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(conflict_id)
-            conflict = _decode_conflict(row[0])
-            record = conflict.current.replace_with(conflict.incoming) if use_incoming else conflict.current
-            try:
-                self._connection.execute('BEGIN')
+            def resolve() -> MemoryRecord:
+                row = self._connection.execute(
+                    'SELECT payload FROM guanjia_memory_conflicts WHERE id = ?', (conflict_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(conflict_id)
+                conflict = _decode_conflict(row[0])
+                current_row = self._connection.execute(
+                    'SELECT payload FROM guanjia_memories WHERE key = ?', (conflict.key,)
+                ).fetchone()
+                current = None if current_row is None else _decode(current_row[0])
+                if current is None or current != conflict.current or _record_hash(current) != conflict.current_hash:
+                    self._connection.execute('DELETE FROM guanjia_memory_conflicts WHERE id = ?', (conflict_id,))
+                    raise ValueError('conflict is stale')
+                record = conflict.current.replace_with(conflict.incoming) if use_incoming else conflict.current
                 self._connection.execute(
                     'INSERT INTO guanjia_memories(key, payload) VALUES(?, ?) '
                     'ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
                     (record.key, _encode(record)),
                 )
                 self._connection.execute('DELETE FROM guanjia_memory_conflicts WHERE id = ?', (conflict_id,))
-                self._connection.commit()
-            except Exception:
-                self._connection.rollback()
-                raise
-        return record
+                return record
+            return self._atomic(resolve)  # type: ignore[return-value]
 
     def mark_used(self, record_id: str, at: datetime) -> MemoryRecord:
         with self._lock:
@@ -169,17 +319,17 @@ class SQLiteBackend:
                 record = _decode(payload)
                 if record.id == record_id:
                     used = replace(record, use_count=record.use_count + 1, last_used_at=at)
-                    self._connection.execute(
+                    self._write(lambda: self._connection.execute(
                         'UPDATE guanjia_memories SET payload = ? WHERE key = ?',
                         (_encode(used), used.key),
-                    )
-                    self._connection.commit()
+                    ))
                     return used
         raise KeyError(record_id)
 
     def close(self) -> None:
-        with self._lock:
-            self._connection.close()
+        if self._manage_connection:
+            with self._lock:
+                self._connection.close()
 
 
 def _encode(record: MemoryRecord) -> str:
@@ -222,8 +372,30 @@ def _encode(record: MemoryRecord) -> str:
     )
 
 
+def _record_hash(record: MemoryRecord) -> str:
+    """Fingerprint the exact persisted current value used to create a conflict."""
+    return hashlib.sha256(_encode(record).encode('utf-8')).hexdigest()
+
+
+def _datetime(value: object, name: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f'{name} must be an ISO aware UTC datetime')
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f'{name} must be an ISO aware UTC datetime') from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError(f'{name} must be an ISO aware UTC datetime')
+    return parsed.astimezone(timezone.utc)
+
+
 def _decode(payload: str) -> MemoryRecord:
-    data = json.loads(payload)
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError) as error:
+        raise ValueError('invalid memory payload') from error
+    if not isinstance(data, dict):
+        raise ValueError('invalid memory payload')
     return MemoryRecord(
         id=data['id'],
         key=data['key'],
@@ -238,7 +410,7 @@ def _decode(payload: str) -> MemoryRecord:
             EvidenceRef(
                 item['reference'],
                 MemorySource(item['source']),
-                datetime.fromisoformat(item['observed_at']) if item['observed_at'] else None,
+                _datetime(item['observed_at'], 'observed_at') if item['observed_at'] else None,
             )
             for item in data['evidence']
         ),
@@ -247,9 +419,9 @@ def _decode(payload: str) -> MemoryRecord:
             for item in data['media']
         ),
         conflict_key=data.get('conflict_key'),
-        created_at=datetime.fromisoformat(data['created_at']),
-        updated_at=datetime.fromisoformat(data['updated_at']),
-        last_used_at=datetime.fromisoformat(data['last_used_at']) if data['last_used_at'] else None,
+        created_at=_datetime(data['created_at'], 'created_at'),
+        updated_at=_datetime(data['updated_at'], 'updated_at'),
+        last_used_at=_datetime(data['last_used_at'], 'last_used_at') if data['last_used_at'] else None,
         use_count=data['use_count'],
     )
 
@@ -294,7 +466,7 @@ def _candidate_from_data(data: dict[str, object]) -> MemoryCandidate:
         people=tuple(data['people']),
         evidence=tuple(
             EvidenceRef(item['reference'], MemorySource(item['source']),
-                        datetime.fromisoformat(item['observed_at']) if item['observed_at'] else None)
+                        _datetime(item['observed_at'], 'observed_at') if item['observed_at'] else None)
             for item in data['evidence']
         ),
         media=tuple(
@@ -308,7 +480,8 @@ def _candidate_from_data(data: dict[str, object]) -> MemoryCandidate:
 def _encode_conflict(conflict: ConflictCase) -> str:
     return json.dumps(
         {'id': conflict.id, 'key': conflict.key, 'current': json.loads(_encode(conflict.current)),
-         'incoming': _candidate_data(conflict.incoming), 'status': conflict.status, 'reason': conflict.reason},
+         'incoming': _candidate_data(conflict.incoming), 'status': conflict.status, 'reason': conflict.reason,
+         'current_hash': conflict.current_hash},
         ensure_ascii=False, separators=(',', ':'),
     )
 
@@ -317,7 +490,7 @@ def _decode_conflict(payload: str) -> ConflictCase:
     data = json.loads(payload)
     return ConflictCase(
         data['id'], data['key'], _decode(json.dumps(data['current'])),
-        _candidate_from_data(data['incoming']), data['status'], data['reason'],
+        _candidate_from_data(data['incoming']), data['status'], data['reason'], data.get('current_hash', ''),
     )
 
 
@@ -336,42 +509,27 @@ class MemoryRepository:
     @classmethod
     def sqlite(cls, connection: sqlite3.Connection) -> 'MemoryRepository':
         """Inject a caller-owned connection; its thread-safety remains the caller's responsibility."""
-        return cls(SQLiteBackend(connection))
+        return cls(SQLiteBackend(connection, manage_connection=False))
 
     @classmethod
     def sqlite_path(cls, path: str | Path) -> 'MemoryRepository':
         """Create a shared-thread SQLite repository with WAL enabled by SQLiteBackend."""
         connection = sqlite3.connect(str(path), check_same_thread=False)
-        return cls(SQLiteBackend(connection))
+        return cls(SQLiteBackend(connection, manage_connection=True))
 
     def close(self) -> None:
         self._backend.close()
 
     def write(self, candidate: MemoryCandidate) -> MemoryRecord:
         with self._lock:
-            existing = self._backend.get(candidate.key)
-            if existing is None:
-                record = MemoryRecord.from_candidate(candidate)
-            elif _candidate_data(candidate) == _candidate_data(_as_candidate(existing)):
-                return existing
-            else:
-                decision = decide_update(existing, candidate, self._calibrator)
-                record = decision.record
-                if decision.conflict is not None:
-                    duplicate = any(
-                        conflict.key == candidate.key
-                        and _candidate_data(conflict.incoming) == _candidate_data(candidate)
-                        for conflict in self._backend.conflicts(True)
-                    )
-                    if not duplicate:
-                        self._backend.add_conflict(decision.conflict)
-            self._backend.put(record)
-            return record
+            return self._backend.apply(candidate, self._calibrator)
 
     def conflicts(self, *, unresolved_only: bool = True) -> tuple[ConflictCase, ...]:
         return self._backend.conflicts(unresolved_only)
 
     def resolve_conflict(self, conflict_id: str, use_incoming: bool) -> MemoryRecord:
+        if type(use_incoming) is not bool:
+            raise ValueError('use_incoming must be a bool')
         return self._backend.resolve_conflict(conflict_id, use_incoming)
 
     def get(self, key: str) -> MemoryRecord | None:
@@ -394,5 +552,9 @@ class MemoryRepository:
         return self.query(MemoryQuery(text=text, limit=limit))
 
     def mark_used(self, record_id: str, at: datetime | None = None) -> MemoryRecord:
+        if at is not None and (
+            not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() != timezone.utc.utcoffset(at)
+        ):
+            raise ValueError('at must be an aware UTC datetime')
         with self._lock:
             return self._backend.mark_used(record_id, at or datetime.now(timezone.utc))
