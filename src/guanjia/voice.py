@@ -755,9 +755,9 @@ class VoiceDaemon:
         随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
         s = self.store.current
         # USB 独立麦防自激与防视频旁白串音：免喊窗口内若声纹为「未知」则仍要求唤醒词
-        effective_in_window = self._in_followup() and (source != "mic" or speaker != UNKNOWN_LABEL)
+        in_window = self._in_followup() and (source != "mic" or speaker != UNKNOWN_LABEL)
         d = decide(text, matcher=self.wake, wake_required=s.wake_required,
-                   min_chars=s.min_chars, in_window=effective_in_window, allow_short_answer=self.state != "SPEAKING",
+                   min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING",
                    alt_text=stream_text or None)  # 二次识别漏掉唤醒词、流式识别抓到了：靠流式结果救回
         if source == "mic" and d.verdict == "accept" and not d.wake and self._is_self_echo(d.text or text):
             d = replace(d, verdict="rejected", stage="wake", reason="音箱回声自滤")
