@@ -162,6 +162,12 @@
         <div id="taskCounts" class="task-summary"></div>
         <div id="taskList" class="task-list"></div>
       </details>
+      <details id="shadowDetails" class="task-details" data-alt="architecture-shadow">
+        <summary>架构影子只读投影</summary>
+        <div id="shadowFlags" class="task-summary" data-alt="shadow-flags"></div>
+        <div id="shadowInputMetrics" class="task-note" data-alt="shadow-input-metrics"></div>
+        <div id="shadowCoreMetrics" class="task-note" data-alt="shadow-core-metrics"></div>
+      </details>
     </section>
     <div class="workbench-grid">
       <section id="pendingCard" class="pending-card idle" data-alt="pending-confirm">
@@ -387,7 +393,7 @@
 <script>
 "use strict";
 const TOKEN = "__GUANJIA_TOKEN__";
-const S = { status: {}, settings: {}, records: new Map(), order: [], live: {}, logs: [], selected: null,
+const S = { status: {}, shadow: null, settings: {}, records: new Map(), order: [], live: {}, logs: [], selected: null,
             stages: [], names: {}, modules: [], hidden: new Set(), lastLiveT: 0 };
 const VERDICT = { accept: "进主程序", wake_only: "只喊唤醒词", rejected: "拦下", ignored: "忽略", say: "主程序让念" };
 const STATE_CN = { active: "进行中", done: "通过", blocked: "拦下", skipped: "跳过", info: "" };
@@ -503,7 +509,21 @@ function newestLive() {
   }
   return latest;
 }
+function renderShadowProjection() {
+  const details = $("shadowDetails"), flagsBox = $("shadowFlags"), inputBox = $("shadowInputMetrics"), coreBox = $("shadowCoreMetrics");
+  if (!details || !flagsBox || !inputBox || !coreBox) return;
+  const sh = S.shadow || {};
+  const flags = sh.flags || {};
+  const inp = sh.input || {};
+  const core = sh.core || {};
+  const inDiffs = Array.isArray(inp.difference_fields) && inp.difference_fields.length ? inp.difference_fields.join("、") : "无";
+  const coreDiffs = Array.isArray(core.difference_fields) && core.difference_fields.length ? core.difference_fields.join("、") : "无";
+  flagsBox.textContent = `开关：输入影子 ${flags.input_shadow_v1 ? "开" : "关"}　主程序影子 ${flags.core_shadow_v1 ? "开" : "关"}`;
+  inputBox.textContent = `输入影子：队列 ${inp.queue || 0}　接收 ${inp.accepted || 0}　丢弃 ${inp.dropped || 0}　失败 ${inp.failures || 0}　差异字段 ${inDiffs}`;
+  coreBox.textContent = `主程序影子：队列 ${core.queue || 0}　接收 ${core.accepted || 0}　丢弃 ${core.dropped || 0}　失败 ${core.failures || 0}　差异字段 ${coreDiffs}`;
+}
 function renderWorkbench() {
+  renderShadowProjection();
   const st = S.status;
   const live = newestLive();
   const work = $("workNow"), workNote = $("workNowNote");
@@ -1146,8 +1166,9 @@ function renderAll() { renderStatus(); renderWorkbench(); renderFlow(); renderRo
 let renderQueued = false;
 function scheduleRender() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderWorkbench(); renderFlow(); renderRows(); renderDetail(); }); } }
 async function refreshReadOnlyStatus() {
-  const r = await getJson("/api/status");
-  if (!r.ok || !r.data.status) return;
+  const [r, sh] = await Promise.all([getJson("/api/status"), getJson("/api/architecture-shadow")]);
+  if (sh.ok && sh.data && sh.data.shadow) S.shadow = sh.data.shadow;
+  if (!r.ok || !r.data.status) { renderShadowProjection(); return; }
   S.status = r.data.status;
   renderStatus();
   renderWorkbench();
@@ -1161,7 +1182,7 @@ async function start() {
   S.modules = snap.log_modules; S.hidden = new Set(snap.hidden_modules);
   for (const rec of snap.records) upsert(rec);
   S.logs = snap.logs || [];
-  buildFilters(); fillSettings(); renderAll(); renderLogs(); refreshSpeaker();
+  buildFilters(); fillSettings(); renderAll(); renderLogs(); refreshSpeaker(); refreshReadOnlyStatus();
   const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
   es.addEventListener("hello", () => banner(""));
   es.addEventListener("status", (e) => { S.status = JSON.parse(e.data).status; renderStatus(); renderWorkbench(); });

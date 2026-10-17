@@ -89,6 +89,7 @@ class ShadowMetrics:
     delivered: int
     circuit_open: int
     timed_out: int
+    queued: int = 0
 
     @property
     def dropped_queue_full(self) -> int:
@@ -203,6 +204,7 @@ class BoundedShadowAdapter:
                 delivered=self._delivered,
                 circuit_open=self._circuit_open,
                 timed_out=self._timed_out,
+                queued=len(self._pending),
             )
 
     def _run(self) -> None:

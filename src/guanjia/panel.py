@@ -26,6 +26,58 @@ from guanjia.wsfiles import HISTORY_DIR
 PANEL_HTML = Path(__file__).with_name("panel.html")
 PANEL_URL = "http://127.0.0.1:18795/panel"
 CONTROL_ACTIONS = ("mute", "unmute", "restart", "quit")
+ALLOWED_SHADOW_FLAGS = ("input_shadow_v1", "core_shadow_v1")
+ALLOWED_SHADOW_DIFF_FIELDS = frozenset({
+    "reply_intent",
+    "reply_present",
+    "task_create_count",
+    "task_control_count",
+    "tool_read_count",
+    "output_request_count",
+    "memory_request_count",
+    "channel",
+    "outcome",
+})
+
+
+def _nonneg_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def _project_shadow_section(raw: object) -> dict:
+    source = raw if isinstance(raw, dict) else {}
+    raw_diffs = source.get("difference_fields")
+    diffs: list[str] = []
+    if isinstance(raw_diffs, (list, tuple, set, frozenset)):
+        diffs = sorted({
+            item
+            for item in raw_diffs
+            if isinstance(item, str) and item in ALLOWED_SHADOW_DIFF_FIELDS
+        })
+    return {
+        "queue": _nonneg_int(source.get("queue")),
+        "accepted": _nonneg_int(source.get("accepted")),
+        "dropped": _nonneg_int(source.get("dropped")),
+        "failures": _nonneg_int(source.get("failures")),
+        "difference_fields": diffs,
+    }
+
+
+def project_architecture_shadow(raw: object) -> dict:
+    """Strict allowlist projection: only flags, queue, accepted/dropped/failures, and difference field names."""
+    source = raw if isinstance(raw, dict) else {}
+    raw_flags = source.get("flags") if isinstance(source.get("flags"), dict) else {}
+    return {
+        "flags": {
+            key: bool(raw_flags.get(key) is True)
+            for key in ALLOWED_SHADOW_FLAGS
+        },
+        "input": _project_shadow_section(source.get("input")),
+        "core": _project_shadow_section(source.get("core")),
+    }
+
 DEFAULT_HIDDEN_MODULES = ("health", "barge-mon")  # 面板日志默认不显示的高频行
 
 
@@ -48,7 +100,9 @@ class PanelBackend:
         self.levels_path = levels_path  # 线上分级表（测试传临时文件）
         self.audit_dir = audit_dir  # 撤销审计写到这里的 audit.jsonl（与工作区文件改动同一份审计）
         # P1 首页轮询这里拿 O3 的只读 TaskManager 摘要；不注册任何任务写操作。
+        self._shadow_provider: Callable[[], dict] = lambda: {}
         self.register_get("/api/status", lambda query: (200, {"ok": True, "status": self._status()}))
+        self.register_get("/api/architecture-shadow", self._architecture_shadow_get)
         self.register_get("/api/overrides", self._overrides_list)
         self.register_post("/api/overrides", self._overrides_post)
 
@@ -115,6 +169,17 @@ class PanelBackend:
         self.register_get("/api/memory", svc.list_all)
         self.register_get("/api/memory/file", svc.get)
         self.register_post("/api/memory/file", svc.post)
+
+    def attach_shadow_projection(self, provider: Callable[[], dict]) -> None:
+        """Wave 3 Task 6：只读架构影子投影接口，只暴露开关、队列、计数与白名单差异字段名。"""
+        self._shadow_provider = provider
+
+    def _architecture_shadow_get(self, query: dict) -> tuple[int, dict]:
+        try:
+            raw = self._shadow_provider()
+        except Exception:  # noqa: BLE001
+            raw = {}
+        return 200, {"ok": True, "shadow": project_architecture_shadow(raw)}
 
     def attach_gen1_staging(self, svc: StagingReview) -> None:
         """P4-6b：只读候选与 decisions.json，不注册 workspace 提交接口。"""

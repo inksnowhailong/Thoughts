@@ -374,6 +374,34 @@ class VoiceDaemon:
 
 
 
+    def _panel_shadow_projection(self) -> dict:
+        """Return only narrow read-only shadow metrics for Panel projection."""
+        flags = getattr(self, '_core_flags', None) or CoreFlags()
+        adapter = getattr(self, '_voice_shadow_adapter', None)
+        core_shadow = getattr(self, '_core_shadow', None)
+        input_metrics = adapter.metrics() if adapter is not None else None
+        core_metrics = core_shadow.metrics() if core_shadow is not None else None
+        return {
+            'flags': {
+                'input_shadow_v1': bool(flags.input_shadow_v1),
+                'core_shadow_v1': bool(flags.core_shadow_v1),
+            },
+            'input': {
+                'queue': 0 if input_metrics is None else int(getattr(input_metrics, 'queued', 0)),
+                'accepted': 0 if input_metrics is None else int(input_metrics.accepted),
+                'dropped': 0 if input_metrics is None else int(input_metrics.queue_full + input_metrics.dropped_on_close),
+                'failures': 0 if input_metrics is None else int(input_metrics.sink_failures),
+                'difference_fields': [],
+            },
+            'core': {
+                'queue': 0 if core_metrics is None else int(core_metrics.queue),
+                'accepted': 0 if core_metrics is None else int(core_metrics.accepted),
+                'dropped': 0 if core_metrics is None else int(core_metrics.dropped),
+                'failures': 0 if core_metrics is None else int(core_metrics.failures),
+                'difference_fields': [] if core_metrics is None else list(core_metrics.difference_fields),
+            },
+        }
+
     def __post_init__(self) -> None:
         self.sr = pick_stream_rate(self.in_dev, self.out_dev)  # 优先 16k，见 pick_stream_rate
         self.frame = self.sr // 100
@@ -472,6 +500,7 @@ class VoiceDaemon:
         self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
                                      on_change=self._on_health, interval=HEALTH_EVERY_SEC)
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
+        self.panel.attach_shadow_projection(self._panel_shadow_projection)
         self.panel.register_get("/api/speaker", self._speaker_info)
         self.panel.register_post("/api/speaker", self._speaker_action)
         ws_files = WorkspaceFiles()  # 提示词页和记忆页共用同一套锁 / 备份 / 审计
