@@ -933,7 +933,10 @@ class VoiceDaemon:
                 item = self.text_q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if self._paused.is_set() or self._muted.is_set():  # 游戏态 / 静音：积压的话直接丢掉
+            rec_uid = item.uid if isinstance(item, (Heard, SayItem)) else None
+            rec_obj = self.hub.record(rec_uid) if rec_uid else None
+            is_inject = bool(rec_obj and rec_obj.get("source") == "inject")
+            if (self._paused.is_set() or self._muted.is_set()) and not is_inject:
                 continue
             try:
                 self._handle_item(item)
