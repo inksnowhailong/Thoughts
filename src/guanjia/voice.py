@@ -754,13 +754,10 @@ class VoiceDaemon:
         去留只看碎音、唤醒词、免喊窗口；声纹不拦截，speaker（"主人" / "未知" / 库里的名字 / ""=没有）只做标签，
         随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
         s = self.store.current
-        # USB 独立麦防自激与防视频旁白串音：免喊窗口内若声纹为「未知」则仍要求唤醒词
-        in_window = self._in_followup() and (source != "mic" or speaker != UNKNOWN_LABEL)
+        in_window = self._in_followup()
         d = decide(text, matcher=self.wake, wake_required=s.wake_required,
                    min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING",
                    alt_text=stream_text or None)  # 二次识别漏掉唤醒词、流式识别抓到了：靠流式结果救回
-        if source == "mic" and d.verdict == "accept" and not d.wake and self._is_self_echo(d.text or text):
-            d = replace(d, verdict="rejected", stage="wake", reason="音箱回声自滤")
         timings = {k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms), ("front_ms", front_ms)) if v is not None}
         # 二次识别用了哪个后端、耗时、置信度（FireRedASR2 才有）：写进记录和事件，以后做"没把握时第二意见"用；暂不参与决策
         asr_fields = ({"asr_backend": asr.backend, "asr_conf": asr.conf, "asr_min_conf": asr.min_conf, "asr_fallback": asr.fallback or None}
