@@ -57,6 +57,7 @@ from guanjia.approval_ipc import ApprovalIpc
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.control import CONTROL_PORT, start_control_server
+from guanjia.core.shadow import CoreShadowCoordinator
 from guanjia.core_flags import CoreFlags
 from guanjia.input.adapters.voice import AcceptedInputIssuer, VoiceShadowAdapter
 from guanjia.enroll_session import (MAX_ZERO_RATIO, MIN_EFFECTIVE_SEC, MIN_PEAK, MIN_SELF_SIM, MIN_TOTAL, EnrollSession)
@@ -346,6 +347,9 @@ class VoiceDaemon:
             input_id=str(record.input_id),
             correlation_id=str(record.correlation_id),
         )
+        core_shadow = getattr(self, '_core_shadow', None)
+        if core_shadow is not None:
+            core_shadow.observe(record)
 
     def _observe_accepted_voice(self, text: str, uid: str | None, speaker: str) -> None:
         """Queue an accepted microphone utterance without affecting the live turn."""
@@ -363,6 +367,8 @@ class VoiceDaemon:
             )
             if not adapter.observe(segment):
                 log.warning('voice shadow input dropped: %s', adapter.metrics())
+            elif getattr(self, '_core_shadow', None) is not None and not getattr(self, '_core_flags', CoreFlags()).input_shadow_v1:
+                self._core_shadow.observe(segment.as_shadow_record())
         except Exception:  # noqa: BLE001
             log.exception('voice shadow input failed; production voice path continues')
 
@@ -377,6 +383,13 @@ class VoiceDaemon:
         self._core_flags = CoreFlags.from_env()
         self._voice_shadow_issuer = None
         self._voice_shadow_adapter = None
+        self._core_shadow = None
+        if self._core_flags.core_shadow_v1:
+            try:
+                self._core_shadow = CoreShadowCoordinator()
+            except Exception:  # noqa: BLE001
+                log.exception('core shadow setup failed; core shadow remains disabled')
+                self._core_shadow = None
         if self._core_flags.input_shadow_v1:
             try:
                 issuer = AcceptedInputIssuer()
@@ -1191,6 +1204,9 @@ class VoiceDaemon:
             except queue.Empty:
                 break
         log.info("stop speaking (%s)", reason)
+        core_shadow = getattr(self, "_core_shadow", None)
+        if core_shadow is not None:
+            core_shadow.cancel_current(reason)
         if reason == "barge-in":
             self.hub.stage(self._turn_uid, "barge", "done", "被主人打断")
             if not self._turn_is_say:
@@ -1732,6 +1748,10 @@ class VoiceDaemon:
         if adapter is not None:
             adapter.close(drain=False, timeout=0.2)
             log.info('voice shadow stopped: %s', adapter.metrics())
+        core_shadow = getattr(self, '_core_shadow', None)
+        if core_shadow is not None:
+            core_shadow.close(timeout=0.2)
+            log.info('core shadow stopped: %s', core_shadow.metrics())
         if self.task_ipc is not None:
             self.task_ipc.stop()
         if self.task_executor is not None:

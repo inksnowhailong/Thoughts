@@ -13,6 +13,8 @@ from .contracts import (
     WorkerEvent,
 )
 from .main_event_parser import EVENT_SCHEMA_VERSION, EventValidationError, MainEvent, parse_jsonl
+from .main_program import CancellationToken, CompleteTurnGenerator, MainProgram, ShadowCommitForbiddenError, ShadowTurnCancelledError, ShadowTurnRequest
+from .shadow import ALLOWED_CORE_DIFFERENCE_FIELDS, CoreShadowCoordinator, CoreShadowMetrics
 from .model_policy import ModelPolicy, ModelProfile
 from .openclaw_adapter import OpenClawAdapter
 from .worker_runtime import WorkerRuntime, WorkerSnapshot
@@ -23,7 +25,16 @@ __all__ = [
     'DeliveryRequirements',
     'Evidence',
     'EventValidationError',
+    'ALLOWED_CORE_DIFFERENCE_FIELDS',
+    'CancellationToken',
+    'CompleteTurnGenerator',
+    'CoreShadowCoordinator',
+    'CoreShadowMetrics',
     'MainAgentRuntime',
+    'MainProgram',
+    'ShadowCommitForbiddenError',
+    'ShadowTurnCancelledError',
+    'ShadowTurnRequest',
     'MainEvent',
     'ModelPolicy',
     'ModelProfile',
