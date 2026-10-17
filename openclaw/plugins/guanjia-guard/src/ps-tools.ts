@@ -274,8 +274,8 @@ export function createCameraLookTool(opts: PsToolOptions) {
         },
         direction: {
           type: "string",
-          enum: ["left", "right", "up", "down"],
-          description: "可选：抓拍前先往哪个方向转一下（left/right/up/down）",
+          enum: ["left", "right", "up", "down", "scan"],
+          description: "可选：抓拍前先往哪个方向转一下（left/right/up/down），或者传 scan 一次完成左中右环视找人",
         },
       },
       additionalProperties: false,
