@@ -275,19 +275,24 @@ export function createCameraLookTool(opts: PsToolOptions) {
         direction: {
           type: "string",
           enum: ["left", "right", "up", "down"],
-          description: "可选：抓拍前先往哪个方向转一下（left/right/up/down），转完立即抓拍画面",
+          description: "可选：抓拍前先往哪个方向转头（left/right/up/down），转完立即抓拍画面",
+        },
+        duration_sec: {
+          type: "number",
+          description: "可选：转头持续秒数（默认 0.8 秒，范围 0.2~2.0 秒）",
         },
       },
       additionalProperties: false,
     },
-    async execute(_toolCallId: string, params: { question?: unknown; direction?: unknown }) {
+    async execute(_toolCallId: string, params: { question?: unknown; direction?: unknown; duration_sec?: unknown }) {
       const q = typeof params?.question === "string" && params.question.trim() ? params.question.trim() : "看看现在画面里有什么";
       const dir = typeof params?.direction === "string" ? params.direction.trim().toLowerCase() : "";
+      const dur = typeof params?.duration_sec === "number" && Number.isFinite(params.duration_sec) ? String(params.duration_sec) : "0.8";
       const script = path.join(opts.workspaceDir, "tools", "camera-tool.py");
       const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
         execFile(
           "F:\\coding\\guanjia\\.venv\\Scripts\\python.exe",
-          ["-X", "utf8", script, "look", q, dir],
+          ["-X", "utf8", script, "look", q, dir, dur],
           { windowsHide: true, timeout: CAMERA_TIMEOUT_MS, encoding: "utf8" },
           (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
         );
