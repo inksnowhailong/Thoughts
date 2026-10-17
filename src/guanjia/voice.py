@@ -38,7 +38,8 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,8 @@ from guanjia.approval_ipc import ApprovalIpc
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.control import CONTROL_PORT, start_control_server
+from guanjia.core_flags import CoreFlags
+from guanjia.input.adapters.voice import AcceptedInputIssuer, VoiceShadowAdapter
 from guanjia.enroll_session import (MAX_ZERO_RATIO, MIN_EFFECTIVE_SEC, MIN_PEAK, MIN_SELF_SIM, MIN_TOTAL, EnrollSession)
 from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
@@ -334,12 +337,58 @@ class VoiceDaemon:
     _followup_until = 0.0
     _ack_pcm = None
 
+    def _record_accepted_voice_shadow(self, record) -> None:
+        """Record an accepted voice segment off the production input path."""
+        elog.emit(
+            'input',
+            'input.voice_shadow.accepted',
+            'received accepted voice shadow input',
+            input_id=str(record.input_id),
+            correlation_id=str(record.correlation_id),
+        )
+
+    def _observe_accepted_voice(self, text: str, uid: str | None, speaker: str) -> None:
+        """Queue an accepted microphone utterance without affecting the live turn."""
+        issuer = getattr(self, '_voice_shadow_issuer', None)
+        adapter = getattr(self, '_voice_shadow_adapter', None)
+        if issuer is None or adapter is None:
+            return
+        try:
+            segment = issuer.issue(
+                str(uuid4()),
+                str(uuid4()),
+                text,
+                datetime.now(timezone.utc),
+                metadata={'utterance_id': uid or '', 'speaker': speaker},
+            )
+            if not adapter.observe(segment):
+                log.warning('voice shadow input dropped: %s', adapter.metrics())
+        except Exception:  # noqa: BLE001
+            log.exception('voice shadow input failed; production voice path continues')
+
+
+
     def __post_init__(self) -> None:
         self.sr = pick_stream_rate(self.in_dev, self.out_dev)  # 优先 16k，见 pick_stream_rate
         self.frame = self.sr // 100
         self.in_q: queue.Queue[Frames] = queue.Queue(maxsize=500)
         self.play_q: queue.Queue[tuple[int, np.ndarray]] = queue.Queue()  # (代次, PCM)，回调按代次丢弃旧音频
         self.text_q: queue.Queue[str | Heard | SayItem] = queue.Queue()  # 放行的话（Heard）或 /say 要念的话（SayItem）
+        self._core_flags = CoreFlags.from_env()
+        self._voice_shadow_issuer = None
+        self._voice_shadow_adapter = None
+        if self._core_flags.input_shadow_v1:
+            try:
+                issuer = AcceptedInputIssuer()
+                self._voice_shadow_issuer = issuer
+                self._voice_shadow_adapter = VoiceShadowAdapter(
+                    self._record_accepted_voice_shadow,
+                    issuer=issuer,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception('voice shadow setup failed; shadow input remains disabled')
+                self._voice_shadow_issuer = None
+                self._voice_shadow_adapter = None
         self._gen = 0  # 播放代次：打断后递增，旧代次的音频一律丢弃；只有 stop_speaking 写
         # 以下播放状态只由音频回调写，其他线程只读
         self._play_buf = np.zeros(0, dtype=np.float32)  # 正在播的那一句 PCM
@@ -706,6 +755,8 @@ class VoiceDaemon:
                 monitor.note_activity()
             self.hub.update(uid, verdict="accept", reason=d.reason, sent=d.text)
             self._accept_utterance(d.text, uid, speaker)
+            if source == "mic":
+                self._observe_accepted_voice(d.text, uid, speaker)
         elif d.verdict == "wake_only":
             self.hub.update(uid, verdict="wake_only", reason=d.reason)
             self._wake_ack(uid)
@@ -1677,6 +1728,10 @@ class VoiceDaemon:
         self.program_quiet.stop()
         self.monitor.stop()
         self.audit.stop()
+        adapter = getattr(self, '_voice_shadow_adapter', None)
+        if adapter is not None:
+            adapter.close(drain=False, timeout=0.2)
+            log.info('voice shadow stopped: %s', adapter.metrics())
         if self.task_ipc is not None:
             self.task_ipc.stop()
         if self.task_executor is not None:
