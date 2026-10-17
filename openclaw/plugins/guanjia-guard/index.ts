@@ -23,6 +23,12 @@ import type { LevelsFile } from "./src/levels";
  *   4. 工具                → speak（念一句）、launch_app（开程序）、get_location（定位）、get_weather（天气）
  * 所有状态落在 workspace/guanjia/，审计写 workspace/guanjia/audit.jsonl。
  */
+function isPermissionShadowEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.GUANJIA_PERMISSION_SHADOW_V1;
+  if (!raw) return false;
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultsDir = path.join(pluginDir, "defaults");
 
@@ -41,7 +47,12 @@ export default definePluginEntry({
     const store = createStore(workspaceDir, defaultsDir);
     store.audit({ kind: "wechat-inbound-identity", decision: "capture-hook-loaded" });
     const defaults = JSON.parse(fs.readFileSync(path.join(defaultsDir, "levels.json"), "utf8")) as LevelsFile;
-    const guard = createGuard(store, defaults, (pending) => { void bindTaskApproval(workspaceDir, pending); });
+    const guard = createGuard(
+      store,
+      defaults,
+      (pending) => { void bindTaskApproval(workspaceDir, pending); },
+      { permissionShadowEnabled: isPermissionShadowEnabled() },
+    );
 
     /** 网关服务启动时拿到的调度器 getter；用户确认习惯草案时用它建 cron */
     let getCron: (() => any) | undefined;

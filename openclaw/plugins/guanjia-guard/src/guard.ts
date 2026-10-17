@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
-import { classify, resolveToolCallTarget, type AskCategory, type Classification, type Level, type LevelsFile } from "./levels";
-import type { Store } from "./store";
-import { hasVoiceTag, stripVoiceTag } from "./speak";
-import { CATEGORY_CN, appendOverride, buildRememberedOverride } from "./remember";
-import { APPROVAL_RETRY_MARKER, createApprovalLatches } from "./approvals";
-import { consumeOwnerWechatProvenance } from "./wechat-provenance";
+import { classify, resolveToolCallTarget, type AskCategory, type Classification, type Level, type LevelsFile } from "./levels.ts";
+import type { Store } from "./store.ts";
+import { hasVoiceTag, stripVoiceTag } from "./speak.ts";
+import { CATEGORY_CN, appendOverride, buildRememberedOverride } from "./remember.ts";
+import { APPROVAL_RETRY_MARKER, createApprovalLatches } from "./approvals.ts";
+import { consumeOwnerWechatProvenance } from "./wechat-provenance.ts";
+import { evaluateShadowPermission, type ShadowPermissionObservation } from "./core-bridge.ts";
 
 /**
  * 分级中间层（确认策略 v2）：before_tool_call 里定级并放行 / 先问 / 拒绝。
@@ -85,11 +86,13 @@ const TARGET_KEYS = ["command", "path", "file_path", "url", "to", "action"];
  * 不用全部参数：模型重试时常有无关差异（多个换行、多带一个可选参数），全量比对会让确认永远对不上。
  * 目标做归一化：小写、斜杠统一、去首尾空白。没有目标参数的工具退回全量参数比对。
  */
-const fingerprintOf = (toolName: string, params: Record<string, unknown>) => {
+const actionHash64Of = (toolName: string, params: Record<string, unknown>) => {
   const key = TARGET_KEYS.find((k) => typeof params[k] === "string");
   const target = key ? `${key}=${String(params[key]).trim().toLowerCase().replace(/\\/g, "/")}` : stableJson(params);
-  return crypto.createHash("sha256").update(toolName + "\u0000" + target).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(toolName + "\u0000" + target).digest("hex");
 };
+
+const fingerprintOf = (toolName: string, params: Record<string, unknown>) => actionHash64Of(toolName, params).slice(0, 16);
 
 function stableJson(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
@@ -128,6 +131,10 @@ export function createGuard(
   store: Store,
   defaults: LevelsFile,
   onTaskApproval?: (input: { sessionKey?: string; approvalId: string; description: string; expiresAt: number }) => void,
+  options?: {
+    permissionShadowEnabled?: boolean;
+    observePermissionShadow?: (observation: ShadowPermissionObservation) => void;
+  },
 ) {
   const pending = new Map<string, PendingAction>();
   const approvals = createApprovalLatches(store);
@@ -291,6 +298,35 @@ export function createGuard(
       ...(c.overrideId ? { overrideId: c.overrideId } : {}),
       ...(target ? { via: "tool_call", catalogSource: target.source ?? "bare" } : {}),
     };
+    const emitPermissionShadow = () => {
+      if (!options?.permissionShadowEnabled && !options?.observePermissionShadow) return;
+      try {
+        const observation = evaluateShadowPermission({
+          toolName,
+          level: c.level,
+          source: c.source,
+          proactive,
+          hasSessionKey: Boolean(sessionKey),
+          actionFingerprint: actionHash64Of(toolName, params),
+        });
+        if (options?.observePermissionShadow) {
+          options.observePermissionShadow(observation);
+        } else if (options?.permissionShadowEnabled) {
+          store.audit({
+            kind: "permission-shadow",
+            tool: observation.toolName,
+            level: observation.level,
+            proactive: observation.proactive,
+            decision: observation.decision,
+            actionFingerprint: observation.actionFingerprint,
+            reason: observation.reason,
+          });
+        }
+      } catch {
+        // Passive shadow observation must never alter Guard decisions or throw.
+      }
+    };
+    emitPermissionShadow();
     /** 只有外层 tool_call 需要登记；直接调用的工具不会再触发内层 */
     const grantIfOuter = () => {
       if (target) grantOuter(callId, { toolName, fingerprint: fingerprintOf(toolName, params), level: c.level, sessionKey });

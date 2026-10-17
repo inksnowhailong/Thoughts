@@ -89,4 +89,98 @@ try {
   if ((error as Error).message.startsWith("FAIL")) throw error;
 }
 console.log("PASS unsafe JSON, weak fingerprints, and invalid timestamps are rejected");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createGuard } from "./guard.ts";
+import { evaluateShadowPermission, toShadowPermissionDecision, type ShadowPermissionObservation } from "./core-bridge.ts";
+import type { LevelsFile } from "./levels.ts";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const defaults = JSON.parse(fs.readFileSync(path.join(here, "..", "defaults", "levels.json"), "utf8")) as LevelsFile;
+
+check(
+  toShadowPermissionDecision("allow") === "would-allow"
+    && toShadowPermissionDecision("deny") === "would-deny"
+    && toShadowPermissionDecision("confirmation_required") === "would-confirm",
+  "permission outcomes map strictly to would-allow / would-deny / would-confirm",
+);
+
+const memFiles: Record<string, unknown> = {};
+const auditEntries: any[] = [];
+const mockStore: any = {
+  readJson: (name: string, fallback: unknown) => memFiles[name] ?? fallback,
+  writeJson: (name: string, data: unknown) => { memFiles[name] = data; },
+  audit: (entry: unknown) => auditEntries.push(entry),
+};
+
+const observedShadow: ShadowPermissionObservation[] = [];
+const guardWithShadow = createGuard(mockStore, defaults, undefined, {
+  permissionShadowEnabled: true,
+  observePermissionShadow: (obs) => {
+    observedShadow.push(obs);
+  },
+});
+
+// 1) L0/L1 allow path
+const allowRes = guardWithShadow.beforeToolCall(
+  { toolName: "get_weather", params: { city: "Hangzhou" }, toolCallId: "call-1" },
+  { sessionKey: "agent:main:main", runId: "run-1", trigger: "user" },
+);
+check(allowRes === undefined, "L0/L1 hook return value is unchanged");
+
+// 2) Client L3 deny path via tool_call
+const denyRes = guardWithShadow.beforeToolCall(
+  { toolName: "tool_call", params: { name: "unknown_client_tool", source: "client", arguments: {} }, toolCallId: "call-2" },
+  { sessionKey: "agent:main:main", runId: "run-1", trigger: "user" },
+);
+check(denyRes?.block === true, "client L3 remains blocked by legacy Guard");
+
+// 3) L2 confirmation path + latch preservation
+const confirmRes = guardWithShadow.beforeToolCall(
+  { toolName: "exec", params: { command: "del C:\\secret\\a.txt", ask: "always" }, toolCallId: "outer-exec-1" },
+  { sessionKey: "agent:main:main", runId: "run-1", trigger: "user" },
+);
+check(confirmRes?.block === true, "L2 remains blocked pending confirmation");
+const latchBefore = guardWithShadow.approvals.latest("agent:main:main");
+check(Boolean(latchBefore), "legacy approval latch opened normally");
+
+// Approve via owner WeChat turn and verify shadow did not consume latch prematurely
+const wechatReply = guardWithShadow.onOwnerWechatTurn("agent:main:main", "允许", {
+  channel: "openclaw-weixin",
+  senderIsOwner: true,
+});
+check(Boolean(wechatReply), "owner WeChat confirmation still works unchanged");
+
+const approvedExecRes = guardWithShadow.beforeToolCall(
+  { toolName: "exec", params: { command: "del C:\\secret\\a.txt", ask: "always" }, toolCallId: "outer-exec-2" },
+  { sessionKey: "agent:main:main", runId: "run-1", trigger: "user" },
+);
+check(
+  JSON.stringify(approvedExecRes) === JSON.stringify({ params: { ask: "off" } }),
+  "approved latch is consumed only by real Guard execution and preserves askRewrite",
+);
+
+check(
+  observedShadow.map((item) => item.decision).join(",") === "would-allow,would-deny,would-confirm,would-confirm",
+  "Guard shadow records only would-allow / would-deny / would-confirm without resolving todos",
+);
+check(
+  observedShadow.every((item) => /^[0-9a-f]{64}$/.test(item.actionFingerprint))
+    && !JSON.stringify(observedShadow).includes("C:\\secret\\a.txt"),
+  "Guard shadow uses 64-hex fingerprint and leaks no raw command parameters",
+);
+
+// 4) Throwing observer never breaks Guard
+const throwingGuard = createGuard(mockStore, defaults, undefined, {
+  permissionShadowEnabled: true,
+  observePermissionShadow: () => {
+    throw new Error("shadow failure");
+  },
+});
+const safeRes = throwingGuard.beforeToolCall(
+  { toolName: "get_weather", params: { city: "Shanghai" } },
+  { sessionKey: "agent:main:main", runId: "run-2", trigger: "user" },
+);
+check(safeRes === undefined, "throwing shadow observer never affects Guard hook return");
 console.log("ALL PASS core-bridge.test");

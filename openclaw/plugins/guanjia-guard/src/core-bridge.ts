@@ -212,3 +212,70 @@ function strictUtcMillis(value: unknown, field: string): number {
   }
   return parsed;
 }
+
+export type ShadowPermissionDecision = "would-allow" | "would-deny" | "would-confirm";
+
+export interface ShadowPermissionObservation {
+  decision: ShadowPermissionDecision;
+  toolName: string;
+  level: "L0" | "L1" | "L2" | "L3";
+  proactive: boolean;
+  actionFingerprint: string;
+  reason: string;
+}
+
+export function toShadowPermissionDecision(outcome: PermissionDecisionView["outcome"]): ShadowPermissionDecision {
+  if (outcome === "allow") return "would-allow";
+  if (outcome === "deny") return "would-deny";
+  if (outcome === "confirmation_required") return "would-confirm";
+  throw new TypeError(`unsupported permission outcome: ${String(outcome)}`);
+}
+
+export function evaluateShadowPermission(input: {
+  toolName: string;
+  level: "L0" | "L1" | "L2" | "L3";
+  source: string;
+  proactive: boolean;
+  hasSessionKey: boolean;
+  actionFingerprint: string;
+}): ShadowPermissionObservation {
+  const fp = opaqueActionFingerprint(input.actionFingerprint);
+  if (input.level === "L0" || input.level === "L1") {
+    return {
+      decision: "would-allow",
+      toolName: input.toolName,
+      level: input.level,
+      proactive: input.proactive,
+      actionFingerprint: fp,
+      reason: "role policy allows low-risk action",
+    };
+  }
+  if (input.level === "L3" && input.source === "client") {
+    return {
+      decision: "would-deny",
+      toolName: input.toolName,
+      level: input.level,
+      proactive: input.proactive,
+      actionFingerprint: fp,
+      reason: "unverified client or ambiguous tool target",
+    };
+  }
+  if (input.proactive || !input.hasSessionKey) {
+    return {
+      decision: "would-deny",
+      toolName: input.toolName,
+      level: input.level,
+      proactive: input.proactive,
+      actionFingerprint: fp,
+      reason: "proactive or sessionless high-risk action cannot be confirmed",
+    };
+  }
+  return {
+    decision: "would-confirm",
+    toolName: input.toolName,
+    level: input.level,
+    proactive: input.proactive,
+    actionFingerprint: fp,
+    reason: "critical or L2 action requires owner confirmation",
+  };
+}
