@@ -337,6 +337,8 @@ class VoiceDaemon:
     task_executor = None
     _followup_until = 0.0
     _ack_pcm = None
+    _last_spoken_reply = ""
+    _last_spoken_at = 0.0
 
     def _record_accepted_voice_shadow(self, record) -> None:
         """Record an accepted voice segment off the production input path."""
@@ -725,6 +727,25 @@ class VoiceDaemon:
                   group=r.get("group"), total=r.get("total"), self_score=r.get("self_score"), playing=playing, overlap=overlap,
                   play_gap=gap, **(r.get("info") or {}))
 
+    def _is_self_echo(self, text: str) -> bool:
+        """Detect if the microphone just transcribed the assistant's own recent speaker output."""
+        last_reply = getattr(self, '_last_spoken_reply', '') or ''
+        last_at = getattr(self, '_last_spoken_at', 0.0) or 0.0
+        if not last_reply or (time.monotonic() - last_at > 12.0 and self.state != 'SPEAKING'):
+            return False
+        norm_in = re.sub(r'[^\w\u4e00-\u9fff]+', '', text)
+        norm_reply = re.sub(r'[^\w\u4e00-\u9fff]+', '', last_reply)
+        if len(norm_in) < 2 or not norm_reply:
+            return False
+        if norm_in in norm_reply:
+            return True
+        if len(norm_in) >= 4:
+            grams = [norm_in[i:i+3] for i in range(len(norm_in) - 2)]
+            hits = sum(1 for g in grams if g in norm_reply)
+            if hits / len(grams) >= 0.6:
+                return True
+        return False
+
     def _on_heard(self, text: str, score: float | None, *, source: str, stream_text: str = "",
                   seg_sec: float | None = None, asr_ms: int | None = None, spk_ms: int | None = None,
                   front_ms: int | None = None, speaker: str = "", dry_run: bool = False,
@@ -733,10 +754,13 @@ class VoiceDaemon:
         去留只看碎音、唤醒词、免喊窗口；声纹不拦截，speaker（"主人" / "未知" / 库里的名字 / ""=没有）只做标签，
         随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
         s = self.store.current
-        in_window = self._in_followup()
+        # USB 独立麦防自激与防视频旁白串音：免喊窗口内若声纹为「未知」则仍要求唤醒词
+        effective_in_window = self._in_followup() and (source != "mic" or speaker != UNKNOWN_LABEL)
         d = decide(text, matcher=self.wake, wake_required=s.wake_required,
-                   min_chars=s.min_chars, in_window=in_window, allow_short_answer=self.state != "SPEAKING",
+                   min_chars=s.min_chars, in_window=effective_in_window, allow_short_answer=self.state != "SPEAKING",
                    alt_text=stream_text or None)  # 二次识别漏掉唤醒词、流式识别抓到了：靠流式结果救回
+        if source == "mic" and d.verdict == "accept" and not d.wake and self._is_self_echo(d.text or text):
+            d = replace(d, verdict="rejected", stage="wake", reason="音箱回声自滤")
         timings = {k: v for k, v in (("asr_ms", asr_ms), ("speaker_ms", spk_ms), ("front_ms", front_ms)) if v is not None}
         # 二次识别用了哪个后端、耗时、置信度（FireRedASR2 才有）：写进记录和事件，以后做"没把握时第二意见"用；暂不参与决策
         asr_fields = ({"asr_backend": asr.backend, "asr_conf": asr.conf, "asr_min_conf": asr.min_conf, "asr_fallback": asr.fallback or None}
@@ -949,6 +973,9 @@ class VoiceDaemon:
                 log.warning("unspoken %d (aborted=%s): %s", len(real_unspoken), res.aborted, " / ".join(real_unspoken)[:300])
             if len(real_unspoken) != len(res.unspoken):
                 log.info("speech shaped: %d chunk(s) left unread (full reply is on the panel)", len(res.unspoken) - len(real_unspoken))
+            if res.reply:
+                self._last_spoken_reply = res.reply
+                self._last_spoken_at = time.monotonic()
             if res.error:
                 self._set_error(res.error)
             elif res.spoken:
