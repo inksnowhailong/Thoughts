@@ -170,6 +170,17 @@ class ProactiveTrigger:
         if not self._acquire_review_slot():
             self._log({'ok': True, 'stage': 'rate_limit', 'edge': edge})
             return
+        # 3.5) 表达预算/话题冷却预检（V11）：预算耗尽或冷却中时，评审调用是纯浪费
+        # （评审之后反正会被 ExpressionPolicy 拦）——提前用内存态拦下，零 token 成本。
+        # entered 沿共用同一 topic（vision_entered）：第一次成功开口后 1 小时内
+        # 的后续 entered 沿都在这里拦掉，评审调用量大幅下降。
+        if self._state.expressions_today(now) >= self._expression_policy.daily_budget:
+            self._log({'ok': True, 'stage': 'budget_precheck', 'edge': edge})
+            return
+        last = self._state.last_expression(candidate.topic)
+        if last is not None and now - last < self._expression_policy.topic_cooldown:
+            self._log({'ok': True, 'stage': 'cooldown_precheck', 'edge': edge})
+            return
         # 4) 模型评审："值得说吗"——判断权归模型
         verdict = self._ask_gateway(_REVIEW_PROMPT.format(
             event=event, presence=presence_text, local_time=local_time, area=area))
