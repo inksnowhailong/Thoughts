@@ -7,5 +7,6 @@
 from guanjia.proactive.config import ProactiveConfig
 from guanjia.proactive.identity import IdentityTracker
 from guanjia.proactive.privacy import PrivacyDownscaler
+from guanjia.proactive.trigger import ProactiveTrigger
 
-__all__ = ['IdentityTracker', 'ProactiveConfig', 'PrivacyDownscaler']
+__all__ = ['IdentityTracker', 'PrivacyDownscaler', 'ProactiveConfig', 'ProactiveTrigger']

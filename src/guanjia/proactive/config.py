@@ -32,6 +32,22 @@ _DEFAULTS: dict[str, object] = {
     'track_cooldown_sec': 2.0,
     'settle_sec': 1.6,
     'standby_pan_tolerance': 0.05,
+    # ---- 触发引擎（C）与身份（A）----
+    'proactive_enabled': True,          # 全局开关（JG-8/QC-17）：false 全链停，关停不烧额度
+    'review_minimum_score': 0.35,      # 评分门控阈值（预算闸）
+    'review_urgent_threshold': 0.9,
+    'review_max_per_hour': 10,          # 独立限流（SX-12/JG-19）
+    'expression_daily_budget': 3,       # 说话预算（F，JG-10）
+    'topic_cooldown_sec': 3600,         # 话题冷却（防重复说）
+    'conversation_quiet_min': 5,        # 对话进行中静默窗（QC-22）
+    'identity_ttl_min': 10,             # 在场身份缓存 TTL（QC-30）
+    'identity_confidence_threshold': 0.55,  # 带称呼开口门控（QC-5）
+    'entered_value': 0.6,               # 沿事件候选四因子初值
+    'entered_urgency': 0.4,
+    'entered_interruption_cost': 0.5,
+    'left_value': 0.35,
+    'left_urgency': 0.2,
+    'left_interruption_cost': 0.5,
 }
 
 

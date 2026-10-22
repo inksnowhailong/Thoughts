@@ -1,0 +1,288 @@
+"""C 主动触发引擎（议会定稿）：视觉沿 → 候选 → 评分门控 → 模型评审 → 生成 → speak 投递。
+
+接线 self_loop 骨架（议会 §1-C）：
+- SelfLoopCandidate：候选 DTO（value/urgency/freshness/interruption_cost 四因子）
+- ReviewPolicy：确定性评分——定位为预算/安全闸（SX-2：判断权在模型评审，公式只管预算）
+- ExpressionPolicy：说话预算/话题冷却/游戏态压制（F 组件边界，QC-8 收敛机制）
+- SelfLoopState：内存态（第一版无 store，重启重置——后续接 store 持久化）
+
+时序（QC-2/JG-6）：沿直达评审（异步线程即时），30 分钟兜底轮询不做发声路径。
+评审与生成分离（SX-9）：评审输入小、否决掉不值得生成的候选，省下的生成成本大于评审成本。
+在途作废（JG-16）：投递前查最新视觉状态，人已离开即丢弃。
+全局开关（JG-8/QC-17）：proactive.json enabled=false 全链停——评审、生成一并停，关停不烧额度。
+独立限流（SX-12/JG-19）：评审调用每小时上限，防沿风暴拖垮被动链。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+import re
+import threading
+import time
+from pathlib import Path
+from typing import Callable
+
+import httpx
+
+from guanjia.brain import load_gateway_token
+from guanjia.proactive.config import ProactiveConfig
+from guanjia.proactive.identity import IdentityTracker
+from guanjia.self_loop.contracts import SelfLoopCandidate
+from guanjia.self_loop.policy import ExpressionPolicy, ReviewPolicy
+from guanjia.self_loop.state import SelfLoopState
+
+_REVIEW_SESSION = 'agent:main:proactive-review'
+_GATEWAY_URL = 'http://127.0.0.1:18789/v1/chat/completions'
+
+_REVIEW_PROMPT = (
+    '你是家庭管家的主动开口评审。刚发生事件：{event}。当前在场：{presence}。'
+    '北京时间：{local_time}。画面区域：{area}。'
+    '判断：此刻管家主动说一句话值得吗？原则：不打扰、不说废话、说错的代价大于不说；'
+    '家人正在说话/休息/专注时不说。只输出一个 JSON 对象：'
+    '{{"say": true 或 false, "what_hint": "说什么方向（一句）", '
+    '"urgency": 0到1, "reason": "一句理由"}}，不要 markdown。'
+)
+
+_GENERATE_PROMPT = (
+    '你是家庭管家，刚决定主动说一句话。事件：{event}。在场的人：{who}。'
+    '北京时间：{local_time}。方向提示：{hint}。'
+    '{address_rule}'
+    '只输出要直接说出口的口语：每句不超过 30 个字、最多两句、无 Markdown、无表情符号、'
+    '不要以"我先看看"这类话开头。直接输出那句话本身。'
+)
+
+
+class ProactiveTrigger:
+    """沿触发的主动开口管线；全部模型调用异步，绝不阻塞视觉/语音线程。"""
+
+    def __init__(
+        self,
+        config: ProactiveConfig | None = None,
+        identity: IdentityTracker | None = None,
+        speak: Callable[[str], bool] | None = None,
+        log_path: Path | None = None,
+    ) -> None:
+        self._config = config or ProactiveConfig()
+        self._identity = identity or IdentityTracker(self._config)
+        self._speak = speak or self._default_speak
+        self._token = load_gateway_token()
+        self._log_path = log_path or (
+            Path(str(self._config.path)).parent / 'proactive-log.jsonl'
+        )
+        # self_loop 骨架件：评分闸 + 表达边界 + 内存态
+        self._review_policy = ReviewPolicy(
+            minimum_score=self._config.num('review_minimum_score', 0.35),
+            urgent_threshold=self._config.num('review_urgent_threshold', 0.9),
+            review_interval_seconds=1,  # 沿直达评审：不做周期节流（QC-2）
+        )
+        self._expression_policy = ExpressionPolicy(
+            daily_budget=int(self._config.num('expression_daily_budget', 3)),
+            topic_cooldown_seconds=int(self._config.num('topic_cooldown_sec', 3600)),
+            minimum_score=self._config.num('review_minimum_score', 0.35),
+        )
+        self._state = SelfLoopState()
+        self._lock = threading.Lock()
+        self._review_times: list[float] = []          # 独立限流（每小时上限）
+        self._last_voice_activity: float = 0.0         # 对话进行中静默（QC-22）
+        self._busy = False                             # 同一时刻只跑一条管线
+        self._gaming: bool = False                     # 游戏态压制输入（voice.py 接线）
+
+    # ---------- 对外接口 ----------
+
+    def on_edge(self, record: dict[str, object], edge: str) -> None:
+        """vision_loop 沿钩子入口。entered→管线；left→候选+卧室待命判定。"""
+        if not self._enabled():
+            return
+        if edge == 'entered':
+            self._pipeline_async(record, 'entered')
+        elif edge == 'left':
+            self._pipeline_async(record, 'left')
+
+    def note_voice_activity(self) -> None:
+        """voice.py 每轮对话调用：对话进行中静默窗（QC-22）计时起点。"""
+        self._last_voice_activity = time.monotonic()
+
+    def set_gaming(self, gaming: bool) -> None:
+        """游戏态输入（ExpressionPolicy 原生支持 gaming 压制）。"""
+        self._gaming = bool(gaming)
+
+    # ---------- 管线 ----------
+
+    def _pipeline_async(self, record: dict[str, object], edge: str) -> None:
+        with self._lock:
+            if self._busy:
+                return  # 同一时刻一条管线：沿风暴时自然排队丢弃，不堆积
+            self._busy = True
+
+        def runner() -> None:
+            try:
+                self._pipeline(record, edge)
+            except Exception as exc:  # noqa: BLE001
+                self._log({'ok': False, 'stage': 'pipeline', 'error': f'{type(exc).__name__}: {exc}'})
+            finally:
+                with self._lock:
+                    self._busy = False
+
+        threading.Thread(target=runner, name='proactive-pipeline', daemon=True).start()
+
+    def _pipeline(self, record: dict[str, object], edge: str) -> None:
+        now = datetime.now(timezone.utc)
+        who = self._identity.presence()
+        presence_text = str((who or {}).get('who') or '未知')
+        area = str(record.get('area') or '未知区域')
+        local_time = datetime.now().strftime('%m月%d日 %H:%M')
+        event = f"{'有人进入画面' if edge == 'entered' else '有人离开画面'}（{presence_text}，{area}）"
+
+        # 1) 候选（沿事件 → 四因子；entered 价值高于 left）
+        candidate = SelfLoopCandidate(
+            topic=f'vision_{edge}',
+            summary=event,
+            value=self._config.num(f'{edge}_value', 0.6 if edge == 'entered' else 0.35),
+            urgency=self._config.num(f'{edge}_urgency', 0.4 if edge == 'entered' else 0.2),
+            freshness=0.9,
+            interruption_cost=self._config.num(f'{edge}_interruption_cost', 0.5),
+            observed_at=now,
+        )
+        # 2) 评分门控：预算/安全闸（SX-2：被公式拦下的不进模型评审，只记日志）
+        gate = self._review_policy.decide(candidate, self._state, now)
+        if not gate.eligible:
+            self._log({'ok': True, 'stage': 'gate', 'edge': edge, 'score': round(gate.score, 3),
+                       'blocked': gate.reason})
+            return
+        # 3) 独立限流（SX-12）：每小时评审上限，防沿风暴
+        if not self._acquire_review_slot():
+            self._log({'ok': True, 'stage': 'rate_limit', 'edge': edge})
+            return
+        # 4) 模型评审："值得说吗"——判断权归模型
+        verdict = self._ask_gateway(_REVIEW_PROMPT.format(
+            event=event, presence=presence_text, local_time=local_time, area=area))
+        parsed = self._parse_json(verdict)
+        if not parsed or not parsed.get('say'):
+            self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
+                       'reason': str((parsed or {}).get('reason') or 'no_json')[:80]})
+            return
+        # 5) 表达边界（F）：预算/冷却/游戏态/对话中静默
+        decision = self._expression_policy.decide(
+            candidate, self._state, now, gaming=getattr(self, '_gaming', False),
+            do_not_disturb=self._voice_silence_active())
+        if not decision.eligible:
+            self._log({'ok': True, 'stage': 'expression_blocked', 'edge': edge,
+                       'blocked': decision.reason})
+            return
+        # 6) 生成（D 最小版；身份置信不足时不带称呼——QC-5）
+        address_rule = (
+            '称呼对方为"{}"。'.format(presence_text)
+            if self._identity.should_address_by_name() and presence_text not in ('未知', '主人') else ''
+        )
+        # 主人是发起人自称"你"即可，不喊"主人"
+        if presence_text == '主人' and self._identity.should_address_by_name():
+            address_rule = '对男主人说话，用"你"称呼。'
+        message = self._ask_gateway(_GENERATE_PROMPT.format(
+            event=event, who=presence_text, local_time=local_time,
+            hint=str(parsed.get('what_hint') or '')[:60], address_rule=address_rule))
+        text = (message or '').strip()
+        if not text:
+            self._log({'ok': False, 'stage': 'generate_empty', 'edge': edge})
+            return
+        text = re.sub(r'\s+', ' ', text)[:120]
+        # 7) 在途作废（JG-16）：投递前查最新视觉状态——人已离开且事件是 entered，则丢弃
+        if edge == 'entered' and not self._person_still_present():
+            self._log({'ok': True, 'stage': 'dropped_left', 'edge': edge,
+                       'note': '人已离开，在途话语作废'})
+            return
+        # 8) 投递 + 记账
+        delivered = self._speak(text)
+        self._state.record_expression(candidate, datetime.now(timezone.utc))
+        self._log({'ok': True, 'stage': 'delivered', 'edge': edge, 'text': text,
+                   'delivered': bool(delivered), 'score': round(decision.score, 3)})
+
+    # ---------- 内部 ----------
+
+    def _enabled(self) -> bool:
+        return bool(self._config.values.get('proactive_enabled', True))
+
+    def _acquire_review_slot(self) -> bool:
+        limit = int(self._config.num('review_max_per_hour', 10))
+        now = time.monotonic()
+        with self._lock:
+            self._review_times = [t for t in self._review_times if now - t < 3600.0]
+            if len(self._review_times) >= limit:
+                return False
+            self._review_times.append(now)
+            return True
+
+    def _voice_silence_active(self) -> bool:
+        """对话进行中静默（QC-22）：最近 N 分钟有语音活动则压制主动开口。"""
+        window = self._config.num('conversation_quiet_min', 5) * 60
+        return (time.monotonic() - self._last_voice_activity) < window if self._last_voice_activity else False
+
+    def _person_still_present(self) -> bool:
+        """投递前在途检查：读 latest.json 的 person_present。"""
+        try:
+            latest = json.loads(
+                Path(str(record_path(self._config))).read_text(encoding='utf-8'))
+            return bool(latest.get('person_present'))
+        except Exception:
+            return True  # 读不到就投——fail-open（在途作废是加分项不是安全闸）
+
+    def _ask_gateway(self, prompt: str) -> str | None:
+        body = {
+            'model': 'openclaw',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'stream': False,
+        }
+        headers = {
+            'Authorization': f'Bearer {self._token}',
+            'Content-Type': 'application/json',
+            'x-openclaw-session-key': _REVIEW_SESSION,
+        }
+        try:
+            with httpx.Client(timeout=30.0, trust_env=False) as client:
+                response = client.post(_GATEWAY_URL, headers=headers, json=body)
+                response.raise_for_status()
+                return str(response.json()['choices'][0]['message']['content'])
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_json(reply: str | None) -> dict[str, object] | None:
+        if not reply:
+            return None
+        match = re.search(r'\{.*\}', reply, re.S)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _default_speak(text: str) -> bool:
+        """speak 投递：POST 语音进程 :18795/say（SAY_MAX_PENDING 队列保护兜底）。"""
+        try:
+            with httpx.Client(timeout=4.0, trust_env=False) as client:
+                response = client.post('http://127.0.0.1:18795/say', json={'text': text})
+                return int(response.status_code) == 200
+        except Exception:
+            return False
+
+    def _log(self, entry: dict[str, object]) -> None:
+        """管线日志（jsonl 追加）：验收 1 的日志回放抽检数据源。"""
+        try:
+            payload = dict(entry)
+            payload['ts'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._log_path.open('a', encoding='utf-8') as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        except Exception:
+            pass
+
+
+def record_path(config: ProactiveConfig) -> str:
+    """latest.json 路径（与 proactive.json 同目录）。"""
+    return str(Path(str(config.path)).parent / 'latest.json')
+
+
+__all__ = ['ProactiveTrigger']
