@@ -1,4 +1,4 @@
-"""语音守护进程：常开监听 → 增益 → VAD → 流式 ASR → 整段精识别 → 碎音过滤 → 声纹 → 唤醒词 → 主线会话 → 按句 TTS → 播放；随时可打断。
+﻿"""语音守护进程：常开监听 → 增益 → VAD → 流式 ASR → 整段精识别 → 碎音过滤 → 声纹 → 唤醒词 → 主线会话 → 按句 TTS → 播放；随时可打断。
 
 P2.1 起的调用链：
 
@@ -56,6 +56,9 @@ from guanjia.audittail import AuditTail, PendingConfirm
 from guanjia.approval_ipc import ApprovalIpc
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
+from guanjia.modular_brain import ModularBrain
+from guanjia.vision_loop import VisionLoop, vision_note
+from guanjia.context_gardener import ContextGardener
 from guanjia.control import CONTROL_PORT, start_control_server
 from guanjia.core.shadow import CoreShadowCoordinator
 from guanjia.core_flags import CoreFlags
@@ -466,6 +469,18 @@ class VoiceDaemon:
             enabled=os.environ.get("GUANJIA_SLEEP_REHEARSAL", "") == "1",
         )
 
+        self.vision_loop = None
+        try:
+            self.vision_loop = VisionLoop()
+        except Exception:
+            log.exception('vision loop unavailable; voice runs without visual context')
+        self.context_gardener = None
+        if os.environ.get('GUANJIA_GARDEN', '1') == '1':
+            try:
+                self.context_gardener = ContextGardener()
+            except Exception:
+                log.exception('context gardener unavailable; voice runs without scheduled compaction')
+
         self.store = SettingsStore(SETTINGS_PATH)
         self.program_quiet = ProgramQuietMonitor(lambda: self.store.current.program_quiet, on_change=self._on_program_quiet_change)
         self.announcements = AnnouncementPolicy(lambda: self.program_quiet.quiet_active)
@@ -487,7 +502,7 @@ class VoiceDaemon:
         self.asr = StreamingASR()
         # 整段精识别：FireRedASR2（WSL 里的 GPU 服务）为主、SenseVoice 回退；段结束后替换流式结果，失败回退流式
         self.asr_final = FinalASR(on_event=self._asr_event)
-        self.brain = Brain(session_key=MAIN_SESSION_KEY)  # 主线会话；流不可提前关（见 brain.py）
+        self.brain = (ModularBrain() if os.environ.get("GUANJIA_MODULAR_MAIN_V1", "1").lower() in ("1", "true", "yes", "on") else Brain(session_key=MAIN_SESSION_KEY))  # 主线会话；流不可提前关（见 brain.py）
         self.tts = TTSClient(timeout=TTS_TIMEOUT_SEC)
         self.runner = TurnRunner(
             open_stream=self._open_stream,
@@ -561,8 +576,30 @@ class VoiceDaemon:
             self._dropped += 1
 
     def _open_stream(self, text: str):
-        """一轮语音对话发给网关：加上「[语音 日期 时间 周几 说话人]」标记（没有说话人时与以前一致）。"""
-        return self.brain.stream(tag_voice_text(text, speaker=self._turn_speaker))
+        """一句话连同语音标记+最新缓存帧（多模态），一次请求发给大脑。"""
+        tagged = tag_voice_text(text, speaker=self._turn_speaker)
+        note = ''
+        image_b64 = ''
+        if self.vision_loop is not None:
+            ctx = self.vision_loop.latest_context()
+            note = vision_note(ctx)
+            # 读取最新缓存帧，附在请求里让模型直接看到画面
+            try:
+                img_path = ctx.get('image_path', '')
+                if img_path and Path(img_path).exists():
+                    import base64 as _b64mod
+                    image_b64 = _b64mod.b64encode(Path(img_path).read_bytes()).decode('ascii')
+            except Exception:
+                image_b64 = ''
+        if note:
+            tagged = f"{tagged} {note}"
+        if image_b64:
+            content = [
+                {"type": "text", "text": tagged},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            ]
+            return self.brain.stream(content)
+        return self.brain.stream(tagged)
 
     def _reset_frontend(self) -> None:
         """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
@@ -1417,7 +1454,8 @@ class VoiceDaemon:
                 "audio": self.guard.info() if self.guard else None,
                 "program": program,
                 "tasks": self._panel_tasks() if self.tasks is not None else None,
-                "sleep_rehearsal": getattr(self, "sleep_rehearsal", None).snapshot() if getattr(self, "sleep_rehearsal", None) else None}
+                "sleep_rehearsal": getattr(self, "sleep_rehearsal", None).snapshot() if getattr(self, "sleep_rehearsal", None) else None,
+                "modular_main": self.brain.status() if hasattr(self.brain, "status") else {"enabled": False}}
 
     def _panel_tasks(self) -> dict:
         """面板专用任务 DTO：不把目标、worker session 或任何工具参数送进浏览器。"""
@@ -1633,6 +1671,10 @@ class VoiceDaemon:
         self.runtime.set_manual_gaming(on)
 
     def _suspend_audio(self, s: sd.Stream) -> None:
+        if self.vision_loop is not None:
+            self.vision_loop.stop()
+        if self.context_gardener is not None:
+            self.context_gardener.stop()  # 游戏态暂停眼睛循环，省 CPU 和网络
         """进入游戏态：停流、清空积压、释放 ASR（CPU 内存）、通知 TTS 服务释放显存。主循环调用。"""
         if self.watchdog is not None:
             self.watchdog.disarm()  # 停流期间没有回调是正常的
@@ -1648,7 +1690,10 @@ class VoiceDaemon:
         log.info("gaming: 音频流已停，流式 ASR 已释放；精识别按显存余量决定是否卸载 GPU 模型")
 
     def _resume_audio(self, s: sd.Stream) -> None:
-        """离开游戏态：重建 ASR/VAD 与前端状态，重开音频流，后台让 TTS 预加载。主循环调用。"""
+        if self.vision_loop is not None:
+            self.vision_loop.start()
+        if self.context_gardener is not None:
+            self.context_gardener.start()
         self.asr = StreamingASR()
         final = getattr(self, "asr_final", None)
         if final is not None:  # 已卸载的话后台让服务重新加载，加载完成前走 SenseVoice
@@ -1670,6 +1715,14 @@ class VoiceDaemon:
             return {}
 
     # ---------- 主循环 ----------
+    def _startup_compact(self):
+        """启动时整理压缩主会话历史，防止积累过多。"""
+        if self.context_gardener is not None:
+            try:
+                self.context_gardener.run_cycle()
+            except Exception:
+                pass
+
     def run(self) -> None:
         logging.getLogger().addHandler(HubLogHandler(self.hub))
         s = self.store.current
@@ -1705,6 +1758,17 @@ class VoiceDaemon:
         for t in threads:
             t.start()
         self.monitor.start()
+        if self.vision_loop is not None:
+            self.vision_loop.start()
+        if self.context_gardener is not None:
+            self.context_gardener.start()
+            # 启动时立即压缩历史
+            try:
+                import threading as _st
+                _st.Thread(target=self._startup_compact, name='startup-compact', daemon=True).start()
+                log.info('startup_compact: triggered')
+            except Exception:
+                log.exception('startup_compact: failed')
         self.sleep_rehearsal.start()
         self.audit.start()
         if self.tray_on:
@@ -1735,6 +1799,16 @@ class VoiceDaemon:
             self.program_quiet.start()  # Q1：只读前台候选状态，不抑制任何语音
             try:
                 while not self._stop_evt.is_set():
+                    # 组件看门狗：线程死了自动重启，不让功能悄悄失效
+                    if not hasattr(self, '_watchdog_at') or time.monotonic() - self._watchdog_at > 30:
+                        self._watchdog_at = time.monotonic()
+                        for name, comp in [('vision_loop', self.vision_loop), ('context_gardener', self.context_gardener)]:
+                            if comp is not None:
+                                thread = getattr(comp, '_thread', None)
+                                if thread is not None and not thread.is_alive():
+                                    comp.start()
+                                    log.warning('watchdog: restarted dead %s thread', name)
+                                    elog.emit('voice', 'watchdog.restart', f'{name} 线程死了，已自动重启')
                     time.sleep(0.5)
                     paused = self._paused.is_set()  # 本轮只读一次，防监控线程中途翻转导致误判"流死了"
                     if paused and s.active:
@@ -1799,6 +1873,10 @@ class VoiceDaemon:
         self.runtime.stop()  # 最后一次心跳，下次开机据此算离线区间
         self.program_quiet.stop()
         self.monitor.stop()
+        if self.vision_loop is not None:
+            self.vision_loop.stop()
+        if self.context_gardener is not None:
+            self.context_gardener.stop()
         self.audit.stop()
         adapter = getattr(self, '_voice_shadow_adapter', None)
         if adapter is not None:
@@ -1856,3 +1934,9 @@ if __name__ == "__main__":
 # P2-11 identify 已移到独立声纹线程与二次识别并行（_submit_identify）；前端线程仍会等两者都完成再判定，长段可能短暂阻塞打断判定，有丢帧计数日志。
 # P2-15 TTS 仍用线性插值重采样：resample_poly 需要 scipy，本次不引入新依赖。
 # P2（本期）打断阈值按 10-01 日志推算，验收时按 barge-mon 实测再定；TTS 服务端不会因客户端断开而中止合成。
+
+
+
+
+
+

@@ -10,9 +10,16 @@
       "speak",
       "launch_app",
       "get_location",
+      "get_desktop_status",
+      "environment_snapshot",
       "get_weather",
+      "camera_photo",
       "camera_ptz",
-      "camera_look"
+      "camera_look",
+      "task_start",
+      "task_status",
+      "task_cancel",
+      "task_report"
     ]
   },
   "configSchema": {

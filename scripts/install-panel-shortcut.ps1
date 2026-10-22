@@ -5,8 +5,8 @@
 # 图标用托盘同款绿色圆点，生成到 data\guanjia.ico（data/ 不进仓库；已有就不重画）。
 param(
     [string]$Desktop = [Environment]::GetFolderPath('Desktop'),
-    [string]$Repo = 'F:\coding\guanjia',
-    [string]$Python = 'F:\coding\guanjia\.venv\Scripts\python.exe'
+    [string]$Repo = 'F:\coding\guanjia-v2-development',
+    [string]$Python = 'F:\python\python.exe'
 )
 $ErrorActionPreference = 'Stop'
 $ico = Join-Path $Repo 'data\guanjia.ico'
@@ -55,3 +55,4 @@ foreach ($it in $items) {
     "shortcut=$lnk"
     "target=$($s.TargetPath) $($s.Arguments)"
 }
+

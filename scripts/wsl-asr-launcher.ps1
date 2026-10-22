@@ -23,8 +23,8 @@ param(
     [int]$IntervalSec = 30,
     [int]$StartTimeoutSec = 240,
     [int]$PollSec = 3,
-    [string]$LogPath = 'F:\coding\guanjia\tmp\asr-autostart.log',
-    [string]$ServerLog = 'F:\coding\guanjia\tmp\asr_wsl.log'
+    [string]$LogPath = 'F:\coding\guanjia-v2-development\tmp\asr-autostart.log',
+    [string]$ServerLog = 'F:\coding\guanjia-v2-development\tmp\asr_wsl.log'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -119,3 +119,5 @@ for ($i = 1; $i -le $MaxAttempts; $i++) {
 }
 Write-Log "gave up after $MaxAttempts attempts, port $Port still not listening"
 exit 1
+
+

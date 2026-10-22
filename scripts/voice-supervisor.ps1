@@ -9,10 +9,10 @@
 #   计划任务被结束（schtasks /End 只杀 wscript）：每 2 秒看一眼父进程，父进程没了就退出
 #   单实例：命名互斥量，第二个看门狗直接退出
 param(
-    [string]$Repo = 'F:\coding\guanjia',
-    [string]$Exe = 'F:\coding\guanjia\.venv\Scripts\python.exe',
-    [string]$ArgLine = '-m guanjia.voice -v --log-file F:/coding/guanjia/tmp/voice.log',
-    [string]$LogPath = 'F:\coding\guanjia\tmp\voice-supervisor.log',
+    [string]$Repo = 'F:\coding\guanjia-v2-development',
+    [string]$Exe = '',
+    [string]$ArgLine = '-m guanjia.voice -v --log-file F:/coding/guanjia-v2-development/tmp/voice.log',
+    [string]$LogPath = 'F:\coding\guanjia-v2-development\tmp\voice-supervisor.log',
     [string]$MutexName = 'Local\GuanjiaVoiceSupervisor',
     [int]$DepsTimeoutSec = 180,
     [int]$GatewayPort = 18789,
@@ -26,6 +26,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Exe)) {
+    $DevPython = Join-Path $Repo '.venv\Scripts\python.exe'
+    if (Test-Path $DevPython) {
+        $Exe = $DevPython
+    } elseif (Test-Path 'F:\python\python.exe') {
+        $Exe = 'F:\python\python.exe'
+    } else {
+        throw 'No development Python found. Refusing to use F:\coding\guanjia\.venv.'
+    }
+}
+if ($Exe -like 'F:\coding\guanjia\*') {
+    throw "Refusing to start modular main with production Python: $Exe"
+}
 $LogDir = Split-Path -Parent $LogPath
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
@@ -80,8 +93,11 @@ Set-Content -Path (Join-Path $LogDir 'voice-supervisor.pid') -Value $PID -Encodi
 $ParentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
 $ParentStart = (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue).StartTime
 $env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONPATH = (Join-Path $Repo 'src')
 $env:GUANJIA_TTS_URL = 'http://127.0.0.1:18791/tts'
 $env:GUANJIA_VOICE_MODEL = ''
+$env:GUANJIA_ROOT = 'F:\coding\guanjia-v2-development'
+$env:GUANJIA_MODULAR_MAIN_V1 = '1'
 Set-Location $Repo
 
 function Test-ParentAlive {
@@ -212,3 +228,9 @@ while ($true) {
     $backoff = [Math]::Min($backoff * 2, $BackoffMaxSec)
 }
 $mutex.ReleaseMutex()
+
+
+
+
+
+

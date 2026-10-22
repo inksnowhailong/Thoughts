@@ -212,3 +212,19 @@ class MainProgram:
         if not outcome.shadow or outcome.committed is not None or outcome.effects:
             raise ShadowCommitForbiddenError('shadow runtime produced non-shadow effects')
         return outcome
+
+
+class ProductionMainProgram:
+    """Production counterpart of MainProgram that commits real effects."""
+
+    def __init__(self, *, commit: CommitPort, repairer: object | None = None) -> None:
+        self._runtime = MainAgentRuntime(commit=commit, repairer=repairer, shadow=False)
+
+    def process_events(self, events: object) -> TurnOutcome:
+        """Commit a complete structured event batch to the production commit port."""
+        return self._runtime.process_events(events)  # type: ignore[arg-type]
+
+    def process_jsonl(self, source: str | bytes) -> TurnOutcome:
+        """Commit complete JSONL emitted by a production generator."""
+        return self._runtime.process_jsonl(source)
+

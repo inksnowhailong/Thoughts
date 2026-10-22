@@ -1,4 +1,4 @@
-import os from "node:os";
+﻿import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { startApprovalIpc } from "./src/approval-ipc";
 import { startRedactProxy } from "./src/redact";
 import { onUserTurn as habitOnUserTurn } from "./src/habits";
 import { createSpeakTool, stripVoiceTag } from "./src/speak";
-import { createCameraLookTool, createCameraPtzTool, createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
+import { createCameraLookTool, createCameraPhotoTool, createCameraPtzTool, createEnvironmentSnapshotTool, createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
 import { bindTaskApproval, decideTaskApproval, createTaskCancelTool, createTaskReportTool, createTaskStartTool, createTaskStatusTool } from "./src/tasks";
 import { recordMainWatermark } from "./src/main-watermark";
 import { captureWechatInboundIdentity, diagnoseWechatInboundContext } from "./src/wechat-inbound";
@@ -95,8 +95,10 @@ export default definePluginEntry({
     api.registerTool(createLaunchAppTool({ workspaceDir }));
     api.registerTool(createGetLocationTool({ workspaceDir }));
     api.registerTool(createGetDesktopStatusTool({ workspaceDir }));
+    api.registerTool(createEnvironmentSnapshotTool({ workspaceDir }));
     api.registerTool(createGetWeatherTool({ workspaceDir }));
     api.registerTool(createCameraPtzTool({ workspaceDir }));
+    api.registerTool(createCameraPhotoTool({ workspaceDir }));
     api.registerTool(createCameraLookTool({ workspaceDir }));
     api.registerTool(createTaskStartTool({ workspaceDir }));
     api.registerTool(createTaskStatusTool({ workspaceDir }));
@@ -131,3 +133,4 @@ export default definePluginEntry({
     });
   },
 });
+

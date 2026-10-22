@@ -35,9 +35,9 @@ param(
     [int]$VramPollSec = 10,
     [string]$VramCmd = 'nvidia-smi.exe --query-gpu=memory.free --format=csv,noheader,nounits',
     [string]$KillCmd = 'wsl.exe -d Ubuntu -- pkill -f guanjia-tts/tts_server.py',
-    [string]$LogPath = 'F:\coding\guanjia\tmp\tts-autostart.log',
-    [string]$TtsLog = 'F:\coding\guanjia\tmp\tts_wsl.log',
-    [string]$EventDir = 'F:\coding\guanjia\tmp\logs'
+    [string]$LogPath = 'F:\coding\guanjia-v2-development\tmp\tts-autostart.log',
+    [string]$TtsLog = 'F:\coding\guanjia-v2-development\tmp\tts_wsl.log',
+    [string]$EventDir = 'F:\coding\guanjia-v2-development\tmp\logs'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -256,3 +256,5 @@ while ($true) {
         Start-Sleep -Seconds $IntervalSec
     }
 }
+
+

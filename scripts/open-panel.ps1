@@ -30,5 +30,7 @@ while (((Get-Date) - $t0).TotalSeconds -lt $WaitSec) {
     if (Test-Port $Port) { Open-Url; exit 0 }
 }
 Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.MessageBox]::Show("语音进程没起来（等了 $WaitSec 秒）。可以看 F:\coding\guanjia\tmp\voice-supervisor.log 和 voice.log。", '思绪面板') | Out-Null
+[System.Windows.Forms.MessageBox]::Show("语音进程没起来（等了 $WaitSec 秒）。可以看 F:\coding\guanjia-v2-development\tmp\voice-supervisor.log 和 voice.log。", '思绪面板') | Out-Null
 exit 1
+
+

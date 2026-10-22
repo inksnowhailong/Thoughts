@@ -1,4 +1,4 @@
-import path from "node:path";
+﻿import path from "node:path";
 import { execFile } from "node:child_process";
 
 /**
@@ -241,10 +241,11 @@ export function createCameraPtzTool(opts: PsToolOptions) {
     async execute(_toolCallId: string, params: { direction?: unknown; duration_sec?: unknown }) {
       const dir = typeof params?.direction === "string" ? params.direction.trim().toLowerCase() : "";
       const dur = typeof params?.duration_sec === "number" && Number.isFinite(params.duration_sec) ? String(params.duration_sec) : "0.45";
-      const script = path.join(opts.workspaceDir, "tools", "camera-tool.py");
+      const projectRoot = process.env.GUANJIA_PROJECT_ROOT || "F:\\coding\\guanjia-v2-development";
+      const script = path.join(projectRoot, "openclaw", "workspace", "tools", "camera-tool.py");
       const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
         execFile(
-          "F:\\coding\\guanjia\\.venv\\Scripts\\python.exe",
+          process.env.GUANJIA_PYTHON || "F:\\coding\\guanjia-v2-development\\.venv\\Scripts\\python.exe",
           ["-X", "utf8", script, "ptz", dir, dur],
           { windowsHide: true, timeout: CAMERA_TIMEOUT_MS, encoding: "utf8" },
           (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
@@ -288,10 +289,11 @@ export function createCameraLookTool(opts: PsToolOptions) {
       const q = typeof params?.question === "string" && params.question.trim() ? params.question.trim() : "看看现在画面里有什么";
       const dir = typeof params?.direction === "string" ? params.direction.trim().toLowerCase() : "";
       const dur = typeof params?.duration_sec === "number" && Number.isFinite(params.duration_sec) ? String(params.duration_sec) : "0.8";
-      const script = path.join(opts.workspaceDir, "tools", "camera-tool.py");
+      const projectRoot = process.env.GUANJIA_PROJECT_ROOT || "F:\\coding\\guanjia-v2-development";
+      const script = path.join(projectRoot, "openclaw", "workspace", "tools", "camera-tool.py");
       const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
         execFile(
-          "F:\\coding\\guanjia\\.venv\\Scripts\\python.exe",
+          process.env.GUANJIA_PYTHON || "F:\\coding\\guanjia-v2-development\\.venv\\Scripts\\python.exe",
           ["-X", "utf8", script, "look", q, dir, dur],
           { windowsHide: true, timeout: CAMERA_TIMEOUT_MS, encoding: "utf8" },
           (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
@@ -300,6 +302,113 @@ export function createCameraLookTool(opts: PsToolOptions) {
       const r = lastJson(out.stdout);
       if (!r?.ok) return textResult(`没能看到摄像头画面：${r?.error ?? "未知错误"}`, { ok: false, error: r?.error ?? "failed" });
       return textResult(`${r.moved ?? ""}${r.description}`, r);
+    },
+  };
+}
+
+
+
+
+
+export function createEnvironmentSnapshotTool(opts: PsToolOptions) {
+  const runPs = opts.runPs ?? defaultRunPs;
+  const projectRoot = process.env.GUANJIA_PROJECT_ROOT || "F:\\coding\\guanjia-v2-development";
+  const script = path.join(projectRoot, "openclaw", "workspace", "tools", "environment-snapshot.ps1");
+  const defaults = ["activity", "tasks", "weather", "calendar", "vision"];
+  return {
+    name: "environment_snapshot",
+    label: "Get useful environment snapshot",
+    catalogMode: DIRECT_ONLY,
+    description:
+      "Return a single read-only snapshot of useful current context. By default includes foreground app/title, " +
+      "gaming/media state, recent tasks, current time, Beijing Chaoyang weather, festivals, and latest vision state. " +
+      "Use sections to request only selected categories. Machine resource details are excluded unless include_system=true.",
+    parameters: {
+      type: "object",
+      properties: {
+        sections: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["activity", "tasks", "weather", "calendar", "vision", "services", "system"],
+          },
+          description: "Categories to return. Omit for all useful default categories.",
+        },
+        include_system: {
+          type: "boolean",
+          description: "Also return memory, disk, and GPU usage. Usually unnecessary.",
+        },
+      },
+      additionalProperties: false,
+    },
+    async execute(
+      _toolCallId: string,
+      params: { sections?: unknown; include_system?: unknown },
+    ) {
+      const sections = Array.isArray(params?.sections)
+        ? params.sections.filter((item): item is string => typeof item === "string")
+        : defaults;
+      const args = ["-Sections", sections.join(",")];
+      if (params?.include_system === true) args.push("-IncludeSystem");
+      const { stdout, code } = await runPs(script, args, 8_000);
+      const result = lastJson(stdout);
+      if (!result?.ok) {
+        return textResult("未能读取当前环境快照。", {
+          ok: false,
+          code,
+          error: result?.error ?? "no_output",
+        });
+      }
+      const activity = result.activity;
+      const foreground = activity?.foreground;
+      const summary = [
+        foreground?.process ? `前台 ${foreground.process}${foreground.title ? `《${foreground.title}》` : ""}` : "",
+        activity?.gaming ? "正在游戏" : "",
+        activity?.watching_media ? "正在观看影音" : "",
+        result.weather?.ok ? `${result.weather.place} ${result.weather.temperature_c}℃` : "",
+        result.calendar?.special ? result.calendar.festivals.join("、") : "",
+        result.vision?.summary ?? "",
+      ].filter(Boolean).join("；");
+      return textResult(summary || "已读取当前环境。", result);
+    },
+  };
+}
+
+export function createCameraPhotoTool(opts: PsToolOptions) {
+  const runPs = opts.runPs ?? defaultRunPs;
+  const projectRoot = process.env.GUANJIA_PROJECT_ROOT || "F:\\coding\\guanjia-v2-development";
+  const script = path.join(projectRoot, "openclaw", "workspace", "tools", "camera-tool.py");
+  const python = process.env.GUANJIA_PYTHON || path.join(projectRoot, ".venv", "Scripts", "python.exe");
+  return {
+    name: "camera_photo",
+    label: "Take photo for owner",
+    catalogMode: DIRECT_ONLY,
+    description:
+      "Capture a photo from the home camera (optionally turning first) and save it. " +
+      "Use when the owner says '拍张照/拍一下家里/看看家里什么样/发张照片/拍给我看'. " +
+      "Photo is saved to data/vision/photos/ and can be viewed on panel or sent to WeChat.",
+    parameters: {
+      type: "object",
+      properties: {
+        direction: { type: "string", enum: ["left", "right", "up", "down", ""], description: "先转方向（留空=不转直接拍）" },
+        duration_sec: { type: "number", description: "转动秒数 0.1~2.5，默认0.8" },
+        caption: { type: "string", description: "照片说明" },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: { direction?: unknown; duration_sec?: unknown; caption?: unknown }) {
+      const dir = typeof params?.direction === "string" ? params.direction.trim().toLowerCase() : "";
+      const dur = typeof params?.duration_sec === "number" ? String(params.duration_sec) : "0.8";
+      const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
+        execFile(python, ["-X", "utf8", script, "photo", dir, dur],
+          { windowsHide: true, timeout: CAMERA_TIMEOUT_MS, encoding: "utf8" },
+          (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
+        );
+      });
+      const r = lastJson(out.stdout);
+      if (!r?.ok) return textResult(`拍照失败：${r?.error ?? "未知错误"}`, { ok: false, code: out.code });
+      const sizeKb = Math.round((r.size || 0) / 1024);
+      return textResult(`已拍下照片（${sizeKb}KB），主人可以在面板上查看。${typeof params?.caption === "string" ? " 说明：" + params.caption : ""}`, r);
     },
   };
 }

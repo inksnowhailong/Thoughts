@@ -33,7 +33,7 @@ if (-not $hit) {
     # 回退只索引同一份 apps.json：不会把开始菜单/注册表里的任意程序变成可启动目标。
     # 部署位置是 workspace\tools，不能从脚本目录反推项目根；只接受受控的项目根。
     $projectRoot = $null
-    foreach ($candidate in @($env:GUANJIA_PROJECT_ROOT, 'F:\coding\guanjia')) {
+    foreach ($candidate in @($env:GUANJIA_PROJECT_ROOT, 'F:\coding\guanjia-v2-development')) {
         if (-not $candidate) { continue }
         $root = $candidate.TrimEnd('\', '/')
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
@@ -98,3 +98,4 @@ if (-not $verified) {
 }
 
 Out-Result @{ ok = $true; app = $hit.Name; target = $target; verified = $true } 0
+

@@ -48,8 +48,10 @@
     "secrets": "L2",
     "terminal": "L2",
     "get_desktop_status": "L0",
+    "environment_snapshot": "L0",
     "camera_look": "L0",
-    "camera_ptz": "L1"
+    "camera_ptz": "L1",
+    "camera_photo": "L0"
   },
   "rules": [
     {

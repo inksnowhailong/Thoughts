@@ -117,10 +117,15 @@ class CameraPtzPort(Protocol):
 class LocalCameraPtzAdapter:
     """Thread-safe local PTZ adapter that enforces auto-stop and forbids cloud PTZ."""
 
-    def __init__(self, driver: LocalPtzDriver) -> None:
+    def __init__(self, driver: LocalPtzDriver, position_path: str | Path | None = None) -> None:
         assert_local_ptz_endpoint(driver.endpoint)
         self._driver = driver
         self._lock = RLock()
+        self._position_path = Path(position_path or os.environ.get(
+            'GUANJIA_POSITION_PATH',
+            str(Path(os.environ.get(
+                'GUANJIA_VISION_ROOT', r'F:\coding\guanjia-v2-development\data\vision')) / 'position.json'),
+        ))
 
     def move(
         self,
@@ -138,12 +143,63 @@ class LocalCameraPtzAdapter:
             finally:
                 if auto_stop:
                     self._driver.send_stop()
+        if auto_stop:
+            self._estimate_position(horizontal, vertical, duration)
         return cmd
 
     def stop(self) -> None:
         assert_local_ptz_endpoint(self._driver.endpoint)
         with self._lock:
             self._driver.send_stop()
+
+    @property
+    def position(self) -> dict[str, object]:
+        """Current software position estimate shared with the vision loop."""
+        state = self._load_position()
+        return {'pan': float(state.get('pan') or 0.0), 'tilt': float(state.get('tilt') or 0.0),
+                'calibrated': bool(state.get('calibrated'))}
+
+    def set_travel(self, travel_sec: float) -> None:
+        """Record the measured full-range travel time (speed 0.6) after calibration."""
+        with self._lock:
+            state = self._load_position()
+            state['travel_sec'] = float(travel_sec)
+            state['calibrated'] = True
+            self._save_position(state)
+
+    def set_position(self, *, pan: float | None = None, tilt: float | None = None) -> None:
+        """Re-anchor the absolute position estimate (used right after calibration)."""
+        with self._lock:
+            state = self._load_position()
+            if pan is not None:
+                state['pan'] = float(pan)
+            if tilt is not None:
+                state['tilt'] = float(tilt)
+            self._save_position(state)
+
+    def _estimate_position(self, horizontal: float, vertical: float, duration: float) -> None:
+        """Accumulate normalized [-1, 1] pan/tilt from a completed move."""
+        with self._lock:
+            state = self._load_position()
+            travel = max(1.0, float(state.get('travel_sec') or 12.0))
+            state['pan'] = max(-1.0, min(1.0, float(state.get('pan') or 0.0)
+                                + duration * horizontal / (0.6 * travel)))
+            state['tilt'] = max(-1.0, min(1.0, float(state.get('tilt') or 0.0)
+                                  + duration * vertical / (0.6 * travel)))
+            self._save_position(state)
+
+    def _load_position(self) -> dict[str, object]:
+        try:
+            return json.loads(self._position_path.read_text(encoding='utf-8'))
+        except Exception:
+            return {'pan': 0.0, 'tilt': 0.0, 'travel_sec': 12.0, 'calibrated': False}
+
+    def _save_position(self, state: dict[str, object]) -> None:
+        state['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+        self._position_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._position_path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+        temporary.replace(self._position_path)
 
     def locate(self) -> PtzPose:
         assert_local_ptz_endpoint(self._driver.endpoint)

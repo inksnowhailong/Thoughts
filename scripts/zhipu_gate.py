@@ -1,4 +1,4 @@
-"""智谱网关保险丝：夹在 OpenClaw 和智谱官方接口之间的本地转发（只转发，不存密钥，密钥由 OpenClaw 的 SecretRef 随请求头带来）。
+﻿"""智谱网关保险丝：夹在 OpenClaw 和智谱官方接口之间的本地转发（只转发，不存密钥，密钥由 OpenClaw 的 SecretRef 随请求头带来）。
 
 为什么要有它：OpenClaw 对 429（限流/过载）、5xx、网络不通 这三类错误会先在原模型上重试（限流最多 10 次约 130 秒，
 网络不通约 64 秒），之后才切备用，语音场景等不起。保险丝在"还没往回写任何字节"之前就判断上游是否可用，
@@ -27,7 +27,7 @@ PORT = int(os.environ.get("GATE_PORT", "18793"))
 UPSTREAM = os.environ.get("GATE_UPSTREAM", "https://open.bigmodel.cn").rstrip("/")
 FIRSTBYTE = float(os.environ.get("GATE_FIRSTBYTE", "25"))
 BREAKER = float(os.environ.get("GATE_BREAKER", "20"))
-LOG = pathlib.Path(os.environ.get("GATE_LOG", r"F:\coding\guanjia\tmp\zhipu_gate.log"))
+LOG = pathlib.Path(os.environ.get("GATE_LOG", r"F:\coding\guanjia-v2-development\tmp\zhipu_gate.log"))
 client = httpx.Client(timeout=httpx.Timeout(connect=3.0, read=FIRSTBYTE, write=10.0, pool=5.0), trust_env=False)
 _open_until = 0.0
 _lock = threading.Lock()
@@ -130,3 +130,5 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     log(f"start port={PORT} upstream={UPSTREAM} firstbyte={FIRSTBYTE}s breaker={BREAKER}s")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+
+
