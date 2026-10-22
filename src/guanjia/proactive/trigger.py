@@ -189,11 +189,11 @@ class ProactiveTrigger:
         # 6) 生成（D 最小版；身份置信不足时不带称呼——QC-5）
         address_rule = (
             '称呼对方为"{}"。'.format(presence_text)
-            if self._identity.should_address_by_name() and presence_text not in ('未知', '主人') else ''
+            if self._identity.should_address_by_name() and presence_text not in ('未知',) else ''
         )
-        # 主人是发起人自称"你"即可，不喊"主人"
-        if presence_text == '主人' and self._identity.should_address_by_name():
-            address_rule = '对男主人说话，用"你"称呼。'
+        # 发起人要求称"先生"；对先生用"你"自然相称即可，不必每句都喊称呼
+        if presence_text == '先生' and self._identity.should_address_by_name():
+            address_rule = '对先生说话，自然称呼即可。'
         # 混合时序（裁决 7）：优先当日预设（时间轴预热，沿时刻只填动态位）；箱空现想
         preset = None
         if self._timeline is not None:

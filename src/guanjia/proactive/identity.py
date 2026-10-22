@@ -31,8 +31,11 @@ from guanjia.proactive.config import ProactiveConfig
 
 _IDENTITY_SESSION = 'agent:main:identity'
 _GATEWAY_URL = 'http://127.0.0.1:18789/v1/chat/completions'
-# 两口人映射（#F15 一男一女）：性别视觉 → 候选身份；声纹/对话纠正可覆盖
-_GENDER_TO_WHO = {'男': '主人', '女': '女主人'}
+# 两口人映射（#F15 一男一女）：性别视觉 → 候选身份；声纹/对话纠正可覆盖。
+# 称呼按发起人要求：男主人称"先生"、女主人称"大小姐"。
+_GENDER_TO_WHO = {'男': '先生', '女': '大小姐'}
+# 声纹库注册名 → 称呼标准化（confirm 两条通道统一过这个口，与视觉映射对齐）
+_VOICE_LABEL_ALIASES = {'主人': '先生', '女主人': '大小姐', '先生': '先生', '大小姐': '大小姐'}
 
 _PROMPT = (
     '看这张家庭监控画面。画面里的人是男性还是女性？'
@@ -83,6 +86,7 @@ class IdentityTracker:
 
     def confirm_by_voice(self, speaker: str) -> None:
         """声纹通道：说话人标签回写在场身份（声纹比视觉可靠，开口即修正）。"""
+        speaker = _VOICE_LABEL_ALIASES.get(speaker, speaker)  # 声纹注册名 → 称呼标准化
         if not speaker or speaker in ('未知', ''):
             return
         with self._lock:
