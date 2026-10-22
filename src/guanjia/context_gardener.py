@@ -146,12 +146,17 @@ class ContextGardener:
             # compact 只会白白打断一次前缀缓存——整个周期跳过。
             # 水位线不推进：这点增量留到下次凑够一起处理，不丢消息。
             if len(transcript) < self.config.min_messages:
+                # 视觉习惯提取（E 组件，QC-10）：纯本地统计零 token 成本，
+                # 不依赖对话增量——低活动周期照常学习。
+                habits = self._learn_vision_habits()
                 report = {
                     'ok': True,
                     'ts': datetime.now(_TZ).isoformat(timespec='seconds'),
                     'skipped': 'low_activity',
                     'messages': len(transcript),
                 }
+                if habits:
+                    report['vision_habits_learned'] = habits
                 self._note(report)
                 return report
             self._last_cycle_at = time.time()
@@ -171,6 +176,9 @@ class ContextGardener:
             pruned = self._prune_tool_results()
             if pruned:
                 report['tool_results_pruned'] = pruned
+            habits = self._learn_vision_habits()
+            if habits:
+                report['vision_habits_learned'] = habits
             self._save_watermark()
             compact = self._compact_main_session()
             report['compact'] = compact
@@ -306,6 +314,19 @@ class ContextGardener:
             return payload
         except Exception as exc:  # noqa: BLE001
             return {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}
+
+    def _learn_vision_habits(self) -> int:
+        """园丁安静窗口的视觉习惯提取（E 组件三传感器之一，QC-10 席位代裁定稿）。
+
+        从 vision_loop 的 frames 时序表统计人出现/消失的时段分布，upsert 进习惯库；
+        纯本地 sqlite 统计，零 token 成本。执行前提（时序落库）已在视觉地基批完成。
+        """
+        try:
+            from guanjia.proactive.habits import HabitStore, extract_vision_habits
+            store = HabitStore(_GARDEN_ROOT.parent / 'habits.sqlite')
+            return extract_vision_habits(_GARDEN_ROOT.parent / 'vision' / 'vision.sqlite', store)
+        except Exception:
+            return 0
 
     def _load_watermark(self):
         try:
