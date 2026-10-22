@@ -181,6 +181,7 @@ class VisionLoop:
         self._baseline_reset = False               # 转动后首帧 change_score 置零（自转排除）
         self._leave_deep_until: float = 0.0        # 离开沿后 N 分钟深度降级窗
         self._track_cooldown_until: float = 0.0   # 跟转切换迟滞（防摆动）
+        self.on_edge: object | None = None        # 沿回调钩子：fn(record, edge) edge∈{entered,left}——A 身份感知接线用
         self._init_db()
 
     def _init_ptz(self) -> LocalCameraPtzAdapter | None:
@@ -289,6 +290,12 @@ class VisionLoop:
         self._record(record)
         self._write_json(self.latest_path, record)
         self._prune(now)
+        # ---- 沿事件分发（record 就绪后）：A 身份感知等主动环消费者接线用 ----
+        if (person_entered or person_left) and callable(self.on_edge):
+            try:
+                self.on_edge(record, 'entered' if person_entered else 'left')
+            except Exception:
+                pass  # 沿回调失败绝不拖垮视觉循环
         # ---- 本地跟转（patrol 模式、非夜间、人在边缘）+ 待命朝向保持 ----
         self._steer(detected, box_norm, night, now_local)
         return record

@@ -5,6 +5,7 @@
 """
 
 from guanjia.proactive.config import ProactiveConfig
+from guanjia.proactive.identity import IdentityTracker
 from guanjia.proactive.privacy import PrivacyDownscaler
 
-__all__ = ['ProactiveConfig', 'PrivacyDownscaler']
+__all__ = ['IdentityTracker', 'ProactiveConfig', 'PrivacyDownscaler']
