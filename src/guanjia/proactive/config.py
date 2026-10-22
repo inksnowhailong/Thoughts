@@ -37,8 +37,10 @@ _DEFAULTS: dict[str, object] = {
     'review_minimum_score': 0.35,      # 评分门控阈值（预算闸）
     'review_urgent_threshold': 0.9,
     'review_max_per_hour': 10,          # 独立限流（SX-12/JG-19）
-    'expression_daily_budget': 3,       # 说话预算（F，JG-10）
-    'topic_cooldown_sec': 3600,         # 话题冷却（防重复说）
+    'expression_daily_budget': 8,       # 日总防爆值（V12b：不挤正常密度，只防话痨爆发）
+    'speak_window_sec': 21600,           # 开口防爆窗：6 小时（V12b）
+    'speak_window_capacity': 4,         # 窗口内最多 4 次（防爆，非配额）
+    'topic_cooldown_sec': 3600,         # 细话题冷却（防同一件事重复说）
     'conversation_quiet_min': 5,        # 对话进行中静默窗（QC-22）
     'identity_ttl_min': 10,             # 在场身份缓存 TTL（QC-30）
     'identity_confidence_threshold': 0.55,  # 带称呼开口门控（QC-5）

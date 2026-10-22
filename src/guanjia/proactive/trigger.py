@@ -79,13 +79,14 @@ class ProactiveTrigger:
             review_interval_seconds=1,  # 沿直达评审：不做周期节流（QC-2）
         )
         self._expression_policy = ExpressionPolicy(
-            daily_budget=int(self._config.num('expression_daily_budget', 3)),
+            daily_budget=int(self._config.num('expression_daily_budget', 8)),  # 防爆值不是配额（V12b）
             topic_cooldown_seconds=int(self._config.num('topic_cooldown_sec', 3600)),
             minimum_score=self._config.num('review_minimum_score', 0.35),
         )
         self._state = SelfLoopState()
         self._lock = threading.Lock()
         self._review_times: list[float] = []          # 独立限流（每小时上限）
+        self._expression_times: list[float] = []      # 开口时刻（滑动窗口预算）
         self._last_voice_activity: float = 0.0         # 对话进行中静默（QC-22）
         self._mute_until: float = 0.0                  # 住户急停静默窗（YH-8）
         self._busy = False                             # 同一时刻只跑一条管线
@@ -170,10 +171,17 @@ class ProactiveTrigger:
         if not self._acquire_review_slot():
             self._log({'ok': True, 'stage': 'rate_limit', 'edge': edge})
             return
-        # 3.5) 表达预算/话题冷却预检（V11）：预算耗尽或冷却中时，评审调用是纯浪费
-        # （评审之后反正会被 ExpressionPolicy 拦）——提前用内存态拦下，零 token 成本。
-        # entered 沿共用同一 topic（vision_entered）：第一次成功开口后 1 小时内
-        # 的后续 entered 沿都在这里拦掉，评审调用量大幅下降。
+        # 3.5) 开口防爆窗（V12b）：宽松滑动窗口 + 日总——只防"真话痨爆发"，
+        # 不挤正常密度（早晨流程各事件独立成话题，由细 topic 冷却管重复）。
+        now_mono = time.monotonic()
+        window_sec = self._config.num('speak_window_sec', 6 * 3600)
+        window_cap = int(self._config.num('speak_window_capacity', 4))
+        with self._lock:
+            self._expression_times = [t for t in self._expression_times if now_mono - t < window_sec]
+            if len(self._expression_times) >= window_cap:
+                self._log({'ok': True, 'stage': 'window_budget', 'edge': edge})
+                return
+        # 日总兜底（ExpressionPolicy 的 daily_budget，防真话痨；额度放到宽裕值）
         if self._state.expressions_today(now) >= self._expression_policy.daily_budget:
             self._log({'ok': True, 'stage': 'budget_precheck', 'edge': edge})
             return
@@ -189,7 +197,15 @@ class ProactiveTrigger:
             self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
                        'reason': str((parsed or {}).get('reason') or 'no_json')[:80]})
             return
-        # 5) 表达边界（F）：预算/冷却/游戏态/对话中静默
+        # 4.5) 话题细化（V12b，发起人指出"早晨流程密集且每件事各有价值"）：
+        # 粗 topic（vision_entered）会让早晨三件不同的事互相挤兑冷却；
+        # 评审给出的 what_hint 才是话题本体——"带鸡蛋提醒"和"天气提醒"是两个话题，
+        # 各自能说；真正的烦人是"同一件事重复说"，由细 topic 的 1 小时冷却掐住。
+        hint = re.sub(r'\s+', '', str(parsed.get('what_hint') or ''))[:16]
+        fine_topic = f'{edge}:{hint}' if hint else candidate.topic
+        from dataclasses import replace as _dc_replace
+        candidate = _dc_replace(candidate, topic=fine_topic)
+        # 5) 表达边界（F）：细 topic 冷却 / 窗口与日总防爆 / 游戏态 / 对话中静默
         decision = self._expression_policy.decide(
             candidate, self._state, now, gaming=getattr(self, '_gaming', False),
             do_not_disturb=self._voice_silence_active())
@@ -229,10 +245,13 @@ class ProactiveTrigger:
             self._log({'ok': True, 'stage': 'dropped_left', 'edge': edge,
                        'note': '人已离开，在途话语作废'})
             return
-        # 8) 投递 + 记账
+        # 8) 投递 + 记账（细 topic 冷却 + 窗口/日总防爆双账本）
         delivered = self._speak(text)
         self._state.record_expression(candidate, datetime.now(timezone.utc))
+        with self._lock:
+            self._expression_times.append(time.monotonic())
         self._log({'ok': True, 'stage': 'delivered', 'edge': edge, 'text': text,
+                   'topic': fine_topic,
                    'delivered': bool(delivered), 'score': round(decision.score, 3)})
 
     # ---------- 内部 ----------
