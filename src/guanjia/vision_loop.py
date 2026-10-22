@@ -182,6 +182,7 @@ class VisionLoop:
         self._leave_deep_until: float = 0.0        # 离开沿后 N 分钟深度降级窗
         self._track_cooldown_until: float = 0.0   # 跟转切换迟滞（防摆动）
         self.on_edge: object | None = None        # 沿回调钩子：fn(record, edge) edge∈{entered,left}——A 身份感知接线用
+        self.on_tick: object | None = None        # 每帧轻回调：fn(record)——在场身份 TTL 续期（V3）用；回调必须无阻塞
         self._init_db()
 
     def _init_ptz(self) -> LocalCameraPtzAdapter | None:
@@ -296,6 +297,12 @@ class VisionLoop:
                 self.on_edge(record, 'entered' if person_entered else 'left')
             except Exception:
                 pass  # 沿回调失败绝不拖垮视觉循环
+        # ---- 每帧轻 tick（V3）：在场身份 TTL 续期等无阻塞消费者 ----
+        if callable(self.on_tick):
+            try:
+                self.on_tick(record)
+            except Exception:
+                pass  # tick 失败绝不拖垮视觉循环
         # ---- 本地跟转（patrol 模式、非夜间、人在边缘）+ 待命朝向保持 ----
         self._steer(detected, box_norm, night, now_local)
         return record
@@ -438,8 +445,10 @@ class VisionLoop:
                 self._person_present = False
         entered = self._person_present and not previous
         left = (not self._person_present) and previous
-        if left and self.mode == 'standby':
-            # 待命期看到人（离开沿）：夜间保持静默由 night 判定兜住，白天回巡逻
+        if entered and self.mode == 'standby':
+            # V7b 修复：待命期看到人出现（=人从卧室出来走进画面）→ 回巡逻跟转。
+            # 原实现错挂在 left 沿上（待命期画面本来就无人，left 永不触发，
+            # 待命只能靠 120 分钟超时解除）。
             self.release_standby()
         return entered, left
 

@@ -491,6 +491,7 @@ class VoiceDaemon:
                     timeline=self.timeline,
                 )
                 self.vision_loop.on_edge = self._on_vision_edge
+                self.vision_loop.on_tick = self._on_vision_tick
             except Exception:
                 log.exception('proactive ring unavailable; voice runs without proactive utterances')
         self.context_gardener = None
@@ -916,11 +917,36 @@ class VoiceDaemon:
                 self.identity.on_edge(record, edge)
         except Exception:
             pass
+        # 卧室待命信号源（V7 修复，发起人裁决 9）：人离开画面且已校准卧室朝向时
+        # 进待命——镜头朝卧室门口等离开沿，期间不说不跟（本地规则）；
+        # 保守设计：出门场景同样进待命，120 分钟无离开沿自动超时回巡逻（无害），
+        # 夜间静默由 trigger 的夜间闸兜住。
+        if edge == 'left' and self.vision_loop is not None:
+            try:
+                target = self.vision_loop._proactive.opt_num('bedroom_standby_pan')
+                if target is not None:
+                    self.vision_loop.request_standby(target)
+                    log.info('vision: 人离开画面，进卧室待命（pan=%.2f）', target)
+            except Exception:
+                pass
         if self.quiet():
             return  # 游戏中或开机/游戏后静默期：不主动开口（F 边界）
         try:
             if self.trigger is not None:
                 self.trigger.on_edge(record, edge)
+        except Exception:
+            pass
+
+    def _on_vision_tick(self, record: dict) -> None:
+        """每帧轻 tick（V3 修复）：画面里仍有人 → 在场身份 TTL 续期。
+
+        TTL 本意防"盲区的人其实走了"（QC-30），没有本 tick 时任何常驻在场的人
+        10 分钟后身份都会过期（无新沿无续期）——开口永远不带称呼。
+        presence(refresh_seen=True) 只更新内存时间戳，不写盘，无阻塞。
+        """
+        try:
+            if self.identity is not None and record.get('person_present'):
+                self.identity.presence(refresh_seen=True)
         except Exception:
             pass
 

@@ -26,7 +26,7 @@ from typing import Callable
 import httpx
 
 from guanjia.brain import load_gateway_token
-from guanjia.proactive.config import ProactiveConfig
+from guanjia.proactive.config import ProactiveConfig, is_night_hour
 from guanjia.proactive.identity import IdentityTracker
 from guanjia.self_loop.contracts import SelfLoopCandidate
 from guanjia.self_loop.policy import ExpressionPolicy, ReviewPolicy
@@ -138,6 +138,11 @@ class ProactiveTrigger:
         if time.monotonic() < self._mute_until:
             self._log({'ok': True, 'stage': 'muted', 'edge': edge})
             return
+        # 夜间静默（发起人裁决 9b，V1 修复）：夜里出来上厕所也不说话——本地时钟判定，
+        # 不进模型评审（评审 prompt 不知道深夜，不能依赖它自觉）
+        if is_night_hour(datetime.now().hour, self._config.night_start_hour, self._config.night_end_hour):
+            self._log({'ok': True, 'stage': 'night_suppressed', 'edge': edge})
+            return
         now = datetime.now(timezone.utc)
         who = self._identity.presence()
         presence_text = str((who or {}).get('who') or '未知')
@@ -222,6 +227,15 @@ class ProactiveTrigger:
     # ---------- 内部 ----------
 
     def _enabled(self) -> bool:
+        """全局开关热重读（V4 修复）：每次沿事件重读 proactive.json——改文件立即生效。
+
+        关停语义（JG-8/QC-17）：enabled=false 在 on_edge 入口拦下，
+        评审/生成完全不发生，关停不烧额度；无需重启进程。
+        """
+        try:
+            self._config = ProactiveConfig(path=self._config.path)
+        except Exception:
+            pass
         return bool(self._config.values.get('proactive_enabled', True))
 
     def _acquire_review_slot(self) -> bool:

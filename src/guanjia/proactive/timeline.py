@@ -92,7 +92,10 @@ class Timeline:
         for item in box:
             if str(item.get('date')) != today:
                 continue
-            if str(item.get('who') or '') not in ('', who):
+            box_who = str(item.get('who') or '')
+            # V2 修复：习惯提取写的是泛化名"家人"，匹配任何在场身份；
+            # 只有明确的个人名（主人/女主人）才做精确匹配
+            if box_who not in ('', who) and box_who not in ('家人', '任意'):
                 continue
             try:
                 if abs(int(item.get('hour', -1)) - hour) <= int(
@@ -113,8 +116,10 @@ class Timeline:
     # ---------- 预热 ----------
 
     def _warm(self, habit: dict[str, object]) -> None:
+        # V5 修复：去重带日期——进程常驻时第二天同时段重新预热
         key = str(habit.get('key') or '')
-        if not key or key in self._warmed_keys:
+        warm_key = f"{datetime.now().strftime('%Y-%m-%d')}:{key}"
+        if not key or warm_key in self._warmed_keys:
             return
         fact = str(habit.get('fact') or '').strip()
         if not fact:
@@ -133,9 +138,14 @@ class Timeline:
             'warmed_at': datetime.now().isoformat(timespec='seconds'),
         })
         self._save_box(box)
-        self._warmed_keys.add(key)
+        self._warmed_keys.add(warm_key)
 
     def _enabled(self) -> bool:
+        """全局开关热重读（V4 修复）：预热线程每次检查重读 proactive.json。"""
+        try:
+            self._config = ProactiveConfig(path=self._config.path)
+        except Exception:
+            pass
         return bool(self._config.values.get('proactive_enabled', True))
 
     def _load_box(self) -> list[dict[str, object]]:
