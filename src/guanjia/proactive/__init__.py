@@ -5,8 +5,11 @@
 """
 
 from guanjia.proactive.config import ProactiveConfig
+from guanjia.proactive.habits import HabitStore, extract_vision_habits
 from guanjia.proactive.identity import IdentityTracker
 from guanjia.proactive.privacy import PrivacyDownscaler
+from guanjia.proactive.timeline import Timeline
 from guanjia.proactive.trigger import ProactiveTrigger
 
-__all__ = ['IdentityTracker', 'PrivacyDownscaler', 'ProactiveConfig', 'ProactiveTrigger']
+__all__ = ['HabitStore', 'IdentityTracker', 'PrivacyDownscaler', 'ProactiveConfig',
+           'ProactiveTrigger', 'Timeline', 'extract_vision_habits']

@@ -62,10 +62,12 @@ class ProactiveTrigger:
         identity: IdentityTracker | None = None,
         speak: Callable[[str], bool] | None = None,
         log_path: Path | None = None,
+        timeline: object | None = None,
     ) -> None:
         self._config = config or ProactiveConfig()
         self._identity = identity or IdentityTracker(self._config)
         self._speak = speak or self._default_speak
+        self._timeline = timeline
         self._token = load_gateway_token()
         self._log_path = log_path or (
             Path(str(self._config.path)).parent / 'proactive-log.jsonl'
@@ -178,10 +180,21 @@ class ProactiveTrigger:
         # 主人是发起人自称"你"即可，不喊"主人"
         if presence_text == '主人' and self._identity.should_address_by_name():
             address_rule = '对男主人说话，用"你"称呼。'
-        message = self._ask_gateway(_GENERATE_PROMPT.format(
-            event=event, who=presence_text, local_time=local_time,
-            hint=str(parsed.get('what_hint') or '')[:60], address_rule=address_rule))
-        text = (message or '').strip()
+        # 混合时序（裁决 7）：优先当日预设（时间轴预热，沿时刻只填动态位）；箱空现想
+        preset = None
+        if self._timeline is not None:
+            try:
+                preset = self._timeline.preset_for(presence_text, datetime.now().hour)
+            except Exception:
+                preset = None
+        if preset:
+            text = preset  # 预热生成时已约束 30 字/两句规格
+            self._log({'ok': True, 'stage': 'preset_hit', 'edge': edge})
+        else:
+            message = self._ask_gateway(_GENERATE_PROMPT.format(
+                event=event, who=presence_text, local_time=local_time,
+                hint=str(parsed.get('what_hint') or '')[:60], address_rule=address_rule))
+            text = (message or '').strip()
         if not text:
             self._log({'ok': False, 'stage': 'generate_empty', 'edge': edge})
             return
