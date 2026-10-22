@@ -87,6 +87,7 @@ class ProactiveTrigger:
         self._lock = threading.Lock()
         self._review_times: list[float] = []          # 独立限流（每小时上限）
         self._last_voice_activity: float = 0.0         # 对话进行中静默（QC-22）
+        self._mute_until: float = 0.0                  # 住户急停静默窗（YH-8）
         self._busy = False                             # 同一时刻只跑一条管线
         self._gaming: bool = False                     # 游戏态压制输入（voice.py 接线）
 
@@ -104,6 +105,10 @@ class ProactiveTrigger:
     def note_voice_activity(self) -> None:
         """voice.py 每轮对话调用：对话进行中静默窗（QC-22）计时起点。"""
         self._last_voice_activity = time.monotonic()
+
+    def emergency_mute(self, minutes: float = 30.0) -> None:
+        """住户急停（YH-8）：本地确定性命令，不经大模型；拉长表达静默窗。"""
+        self._mute_until = time.monotonic() + minutes * 60.0
 
     def set_gaming(self, gaming: bool) -> None:
         """游戏态输入（ExpressionPolicy 原生支持 gaming 压制）。"""
@@ -129,6 +134,10 @@ class ProactiveTrigger:
         threading.Thread(target=runner, name='proactive-pipeline', daemon=True).start()
 
     def _pipeline(self, record: dict[str, object], edge: str) -> None:
+        # 住户急停静默窗（YH-8）：mute 期内一切主动开口管线直接丢弃（本地判定，不经模型）
+        if time.monotonic() < self._mute_until:
+            self._log({'ok': True, 'stage': 'muted', 'edge': edge})
+            return
         now = datetime.now(timezone.utc)
         who = self._identity.presence()
         presence_text = str((who or {}).get('who') or '未知')

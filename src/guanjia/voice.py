@@ -474,6 +474,25 @@ class VoiceDaemon:
             self.vision_loop = VisionLoop()
         except Exception:
             log.exception('vision loop unavailable; voice runs without visual context')
+        # ---- 主动环装配（feat/core-add-proactive-butler，议会定稿）----
+        # A 身份感知 + C 触发引擎 + 时间轴：视觉沿分发见 _on_vision_edge；
+        # 任何一环失败都不拖垮语音主链（被动能力不能退化——发起人裁决 6）。
+        self.identity = None
+        self.trigger = None
+        self.timeline = None
+        if self.vision_loop is not None:
+            try:
+                from guanjia.proactive import IdentityTracker, ProactiveTrigger, Timeline
+                self.identity = IdentityTracker(self.vision_loop._proactive)
+                self.timeline = Timeline(config=self.vision_loop._proactive)
+                self.trigger = ProactiveTrigger(
+                    config=self.vision_loop._proactive,
+                    identity=self.identity,
+                    timeline=self.timeline,
+                )
+                self.vision_loop.on_edge = self._on_vision_edge
+            except Exception:
+                log.exception('proactive ring unavailable; voice runs without proactive utterances')
         self.context_gardener = None
         if os.environ.get('GUANJIA_GARDEN', '1') == '1':
             try:
@@ -790,6 +809,17 @@ class VoiceDaemon:
         """一句识别结果的去留（麦克风和面板注入共用）：记一条面板记录，放行就交给大脑，只喊唤醒词就应答。
         去留只看碎音、唤醒词、免喊窗口；声纹不拦截，speaker（"主人" / "未知" / 库里的名字 / ""=没有）只做标签，
         随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
+        # 住户急停（YH-8，议会定稿 F 边界）：本地确定性命令，不经大模型，熔断时也生效；
+        # 正在播报的一句立即静音，并拉长主动开口静默窗。
+        if self._is_emergency_stop(text):
+            self.stop_speaking('住户急停')
+            if self.trigger is not None:
+                self.trigger.emergency_mute(30.0)
+            log.info('emergency stop: 住户叫停，主动开口静默 30 分钟')
+            return {'verdict': 'emergency_stop', 'reason': '住户急停'}
+        # 对话进行中静默（QC-22）：本轮有语音活动，压制主动开口
+        if self.trigger is not None:
+            self.trigger.note_voice_activity()
         s = self.store.current
         in_window = self._in_followup()
         d = decide(text, matcher=self.wake, wake_required=s.wake_required,
@@ -867,6 +897,32 @@ class VoiceDaemon:
     def inject(self, text: str, dry_run: bool = True) -> dict:
         """面板「模拟一句话」/上线验证用：当作识别出的文字走一遍去留判定（不过声纹）。dry_run 只判定不执行。"""
         return self._on_heard(text, None, source="inject", dry_run=dry_run)
+
+    _EMERGENCY_STOP_WORDS = ('别说了', '闭嘴', '别说话', '别出声', '别念了', '不要说了', '安静点', '别吵了')
+
+    @classmethod
+    def _is_emergency_stop(cls, text: str) -> bool:
+        """急停词本地匹配（YH-8）：短句且命中即急停；长句不误伤。"""
+        cleaned = text.strip().strip('。，！？!?,. ')
+        return 0 < len(cleaned) <= 6 and any(cleaned == w or cleaned.startswith(w) for w in cls._EMERGENCY_STOP_WORDS)
+
+    def _on_vision_edge(self, record: dict, edge: str) -> None:
+        """视觉沿分发（主动环总入口）：A 身份感知 + C 触发引擎。
+
+        游戏态/开机静默期压制（quiet()）；任一环异常不拖垮视觉循环与语音主链。
+        """
+        try:
+            if self.identity is not None:
+                self.identity.on_edge(record, edge)
+        except Exception:
+            pass
+        if self.quiet():
+            return  # 游戏中或开机/游戏后静默期：不主动开口（F 边界）
+        try:
+            if self.trigger is not None:
+                self.trigger.on_edge(record, edge)
+        except Exception:
+            pass
 
     def _accept_utterance(self, text: str, uid: str | None = None, speaker: str = "") -> None:
         """一句话放行：正在说就停（只停播放）；立刻放提示音；文字排进大脑队列。"""
@@ -1002,6 +1058,12 @@ class VoiceDaemon:
             else:
                 text = item.text if isinstance(item, Heard) else item
                 self._turn_speaker = item.speaker if isinstance(item, Heard) else ""  # open_stream 加语音标记时读
+                # 声纹修正（QC-18 双通道之一）：说话人标签回写在场身份——视觉认错开口后能自愈
+                if self.identity is not None and self._turn_speaker and self._turn_speaker != '未知':
+                    try:
+                        self.identity.confirm_by_voice(self._turn_speaker)
+                    except Exception:
+                        pass
                 self.hub.stage(uid, "gateway", "active", "请求已发出")
                 res = self.runner.run_reply(text, gen)
                 log.info("reply: %s", res.reply)
@@ -1760,6 +1822,8 @@ class VoiceDaemon:
         self.monitor.start()
         if self.vision_loop is not None:
             self.vision_loop.start()
+        if self.timeline is not None:
+            self.timeline.start()  # 时间轴预热线程（混合时序——发起人裁决 7）
         if self.context_gardener is not None:
             self.context_gardener.start()
             # 启动时立即压缩历史
