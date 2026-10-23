@@ -86,6 +86,7 @@ from guanjia.task_executor import TaskNotice, TaskWorkerExecutor
 from guanjia.task_ipc import TaskIpc
 from guanjia.task_service import TaskService
 from guanjia.tts_client import TTSClient
+from guanjia.usage_guard import UsageGuard
 from guanjia.turns import (NUDGE_TEXT, NUDGE_TEXT_FAKE_BLOCK, Heard, SayItem, TurnRunner, claims_blocked, has_promise,
                            needs_fake_block_nudge, needs_nudge)
 from guanjia.vad import SR as SR16K
@@ -534,6 +535,7 @@ class VoiceDaemon:
         self.barge = BargeDetector(BargeConfig(guard_ms=BARGE_GUARD_MS, tail_ms=BARGE_TAIL_MS, rms_min=s.barge_rms_min,
                                                floor_ratio=BARGE_FLOOR_RATIO, trigger_ms=BARGE_MS))
         self._mon_ms, self._mon_peak = 0, 0.0  # barge-mon 日志计时与区间 RMS 峰值（只有前端线程读写）
+        self.usage_guard = UsageGuard()  # 日耗 token 防线（gateway.run 处累计）
         self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
                                      on_change=self._on_health, interval=HEALTH_EVERY_SEC)
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
@@ -1265,6 +1267,12 @@ class VoiceDaemon:
                   level="warn" if warn else "info", uid=uid, blob=blob,
                   **{k: s.get(k) for k in ("run_id", "provider", "model", "channel", "stop", "final_status", "usage", "tools",
                                            "aborted", "timed_out", "prompt_error", "texts", "phases")})
+        # 日耗 token 防线（发起人要求：防止余额被主脑烧掉）——
+        # 累计每日 usage；超防线告警，双倍阈值自动停主动环（被动对话不受影响）
+        try:
+            self.usage_guard.record(s.get("usage"))
+        except Exception:
+            pass
 
     def _new_shaper(self) -> SpeechShaper | None:
         """每轮语音回复调一次（TurnRunner.run_reply）：按当前设置建口语整形器；speech_max_sentences=0 = 这轮不整形。"""

@@ -351,11 +351,29 @@ def main() -> None:
                 adapter.move(h, v, d, auto_stop=True)
             raw = capture_jpeg_bytes(cfg, driver)
             import time as _t
+            # 隐私一致性（议会定稿采集源头原则）：photo 落盘也过降级——
+            # 整帧轻度降一级（同视觉循环保底档），原图不落盘
+            try:
+                from io import BytesIO
+                from PIL import Image
+                _img = Image.open(BytesIO(raw)).convert('RGB')
+                _scale = 0.5
+                _small = _img.resize((max(1, int(_img.width * _scale)),
+                                      max(1, int(_img.height * _scale))), Image.Resampling.BILINEAR)
+                _back = _small.resize(_img.size, Image.Resampling.BILINEAR)
+                _buf = BytesIO()
+                _back.save(_buf, format='JPEG', quality=82)
+                raw = _buf.getvalue()
+            except Exception:
+                pass  # 降级失败不阻塞拍照，原图仅在内存中短暂存在
             _photos = DEV_SRC.parent / 'data' / 'vision' / 'photos'
             _photos.mkdir(parents=True, exist_ok=True)
             _name = 'photo_' + _t.strftime('%Y%m%d_%H%M%S') + '.jpg'
             (_photos / _name).write_bytes(raw)
             print(json.dumps({'ok': True, 'path': str(_photos / _name), 'size': len(raw)}, ensure_ascii=False))
+            # MEDIA: 附件指令（网关自动捕获）：微信轮拍照时照片会作为附件送达微信，
+            # 语音轮该指令无副作用（音箱不出图）
+            print('MEDIA: ' + str(_photos / _name))
             return
 
         if action == 'ptz':
