@@ -210,13 +210,16 @@ class ProactiveTrigger:
     # ---------- 对外接口 ----------
 
     def on_edge(self, record: dict[str, object], edge: str) -> None:
-        """vision_loop 沿钩子入口。entered→管线；left→候选+卧室待命判定。"""
+        """vision_loop 沿钩子入口。entered/left→管线；alone→独处计时管线的搭话机会。"""
         if not self._enabled():
             return
         if edge == 'entered':
             self._pipeline_async(record, 'entered')
         elif edge == 'left':
             self._pipeline_async(record, 'left')
+        elif edge == 'alone':
+            # 独处计时（发起人定 1 小时）：人持续在场无沿 → 模拟一次搭话机会
+            self._pipeline_async(record, 'alone')
 
     def note_voice_activity(self) -> None:
         """voice.py 每轮对话调用：对话进行中静默窗（QC-22）计时起点。"""
@@ -273,7 +276,13 @@ class ProactiveTrigger:
         presence_text = str((who or {}).get('who') or '未知')
         area = str(record.get('area') or '未知区域')
         local_time = datetime.now().strftime('%m月%d日 %H:%M')
-        event = f"{'有人进入画面' if edge == 'entered' else '有人离开画面'}（{presence_text}，{area}）"
+        if edge == 'entered':
+            event = f'有人进入画面（{presence_text}，{area}）'
+        elif edge == 'left':
+            event = f'有人离开画面（{presence_text}，{area}）'
+        else:
+            elapsed = int(record.get('alone_elapsed_sec') or 3600)
+            event = f'{presence_text}已持续在场{elapsed // 60}分钟（{area}），一直没有交流'
 
         # 1) 候选（沿事件 → 四因子；entered 价值高于 left）
         candidate = SelfLoopCandidate(

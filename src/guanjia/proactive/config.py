@@ -50,6 +50,9 @@ _DEFAULTS: dict[str, object] = {
     'left_value': 0.35,
     'left_urgency': 0.2,
     'left_interruption_cost': 0.5,
+    'alone_timer_sec': 3600.0,        # 独处计时：人持续在场满 1 小时模拟一次搭话沿
+    'alone_value': 0.55,               # 独处沿候选价值（略低于 entered 但可通过评分闸）
+    'alone_urgency': 0.35,            # 独处沿候选紧迫度（陪伴型不紧迫）
     # ---- 端到端延迟测量（A）----
     'latency_report_interval_sec': 3600,  # 每小时汇总一次延迟
     # ---- 访客模式开关（B）----

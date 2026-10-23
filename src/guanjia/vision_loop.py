@@ -183,6 +183,9 @@ class VisionLoop:
         self._track_cooldown_until: float = 0.0   # 跟转切换迟滞（防摆动）
         self.on_edge: object | None = None        # 沿回调钩子：fn(record, edge) edge∈{entered,left}——A 身份感知接线用
         self.on_tick: object | None = None        # 每帧轻回调：fn(record)——在场身份 TTL 续期（V3）用；回调必须无阻塞
+        # 独处计时（发起人定 1 小时）：人持续在场且无沿 → 模拟一次 entered 沿
+        self._alone_since: float = 0.0            # 本轮持续在场的起点（monotonic，0=不在场）
+        self._alone_edge_fired = False             # 本轮独处计时是否已发过沿（发一次就够，不重复）
         self._init_db()
 
     def _init_ptz(self) -> LocalCameraPtzAdapter | None:
@@ -297,6 +300,25 @@ class VisionLoop:
                 self.on_edge(record, 'entered' if person_entered else 'left')
             except Exception:
                 pass  # 沿回调失败绝不拖垮视觉循环
+        # ---- 独处计时（发起人定 1 小时）：人持续在场无沿 → 模拟 entered 沿 ----
+        # 反方评审指出的核心缺口：人坐3小时不动永远没有沿 → 管线永远不触发。
+        # 现在持续在场满 1 小时后模拟一次 entered 沿给管线；离场重置计时。
+        alone_sec = self.config.num('alone_timer_sec', 3600.0) if hasattr(self.config, 'num') else 3600.0
+        now_mono = time.monotonic()
+        if self._person_present:
+            if self._alone_since <= 0.0:
+                self._alone_since = now_mono
+            elif not self._alone_edge_fired and (now_mono - self._alone_since) >= alone_sec:
+                self._alone_edge_fired = True
+                record['alone_elapsed_sec'] = round(now_mono - self._alone_since, 0)
+                if callable(self.on_edge):
+                    try:
+                        self.on_edge(record, 'alone')
+                    except Exception:
+                        pass  # 独处沿失败绝不拖垮视觉循环
+        else:
+            self._alone_since = 0.0
+            self._alone_edge_fired = False
         # ---- 每帧轻 tick（V3）：在场身份 TTL 续期等无阻塞消费者 ----
         if callable(self.on_tick):
             try:
