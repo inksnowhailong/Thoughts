@@ -220,8 +220,8 @@ export function createCameraPtzTool(opts: PsToolOptions) {
     label: "Control camera PTZ",
     catalogMode: DIRECT_ONLY,
     description:
-      "Rotate or stop the home camera gimbal locally via ONVIF (left/right/up/down/stop). " +
-      "Use when the owner says '往左看/往右转/抬头/低头/转一下摄像头'.",
+      "转家里摄像头的镜头。主人说'往左看/往右转/抬头/低头/转一下摄像头/停'时用这个工具，" +
+      "不要用 exec 调脚本。direction 填方向，duration_sec 填秒数。",
     parameters: {
       type: "object",
       properties: {
@@ -264,7 +264,8 @@ export function createCameraLookTool(opts: PsToolOptions) {
     label: "Look through home camera",
     catalogMode: DIRECT_ONLY,
     description:
-      "Capture a live snapshot from the home camera (optionally rotating left/right/up/down first) and describe what is visible. " +
+      "用家里摄像头看画面并回答问题。主人问'看看屋里有什么/用摄像头看一下/往左看看是谁/你在看哪儿'时用这个工具，" +
+      "不要用 exec 调脚本。它会自主转向搜索画面再看清内容，question 填想看什么。",nd describe what is visible. " +
       "Use whenever the owner asks '看看屋里有什么/用摄像头看一下/往左看看是谁/你在看哪儿'.",
     parameters: {
       type: "object",
@@ -384,9 +385,8 @@ export function createCameraPhotoTool(opts: PsToolOptions) {
     label: "Take photo for owner",
     catalogMode: DIRECT_ONLY,
     description:
-      "Capture a photo from the home camera (optionally turning first) and save it. " +
-      "Use when the owner says '拍张照/拍一下家里/看看家里什么样/发张照片/拍给我看'. " +
-      "Photo is saved to data/vision/photos/ and can be viewed on panel or sent to WeChat.",
+      "用家里摄像头拍一张照片。主人说'拍张照/拍一下家里/发张照片/拍给我看'时用这个工具，" +
+      "不要用 exec 调脚本。照片会自动送达微信或面板；画面里没看到人时先调 camera_look 找到人。",
     parameters: {
       type: "object",
       properties: {
