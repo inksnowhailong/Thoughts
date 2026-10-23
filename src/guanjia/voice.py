@@ -85,7 +85,7 @@ from guanjia.task_dispatch import TaskDispatchScheduler
 from guanjia.task_executor import TaskNotice, TaskWorkerExecutor
 from guanjia.task_ipc import TaskIpc
 from guanjia.task_service import TaskService
-from guanjia.tts_client import TTSClient
+from guanjia.tts_router import TTSRouter
 from guanjia.usage_guard import UsageGuard
 from guanjia.turns import (NUDGE_TEXT, NUDGE_TEXT_FAKE_BLOCK, Heard, SayItem, TurnRunner, claims_blocked, has_promise,
                            needs_fake_block_nudge, needs_nudge)
@@ -524,10 +524,10 @@ class VoiceDaemon:
         # 整段精识别：FireRedASR2（WSL 里的 GPU 服务）为主、SenseVoice 回退；段结束后替换流式结果，失败回退流式
         self.asr_final = FinalASR(on_event=self._asr_event)
         self.brain = (ModularBrain() if os.environ.get("GUANJIA_MODULAR_MAIN_V1", "1").lower() in ("1", "true", "yes", "on") else Brain(session_key=MAIN_SESSION_KEY))  # 主线会话；流不可提前关（见 brain.py）
-        self.tts = TTSClient(timeout=TTS_TIMEOUT_SEC)
+        self.tts = TTSRouter(timeout=TTS_TIMEOUT_SEC)  # GLM-TTS 流式主路 + IndexTTS 兜底
         self.runner = TurnRunner(
             open_stream=self._open_stream,
-            synth=self.tts.synth, enqueue=self._enqueue_pcm, current_gen=lambda: self._gen,
+            synth=self.tts.synth_full, enqueue=self._enqueue_pcm, current_gen=lambda: self._gen,
             first_max_chars=FIRST_SENT_MAX_CHARS, max_tts_fails=TTS_MAX_FAILS, first_soft_min=FIRST_SENT_SOFT_MIN,
             on_event=self._on_turn_event, shaper=self._new_shaper)
         self._earcon = earcon(self.sr)
@@ -986,7 +986,7 @@ class VoiceDaemon:
 
         def work() -> None:
             try:
-                pcm, sr = self.tts.synth(text)
+                pcm, sr = self.tts.synth_full(text)
             except Exception as e:  # noqa: BLE001
                 log.warning("tts ack synth failed: %s", e)
                 return
