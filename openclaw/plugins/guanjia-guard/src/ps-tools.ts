@@ -408,7 +408,14 @@ export function createCameraPhotoTool(opts: PsToolOptions) {
       const r = lastJson(out.stdout);
       if (!r?.ok) return textResult(`拍照失败：${r?.error ?? "未知错误"}`, { ok: false, code: out.code });
       const sizeKb = Math.round((r.size || 0) / 1024);
-      return textResult(`已拍下照片（${sizeKb}KB），主人可以在面板上查看。${typeof params?.caption === "string" ? " 说明：" + params.caption : ""}`, r);
+      // MEDIA: 附件指令（网关 parse-output 自动捕获为回复附件）：
+      // 微信轮照片会作为图片自动送达微信；语音轮无副作用（音箱不出图）。
+      const mediaLine = typeof r.path === "string" ? `\nMEDIA: ${r.path}` : "";
+      const captionText = typeof params?.caption === "string" ? ` 说明：${params.caption}` : "";
+      return textResult(
+        `已拍下照片（${sizeKb}KB），照片会随回复自动送达。${captionText}${mediaLine}`);
     },
+  };
+}
   };
 }
