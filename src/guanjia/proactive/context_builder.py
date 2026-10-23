@@ -22,6 +22,16 @@ _GEMS_DIR = _WORKSPACE / 'memory' / 'gems'
 # 记忆文件里的人物名 → 管家口中的称呼（与 identity._GENDER_TO_WHO 对齐）
 _WHO_ALIASES = {'主人': '先生', '老婆': '大小姐', '先生': '先生', '大小姐': '大小姐'}
 
+# 在场人 → 可读的画像文件名（不含 .md）。隐私分级：只看在场人自己的画像
+_PRESENCE_TO_PROFILE = {'先生': '主人', '大小姐': '老婆'}
+
+# 隐私关键词：命中任何词的 gem 对谁都不读（惊喜/秘密类，说破就没意思了）
+_PRIVATE_KEYWORDS = ('礼物', '惊喜', '秘密', '买给', '送给你', '别告诉')
+
+# 宝石中可能出现的先生侧人物标记（含记忆文件别名「主人」）
+# 先生侧的私人 gem 不对大小姐读；大小姐侧的事对先生算家庭共享，可读
+_MASTER_TAGS = ('先生', '主人')
+
 # 管家自知（固定文本）：自我认知随每次生成注入，"知道自己回复慢"是人设的一部分
 _SELF_AWARENESS = (
     '你知道自己回复速度比较慢，也不擅长帮人选东西；'
@@ -60,12 +70,13 @@ class ContextBuilder:
         """组装富上下文；任何一段读失败都静默省略，永远返回可用文字。"""
         now = datetime.now()
         sections = [
-            self._profiles(),
-            self._gems(),
+            self._profiles(presence),
+            self._gems(presence),
             self._habits_brief(now),
             self._environment(edge, presence, record, now),
             self._anchors(now),
             self._recent_topics(),
+            self._visitor_hint(record),
             _SELF_AWARENESS,
         ]
         body = '\n'.join(section for section in sections if section)
@@ -73,23 +84,25 @@ class ContextBuilder:
 
     # ---------- 家庭画像 ----------
 
-    def _profiles(self) -> str:
-        """家庭画像：people/*.md 只取关键词摘要，不喂全文（省 token，防画像喧宾夺主）。"""
-        lines: list[str] = []
+    def _profiles(self, presence: str) -> str:
+        """只读当前在场人的画像，不暴露另一人的隐私。
+
+        presence 为 '先生' → 只读 主人.md
+        presence 为 '大小姐' → 只读 老婆.md
+        presence 为空/未知 → 不读任何个人画像（防泄露）
+        """
+        stem = _PRESENCE_TO_PROFILE.get(presence)
+        if not stem:
+            return ''
         try:
-            files = sorted(_PEOPLE_DIR.glob('*.md'))
+            text = (_PEOPLE_DIR / f'{stem}.md').read_text(encoding='utf-8')
         except Exception:
             return ''
-        for path in files:
-            try:
-                text = path.read_text(encoding='utf-8')
-            except Exception:
-                continue
-            summary = self._summarize_profile(text)
-            if summary:
-                name = _WHO_ALIASES.get(path.stem, path.stem)
-                lines.append(f'{name}：{summary}')
-        return '\n'.join(lines)
+        summary = self._summarize_profile(text)
+        if not summary:
+            return ''
+        name = _WHO_ALIASES.get(stem, stem)
+        return f'{name}：{summary}'
 
     @staticmethod
     def _summarize_profile(text: str, max_lines: int = 3, line_limit: int = 60) -> str:
@@ -107,8 +120,13 @@ class ContextBuilder:
 
     # ---------- 最近宝石 ----------
 
-    def _gems(self) -> str:
-        """最近宝石：最新 gems 文件的最后 3 条（园丁提取的高价值记忆，只当背景）。"""
+    def _gems(self, presence: str) -> str:
+        """读最近宝石，过滤隐私条目。
+
+        - 含 _PRIVATE_KEYWORDS 任何词 → 跳过（对谁都不读）
+        - 含先生侧标记且 presence 是「大小姐」→ 跳过（先生的个人事不对大小姐说）
+        - 其余 → 保留（大小姐的事对先生算家庭共享，可读）
+        """
         try:
             files = sorted(_GEMS_DIR.glob('gems-*.md'))
             if not files:
@@ -120,7 +138,18 @@ class ContextBuilder:
             ]
             if not lines:
                 return ''
-            entries = [re.sub(r'^-\s*', '', line)[:80] for line in lines[-3:]]
+            entries = []
+            for line in lines[-3:]:
+                entry = re.sub(r'^-\s*', '', line)[:80]
+                # 隐私关键词：惊喜/秘密类，对任何人都不读
+                if any(kw in entry for kw in _PRIVATE_KEYWORDS):
+                    continue
+                # 先生的个人事，不对大小姐说
+                if presence == '大小姐' and any(tag in entry for tag in _MASTER_TAGS):
+                    continue
+                entries.append(entry)
+            if not entries:
+                return ''
             return '最近家里发生的事：' + '；'.join(entries)
         except Exception:
             return ''
@@ -208,5 +237,23 @@ class ContextBuilder:
         numbered = '；'.join(f'{i}. {text}' for i, text in enumerate(reversed(texts), 1))
         return f'你之前说过的话：{numbered}'
 
+    # ---------- 访客提示 ----------
+
+    @staticmethod
+    def _visitor_hint(record: dict) -> str:
+        """画面可能有多人时，提醒模型别提家庭私人信息。
+
+        简单启发式：置信度高且检测框面积大（人贴得很近/占满画面，可能是两人）。
+        """
+        try:
+            confidence = float(record.get('person_confidence') or 0)
+            box = record.get('person_box') or []
+            # 归一化坐标 [x1, y1, x2, y2]，面积占比大 → 疑似多人同框
+            area = abs((float(box[2]) - float(box[0])) * (float(box[3]) - float(box[1])))
+        except Exception:
+            return ''
+        if confidence > 0.9 and area > 0.5:
+            return '注意：如果画面中有多人（访客在场），不要提及家庭私人信息。'
+        return ''
 
 __all__ = ['ContextBuilder']

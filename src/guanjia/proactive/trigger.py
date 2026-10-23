@@ -11,6 +11,10 @@
 在途作废（JG-16）：投递前查最新视觉状态，人已离开即丢弃。
 全局开关（JG-8/QC-17）：proactive.json enabled=false 全链停——评审、生成一并停，关停不烧额度。
 独立限流（SX-12/JG-19）：评审调用每小时上限，防沿风暴拖垮被动链。
+
+反馈闭环（A）：投递后 60 秒窗口检测用户回应——被无视自动收敛间隔/暂停陪伴/当天停说。
+事实降级（B）：生成 prompt 明确约束——不确定的事实要么不说，要么说「我猜」。
+夜间豁免（C）：urgency >= 0.8 的紧急提醒允许夜间通过静默闸。
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ _REVIEW_PROMPT = (
     '判断：此刻管家主动说一句话值得吗？原则：不打扰、不说废话、说错的代价大于不说；'
     '家人正在说话/休息/专注时不说。只输出一个 JSON 对象：'
     '{{"say": true 或 false, "what_hint": "说什么方向（一句）", '
+    '"kind": "information（有用信息/提醒）或 companion（纯陪伴闲聊）", '
     '"urgency": 0到1, "reason": "一句理由"}}，不要 markdown。'
 )
 
@@ -53,10 +58,107 @@ _GENERATE_PROMPT = (
     '说什么由你自己判断——可以是有价值的建议、可以是天气/时事的关心、'
     '可以是随意的闲聊。但不要重复你之前说过的话题。\n'
     '不要说"我在呢"这种空洞问候。要有信息量、有趣、或者有用。\n'
+    '重要：不要编造你不确定的事实（具体商品名/新品/价格/日期）。\n'
+    '如果不确定某件事是否真实，要么不说，要么说「我猜/好像是」。\n'
+    '宁可说天气和眼前的画面，也不要编造新闻和商品信息。\n'
     '{address_rule}'
     '只输出要直接说出口的口语：每句不超过 30 个字、最多两句、无 Markdown、无表情符号。'
     '直接输出那句话本身。'
 )
+
+
+class FeedbackTracker:
+    """开口后的用户反馈检测与频率收敛（反馈闭环 A）。
+
+    投递成功后 60 秒窗口内检测：
+    - 有语音活动（voice.py 的 note_voice_activity 被调用）→ 回应
+    - 语音轮产生（主会话有新 user 消息）→ 回应
+    - 无任何活动 → 被无视
+
+    收敛规则：
+    - 连续 1 次无视：下次搭话间隔 × 1.5
+    - 连续 2 次无视：暂停纯陪伴型 4 小时
+    - 连续 3 次无视：当天停止主动搭话
+    - 获得回应：连续无视归零，间隔逐步恢复
+    """
+
+    def __init__(
+        self,
+        config: ProactiveConfig,
+        get_voice_activity: Callable[[], float] | None = None,
+    ) -> None:
+        self._config = config
+        # 读最近一次语音活动时间戳（monotonic；0.0 表示从未有过对话）
+        self._get_voice_activity = get_voice_activity or (lambda: 0.0)
+        self._ignore_streak = 0                  # 连续被无视计数
+        self._interval_factor = 1.0              # 间隔收敛倍率（被无视 ×1.5，回应 ×0.8 恢复）
+        self._last_delivered_at = 0.0             # 最近投递时刻（monotonic）
+        self._delivered_activity = 0.0            # 投递时刻的语音活动快照（比对"新"活动的基线）
+        self._window_sec = config.num('feedback_window_sec', 60.0)
+        self._base_gap = config.num('feedback_min_gap_sec', 300.0)
+        self._companion_paused_until = 0.0        # 纯陪伴型暂停截止（monotonic）
+        self._all_paused_until = 0.0              # 全类型暂停截止（当天停止）
+
+    @property
+    def window_sec(self) -> float:
+        """回应检测窗口时长（秒）。"""
+        return self._window_sec
+
+    @property
+    def ignore_streak(self) -> int:
+        """当前连续被无视次数。"""
+        return self._ignore_streak
+
+    def note_delivered(self) -> None:
+        """投递成功后调用——开始计时窗口，并快照当前语音活动基线。"""
+        self._last_delivered_at = time.monotonic()
+        self._delivered_activity = self._get_voice_activity()
+
+    def check_response(self) -> str:
+        """检查窗口内是否有回应。返回 'responded' / 'ignored' / 'pending'。
+
+        简单实现：读 voice.py 维护的 last_voice_activity 时间戳——
+        窗口满后时间戳比投递时前进（有新语音轮）即视为回应。
+        """
+        if self._last_delivered_at <= 0.0:
+            return 'pending'
+        if time.monotonic() - self._last_delivered_at < self._window_sec:
+            return 'pending'  # 窗口未满，尚不能下结论
+        return 'responded' if self._get_voice_activity() > self._delivered_activity else 'ignored'
+
+    def apply_outcome(self, outcome: str) -> None:
+        """把检测结论落到收敛账本：无视累计、间隔收敛、暂停窗。"""
+        if outcome == 'responded':
+            self._ignore_streak = 0
+            self._interval_factor = max(1.0, self._interval_factor * 0.8)  # 间隔逐步恢复
+        elif outcome == 'ignored':
+            self._ignore_streak += 1
+            self._interval_factor = min(self._interval_factor * 1.5, 12.0)
+            if self._ignore_streak >= 2:
+                # 连续 2 次：纯陪伴型暂停 4 小时
+                self._companion_paused_until = time.monotonic() + 4 * 3600.0
+            if self._ignore_streak >= 3:
+                # 连续 3 次：当天停止——暂停到本地 23:59:59（wall clock 换算成 monotonic 时长）
+                now_local = datetime.now()
+                midnight = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+                remain = max(60.0, (midnight - now_local).total_seconds())
+                self._all_paused_until = time.monotonic() + remain
+
+    def should_throttle(self, kind: str) -> tuple[bool, str]:
+        """根据历史反馈判断是否限流。kind: 'information' / 'companion'。
+
+        返回 (是否允许, 原因)——允许时原因为空串。
+        """
+        now = time.monotonic()
+        if now < self._all_paused_until:
+            return False, '连续3次被无视：当天停止主动搭话'
+        if kind == 'companion' and now < self._companion_paused_until:
+            return False, '连续2次被无视：纯陪伴型暂停4小时'
+        if self._last_delivered_at > 0.0:
+            gap = self._base_gap * self._interval_factor
+            if now - self._last_delivered_at < gap:
+                return False, f'被无视后间隔收敛中（×{self._interval_factor:.1f}）'
+        return True, ''
 
 
 class ProactiveTrigger:
@@ -100,6 +202,10 @@ class ProactiveTrigger:
         self._mute_until: float = 0.0                  # 住户急停静默窗（YH-8）
         self._busy = False                             # 同一时刻只跑一条管线
         self._gaming: bool = False                     # 游戏态压制输入（voice.py 接线）
+        # 反馈闭环（A）：voice.py 调 note_voice_activity 更新时间戳，
+        # FeedbackTracker 拿它当"用户回应"信号
+        self._feedback = FeedbackTracker(
+            self._config, lambda: self._last_voice_activity)
 
     # ---------- 对外接口 ----------
 
@@ -144,14 +250,23 @@ class ProactiveTrigger:
         threading.Thread(target=runner, name='proactive-pipeline', daemon=True).start()
 
     def _pipeline(self, record: dict[str, object], edge: str) -> None:
+        # 端到端延迟测量（A）：管线起点——沿触发到投递的总耗时基准
+        pipeline_start = time.monotonic()
+        review_ms = 0    # 评审耗时（模型评审调用）
+        generate_ms = 0  # 生成耗时（富上下文生成调用；预设命中时记 0）
+        # 访客模式（B）：全停主动搭话（访客在场时不暴露家庭信息）——本地判定，不经模型
+        if self._config.values.get('visitor_mode', False):
+            self._log({'ok': True, 'stage': 'visitor_mode_blocked', 'edge': edge})
+            return
         # 住户急停静默窗（YH-8）：mute 期内一切主动开口管线直接丢弃（本地判定，不经模型）
         if time.monotonic() < self._mute_until:
             self._log({'ok': True, 'stage': 'muted', 'edge': edge})
             return
-        # 夜间静默（发起人裁决 9b，V1 修复）：夜里出来上厕所也不说话——本地时钟判定，
-        # 不进模型评审（评审 prompt 不知道深夜，不能依赖它自觉）
-        if is_night_hour(datetime.now().hour, self._config.night_start_hour, self._config.night_end_hour):
-            self._log({'ok': True, 'stage': 'night_suppressed', 'edge': edge})
+        # 反馈闭环（A）：管线入口限流——上次开口被无视时，间隔收敛/陪伴暂停/当天停说
+        allowed, throttle_reason = self._feedback.should_throttle('information')
+        if not allowed:
+            self._log({'ok': True, 'stage': 'feedback_throttled', 'edge': edge,
+                       'reason': throttle_reason})
             return
         now = datetime.now(timezone.utc)
         who = self._identity.presence()
@@ -170,6 +285,13 @@ class ProactiveTrigger:
             interruption_cost=self._config.num(f'{edge}_interruption_cost', 0.5),
             observed_at=now,
         )
+        # 夜间静默（发起人裁决 9b，V1 修复）：夜里出来上厕所也不说话——本地时钟判定，
+        # 不进模型评审（评审 prompt 不知道深夜，不能依赖它自觉）。
+        # 紧急豁免（C）：urgency >= 0.8 的紧急提醒夜间也允许通过
+        if (is_night_hour(datetime.now().hour, self._config.night_start_hour, self._config.night_end_hour)
+                and candidate.urgency < 0.8):
+            self._log({'ok': True, 'stage': 'night_suppressed', 'edge': edge})
+            return
         # 2) 评分门控：预算/安全闸（SX-2：被公式拦下的不进模型评审，只记日志）
         gate = self._review_policy.decide(candidate, self._state, now)
         if not gate.eligible:
@@ -199,12 +321,21 @@ class ProactiveTrigger:
             self._log({'ok': True, 'stage': 'cooldown_precheck', 'edge': edge})
             return
         # 4) 模型评审："值得说吗"——判断权归模型
+        review_start = time.monotonic()
         verdict = self._ask_gateway(_REVIEW_PROMPT.format(
             event=event, presence=presence_text, local_time=local_time, area=area))
+        review_ms = int((time.monotonic() - review_start) * 1000)
         parsed = self._parse_json(verdict)
         if not parsed or not parsed.get('say'):
             self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
                        'reason': str((parsed or {}).get('reason') or 'no_json')[:80]})
+            return
+        # 反馈闭环（A）：评审给出话题类型后复查限流——纯陪伴型有更严的被无视收敛
+        kind = str(parsed.get('kind') or 'information')
+        allowed, throttle_reason = self._feedback.should_throttle(kind)
+        if not allowed:
+            self._log({'ok': True, 'stage': 'feedback_throttled', 'edge': edge,
+                       'kind': kind, 'reason': throttle_reason})
             return
         # 4.5) 话题细化（V12b，发起人指出"早晨流程密集且每件事各有价值"）：
         # 粗 topic（vision_entered）会让早晨三件不同的事互相挤兑冷却；
@@ -244,8 +375,10 @@ class ProactiveTrigger:
             # 富上下文生成（D 升级）：评审通过才组装（组装有读文件开销，被否决的候选不花这份钱）；
             # 上下文里已含时间/画面/最近说过的话，event/hint 不再单独传——话题判断权全交模型
             context = self._context_builder.build(edge, presence_text, record)
+            generate_start = time.monotonic()
             message = self._ask_gateway(_GENERATE_PROMPT.format(
                 context=context, who=presence_text, address_rule=address_rule))
+            generate_ms = int((time.monotonic() - generate_start) * 1000)
             text = (message or '').strip()
         if not text:
             self._log({'ok': False, 'stage': 'generate_empty', 'edge': edge})
@@ -261,9 +394,21 @@ class ProactiveTrigger:
         self._state.record_expression(candidate, datetime.now(timezone.utc))
         with self._lock:
             self._expression_times.append(time.monotonic())
+        # 端到端延迟测量（A）：投递成功后落账——管线总耗时 + 分段耗时
+        pipeline_end = time.monotonic()
+        total_ms = int((pipeline_end - pipeline_start) * 1000)
         self._log({'ok': True, 'stage': 'delivered', 'edge': edge, 'text': text,
                    'topic': fine_topic,
-                   'delivered': bool(delivered), 'score': round(decision.score, 3)})
+                   'delivered': bool(delivered), 'score': round(decision.score, 3),
+                   'pipeline_ms': total_ms,  # 管线总耗时（从沿触发到投递）
+                   'review_ms': review_ms,    # 评审耗时
+                   'generate_ms': generate_ms})  # 生成耗时
+        # 反馈闭环（A）：投递成功后开启 60 秒回应检测窗口，异步回看有无被无视
+        if delivered:
+            self._feedback.note_delivered()
+            threading.Thread(
+                target=self._watch_feedback, name='proactive-feedback-watch', daemon=True,
+            ).start()
 
     # ---------- 内部 ----------
 
@@ -288,6 +433,19 @@ class ProactiveTrigger:
                 return False
             self._review_times.append(now)
             return True
+
+    def _watch_feedback(self) -> None:
+        """反馈闭环（A）：投递 60 秒后回看——有回应归零收敛，被无视则收紧频率。"""
+        try:
+            time.sleep(self._feedback.window_sec)
+            outcome = self._feedback.check_response()
+            if outcome != 'pending':
+                self._feedback.apply_outcome(outcome)
+            self._log({'ok': True, 'stage': 'feedback_checked', 'outcome': outcome,
+                       'ignore_streak': self._feedback.ignore_streak})
+        except Exception as exc:  # noqa: BLE001
+            self._log({'ok': False, 'stage': 'feedback_watch',
+                       'error': f'{type(exc).__name__}: {exc}'})
 
     def _voice_silence_active(self) -> bool:
         """对话进行中静默（QC-22）：最近 N 分钟有语音活动则压制主动开口。"""
@@ -362,4 +520,4 @@ def record_path(config: ProactiveConfig) -> str:
     return str(Path(str(config.path)).parent / 'latest.json')
 
 
-__all__ = ['ProactiveTrigger']
+__all__ = ['ProactiveTrigger', 'FeedbackTracker']

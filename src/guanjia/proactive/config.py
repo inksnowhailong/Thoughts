@@ -50,6 +50,10 @@ _DEFAULTS: dict[str, object] = {
     'left_value': 0.35,
     'left_urgency': 0.2,
     'left_interruption_cost': 0.5,
+    # ---- 端到端延迟测量（A）----
+    'latency_report_interval_sec': 3600,  # 每小时汇总一次延迟
+    # ---- 访客模式开关（B）----
+    'visitor_mode': False,  # 访客模式：true 时主动搭话全停
 }
 
 
