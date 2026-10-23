@@ -166,10 +166,14 @@ class Timeline:
             pass
 
     def _ask_gateway(self, prompt: str) -> str | None:
+        """预热生成：轻思考 low + 采样多样性（口语自然句），非确定性输出。"""
         body = {
             'model': 'openclaw',
             'messages': [{'role': 'user', 'content': prompt}],
             'stream': False,
+            'thinking': {'type': 'enabled'},   # flash 强制项
+            'reasoning_effort': 'low',         # 预设句生成不需深思考
+            'do_sample': True,                 # 采样多样性，每次预设不千篇一律
         }
         headers = {
             'Authorization': f'Bearer {self._token}',

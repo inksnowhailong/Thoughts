@@ -25,6 +25,44 @@ import httpx
 
 PORT = int(os.environ.get("GATE_PORT", "18793"))
 UPSTREAM = os.environ.get("GATE_UPSTREAM", "https://open.bigmodel.cn").rstrip("/")
+
+# 思考档位默认值：环境变量优先，其次 data/config.json，最后 low
+_DEFAULT_EFFORT = os.environ.get("GATE_REASONING_EFFORT")
+if not _DEFAULT_EFFORT:
+    try:
+        _cfg = json.loads(open(os.environ.get("GUANJIA_ROOT", r"F:\coding\guanjia-v2-development")
+                               + r"\data\config.json", encoding="utf-8").read())
+        _DEFAULT_EFFORT = _cfg.get("models", {}).get("brain", {}).get("reasoning_effort") or "low"
+    except Exception:
+        _DEFAULT_EFFORT = "low"
+
+
+def inject_defaults(raw: bytes) -> bytes:
+    """请求体缺省参数注入：thinking.enabled（flash 强制项）+ reasoning_effort 默认档。
+
+    只补缺失字段——请求体里已显式带的参数一律不动（干活的 high 在直调模块显式设置）。
+    解析失败原样转发（fail-open，绝不因注入逻辑断链）。
+    """
+    try:
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            return raw
+        changed = False
+        thinking = body.get("thinking")
+        if not isinstance(thinking, dict):
+            body["thinking"] = {"type": "enabled"}
+            changed = True
+        elif thinking.get("type") is None:
+            thinking["type"] = "enabled"
+            changed = True
+        if body.get("reasoning_effort") is None:
+            body["reasoning_effort"] = _DEFAULT_EFFORT
+            changed = True
+        if changed:
+            return json.dumps(body, ensure_ascii=False).encode("utf-8")
+        return raw
+    except Exception:
+        return raw
 FIRSTBYTE = float(os.environ.get("GATE_FIRSTBYTE", "25"))
 BREAKER = float(os.environ.get("GATE_BREAKER", "20"))
 LOG = pathlib.Path(os.environ.get("GATE_LOG", r"F:\coding\guanjia-v2-development\tmp\zhipu_gate.log"))
@@ -79,6 +117,11 @@ class H(BaseHTTPRequestHandler):
         t0 = time.time()
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n)
+        # 参数默认值注入（发起人 2026-10-23 需求：主模块 low、干活显式覆盖）：
+        # glm-5.3-flash 强制开启思考且 reasoning_effort 默认 max——max 深思考
+        # 计入输出 token 且拖慢首响；缺省注入 low 作为全链兜底，
+        # 直调模块（评审/身份/生成/预热）在各自请求体里显式覆盖本默认。
+        raw = inject_defaults(raw)
         if time.time() < _open_until:
             log("BREAKER-OPEN -> 429")
             self._reply(429, unavailable_body("熔断中"), {"Retry-After": "120"})

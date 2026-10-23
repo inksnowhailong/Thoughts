@@ -191,8 +191,10 @@ class ProactiveTrigger:
             self._log({'ok': True, 'stage': 'cooldown_precheck', 'edge': edge})
             return
         # 4) 模型评审："值得说吗"——判断权归模型
-        verdict = self._ask_gateway(_REVIEW_PROMPT.format(
-            event=event, presence=presence_text, local_time=local_time, area=area))
+        verdict = self._ask_gateway(
+            reasoning_effort='high', do_sample=False, json_mode=True,
+            prompt=_REVIEW_PROMPT.format(
+                event=event, presence=presence_text, local_time=local_time, area=area))
         parsed = self._parse_json(verdict)
         if not parsed or not parsed.get('say'):
             self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
@@ -233,9 +235,11 @@ class ProactiveTrigger:
             text = preset  # 预热生成时已约束 30 字/两句规格
             self._log({'ok': True, 'stage': 'preset_hit', 'edge': edge})
         else:
-            message = self._ask_gateway(_GENERATE_PROMPT.format(
-                event=event, who=presence_text, local_time=local_time,
-                hint=str(parsed.get('what_hint') or '')[:60], address_rule=address_rule))
+            message = self._ask_gateway(
+                reasoning_effort='low', do_sample=True, json_mode=False,  # 口语生成：轻思考+采样多样性
+                prompt=_GENERATE_PROMPT.format(
+                    event=event, who=presence_text, local_time=local_time,
+                    hint=str(parsed.get('what_hint') or '')[:60], address_rule=address_rule))
             text = (message or '').strip()
         if not text:
             self._log({'ok': False, 'stage': 'generate_empty', 'edge': edge})
@@ -293,12 +297,23 @@ class ProactiveTrigger:
         except Exception:
             return True  # 读不到就投——fail-open（在途作废是加分项不是安全闸）
 
-    def _ask_gateway(self, prompt: str) -> str | None:
-        body = {
+    def _ask_gateway(self, prompt: str, *, reasoning_effort: str = 'low',
+                     do_sample: bool = False, json_mode: bool = True) -> str | None:
+        """干活模块参数矩阵（发起人 2026-10-23）：
+
+        评审（值得说吗）→ high 深思考 + 确定性 + JSON 模式——唯一吃深思考的环节
+        生成（说什么）  → low 轻思考 + do_sample=True 采样多样性（口语自然）+ 无 JSON
+        """
+        body: dict = {
             'model': 'openclaw',
             'messages': [{'role': 'user', 'content': prompt}],
             'stream': False,
+            'thinking': {'type': 'enabled'},   # flash 强制项
+            'reasoning_effort': reasoning_effort,
+            'do_sample': do_sample,
         }
+        if json_mode:
+            body['response_format'] = {'type': 'json_object'}
         headers = {
             'Authorization': f'Bearer {self._token}',
             'Content-Type': 'application/json',

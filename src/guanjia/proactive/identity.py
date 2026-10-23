@@ -182,10 +182,15 @@ class IdentityTracker:
             self._write_snapshot()
 
     def _ask_gateway(self, content: list[dict[str, object]]) -> str | None:
+        """身份判断：干活模块参数——轻思考 low + 确定性输出 + 结构化 JSON 模式。"""
         body = {
             'model': 'openclaw',
             'messages': [{'role': 'user', 'content': content}],
             'stream': False,
+            'thinking': {'type': 'enabled'},   # flash 强制项
+            'reasoning_effort': 'low',         # 性别判断是简单任务，不吃深思考
+            'do_sample': False,                # 确定性：同一画面两次判断结论一致
+            'response_format': {'type': 'json_object'},  # 性别 JSON 结构化输出
         }
         headers = {
             'Authorization': f'Bearer {self._token}',
