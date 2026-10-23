@@ -27,6 +27,7 @@ import httpx
 
 from guanjia.brain import load_gateway_token
 from guanjia.proactive.config import ProactiveConfig, is_night_hour
+from guanjia.proactive.context_builder import ContextBuilder
 from guanjia.proactive.identity import IdentityTracker
 from guanjia.self_loop.contracts import SelfLoopCandidate
 from guanjia.self_loop.policy import ExpressionPolicy, ReviewPolicy
@@ -38,25 +39,23 @@ _GATEWAY_URL = 'http://127.0.0.1:18789/v1/chat/completions'
 _REVIEW_PROMPT = (
     '你是家庭管家的主动开口评审。刚发生事件：{event}。当前在场：{presence}。'
     '北京时间：{local_time}。画面区域：{area}。'
-    '你是一个住在家里的管家，像家人一样。判断：此刻主动搭一句话值得吗？\n'
-    '两条原则——\n'
-    '1. 信息价值：有值得提醒的事、有变化、有异常，说。\n'
-    '2. 陪伴价值：家人独自在家时，偶尔自然地搭句话（问她在看什么、'
-    '要不要喝水、说说天气）本身就是价值——管家不说就等于不在家。'
-    '但同一个话题不重复，间隔合理（不是每次都搭话）。\n'
-    '不要说的时刻：正在通电话、正在专注工作、正在睡觉、刚搭过话。\n'
-    '只输出一个 JSON 对象：'
+    '判断：此刻管家主动说一句话值得吗？原则：不打扰、不说废话、说错的代价大于不说；'
+    '家人正在说话/休息/专注时不说。只输出一个 JSON 对象：'
     '{{"say": true 或 false, "what_hint": "说什么方向（一句）", '
     '"urgency": 0到1, "reason": "一句理由"}}，不要 markdown。'
 )
 
+# 富上下文版生成 prompt（D 升级）：上下文由 ContextBuilder 组装成自然段落，
+# 话题由模型自由创造——记忆只是背景，不规定这次说什么（发起人核心理念）
 _GENERATE_PROMPT = (
-    '你是家庭管家，像认识很久的熟朋友顺口搭话——不是播音员念稿。'
-    '事件：{event}。在场的人：{who}。北京时间：{local_time}。方向提示：{hint}。'
+    '{context}\n\n'
+    '基于以上你了解的一切，此刻跟{who}自然地说一句话。\n'
+    '说什么由你自己判断——可以是有价值的建议、可以是天气/时事的关心、'
+    '可以是随意的闲聊。但不要重复你之前说过的话题。\n'
+    '不要说"我在呢"这种空洞问候。要有信息量、有趣、或者有用。\n'
     '{address_rule}'
-    '只输出要直接说出口的口语：每句不超过 30 个字、最多两句、无 Markdown、无表情符号、'
-    '不要以"我先看看"这类话开头。说人话：像朋友脱口而出的那种自然，'
-    '不用书面词（采用/位于/当前）、不复述细节、不念数字清单。直接输出那句话本身。'
+    '只输出要直接说出口的口语：每句不超过 30 个字、最多两句、无 Markdown、无表情符号。'
+    '直接输出那句话本身。'
 )
 
 
@@ -70,6 +69,7 @@ class ProactiveTrigger:
         speak: Callable[[str], bool] | None = None,
         log_path: Path | None = None,
         timeline: object | None = None,
+        habits: object | None = None,
     ) -> None:
         self._config = config or ProactiveConfig()
         self._identity = identity or IdentityTracker(self._config)
@@ -85,6 +85,8 @@ class ProactiveTrigger:
             urgent_threshold=self._config.num('review_urgent_threshold', 0.9),
             review_interval_seconds=1,  # 沿直达评审：不做周期节流（QC-2）
         )
+        # 富上下文组装器：生成前把家庭画像/gems/环境/时事/最近话题拼成自然段落
+        self._context_builder = ContextBuilder(self._config, habits)
         self._expression_policy = ExpressionPolicy(
             daily_budget=int(self._config.num('expression_daily_budget', 8)),  # 防爆值不是配额（V12b）
             topic_cooldown_seconds=int(self._config.num('topic_cooldown_sec', 3600)),
@@ -197,10 +199,8 @@ class ProactiveTrigger:
             self._log({'ok': True, 'stage': 'cooldown_precheck', 'edge': edge})
             return
         # 4) 模型评审："值得说吗"——判断权归模型
-        verdict = self._ask_gateway(
-            reasoning_effort='high', do_sample=False, json_mode=True,
-            prompt=_REVIEW_PROMPT.format(
-                event=event, presence=presence_text, local_time=local_time, area=area))
+        verdict = self._ask_gateway(_REVIEW_PROMPT.format(
+            event=event, presence=presence_text, local_time=local_time, area=area))
         parsed = self._parse_json(verdict)
         if not parsed or not parsed.get('say'):
             self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
@@ -222,7 +222,7 @@ class ProactiveTrigger:
             self._log({'ok': True, 'stage': 'expression_blocked', 'edge': edge,
                        'blocked': decision.reason})
             return
-        # 6) 生成（D 最小版；身份置信不足时不带称呼——QC-5）
+        # 6) 生成（D 富上下文版；身份置信不足时不带称呼——QC-5）
         address_rule = (
             '称呼对方为"{}"。'.format(presence_text)
             if self._identity.should_address_by_name() and presence_text not in ('未知',) else ''
@@ -241,11 +241,11 @@ class ProactiveTrigger:
             text = preset  # 预热生成时已约束 30 字/两句规格
             self._log({'ok': True, 'stage': 'preset_hit', 'edge': edge})
         else:
-            message = self._ask_gateway(
-                reasoning_effort='low', do_sample=True, json_mode=False,  # 口语生成：轻思考+采样多样性
-                prompt=_GENERATE_PROMPT.format(
-                    event=event, who=presence_text, local_time=local_time,
-                    hint=str(parsed.get('what_hint') or '')[:60], address_rule=address_rule))
+            # 富上下文生成（D 升级）：评审通过才组装（组装有读文件开销，被否决的候选不花这份钱）；
+            # 上下文里已含时间/画面/最近说过的话，event/hint 不再单独传——话题判断权全交模型
+            context = self._context_builder.build(edge, presence_text, record)
+            message = self._ask_gateway(_GENERATE_PROMPT.format(
+                context=context, who=presence_text, address_rule=address_rule))
             text = (message or '').strip()
         if not text:
             self._log({'ok': False, 'stage': 'generate_empty', 'edge': edge})
@@ -303,23 +303,12 @@ class ProactiveTrigger:
         except Exception:
             return True  # 读不到就投——fail-open（在途作废是加分项不是安全闸）
 
-    def _ask_gateway(self, prompt: str, *, reasoning_effort: str = 'low',
-                     do_sample: bool = False, json_mode: bool = True) -> str | None:
-        """干活模块参数矩阵（发起人 2026-10-23）：
-
-        评审（值得说吗）→ high 深思考 + 确定性 + JSON 模式——唯一吃深思考的环节
-        生成（说什么）  → low 轻思考 + do_sample=True 采样多样性（口语自然）+ 无 JSON
-        """
-        body: dict = {
+    def _ask_gateway(self, prompt: str) -> str | None:
+        body = {
             'model': 'openclaw',
             'messages': [{'role': 'user', 'content': prompt}],
             'stream': False,
-            'thinking': {'type': 'enabled'},   # flash 强制项
-            'reasoning_effort': reasoning_effort,
-            'do_sample': do_sample,
         }
-        if json_mode:
-            body['response_format'] = {'type': 'json_object'}
         headers = {
             'Authorization': f'Bearer {self._token}',
             'Content-Type': 'application/json',
