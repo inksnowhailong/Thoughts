@@ -596,21 +596,36 @@ class VoiceDaemon:
             self._dropped += 1
 
     def _open_stream(self, text: str):
-        """一句话连同语音标记+视觉文字注记发给大脑。
+        """一句话连同语音标记+最新缓存帧（多模态），一次请求发给大脑。
 
-        2026-10-23 提速修复：语音轮不再默认附带图片——每轮带图让智谱多花 2-4s
-        处理视觉、且模型依赖"镜头恰好朝向"的缓存帧而不主动调 camera_look（发起人
-        反馈"问他我俩在干嘛他不看我们+回复慢"）。现在只给文字注记（镜头朝向/有人
-        与否/新鲜度），模型需要看画面时自己调 camera_look / camera_photo——
-        慢在刀刃上：普通对话 3-4s，问视觉的对话多 3-5s 但真的会转向看人。
+        2026-10-23 恢复默认带图（实测数据证明图片不是延迟主因：
+        2K 纯文本输入的智谱首响与带图轮同为 ~6s，慢在智谱晚高峰排队）。
+        帧是隐私降级版（采集源头生效）；send_to_model=False 的待命/夜间帧不带。
+        画面里没答案时模型仍按 AGENTS.md 规则调 camera_look 主动看。
         """
         tagged = tag_voice_text(text, speaker=self._turn_speaker)
         note = ''
+        image_b64 = ''
         if self.vision_loop is not None:
             ctx = self.vision_loop.latest_context()
             note = vision_note(ctx)
+            # 读取最新缓存帧，附在请求里让模型直接看到画面（夜间/待命帧不送）
+            if ctx.get('send_to_model', True):
+                try:
+                    img_path = ctx.get('image_path', '')
+                    if img_path and Path(img_path).exists():
+                        import base64 as _b64mod
+                        image_b64 = _b64mod.b64encode(Path(img_path).read_bytes()).decode('ascii')
+                except Exception:
+                    image_b64 = ''
         if note:
             tagged = f"{tagged} {note}"
+        if image_b64:
+            content = [
+                {"type": "text", "text": tagged},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            ]
+            return self.brain.stream(content)
         return self.brain.stream(tagged)
 
     def _reset_frontend(self) -> None:
