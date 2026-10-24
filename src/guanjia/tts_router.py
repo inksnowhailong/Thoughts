@@ -110,10 +110,22 @@ class TTSRouter:
         self._aborted = False                     # 本句被 abort：synth 里据此不再发兜底请求
 
     def _load_key(self) -> str:
-        """读智谱 API key；缺失只在这里警告一次，主路自动退化为纯本地。"""
+        """读智谱 API key；缺失只在这里警告一次，主路自动退化为纯本地。
+
+        key 存在 ~/.openclaw/openclaw.json 的 models.providers.zhipu.apiKey
+        （与 camera-tool.py 同源），SecretRef 的 secrets 目录远程机器上不存在。
+        """
         try:
-            return KEY_PATH.read_text(encoding='utf-8').strip()
-        except OSError as e:
+            import json as _json
+            oc = _json.loads(
+                (Path.home() / '.openclaw' / 'openclaw.json').read_text(encoding='utf-8-sig'))
+            key = oc['models']['providers']['zhipu'].get('apiKey', '')
+            if isinstance(key, dict):
+                # SecretRef 尝试 secrets 文件（可能不存在）
+                kf = KEY_PATH
+                key = kf.read_text(encoding='utf-8').strip() if kf.exists() else ''
+            return str(key).strip()
+        except Exception as e:
             log.warning('tts glm key 读取失败（%s），主路关闭，只用本地 IndexTTS', e)
             return ''
 

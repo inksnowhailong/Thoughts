@@ -356,6 +356,12 @@ class VisionLoop:
                 self._move_toward(self._standby_target_pan, current)
             return
         if night or not detected or box is None:
+            # 无人时回中（发起人反馈：摄像头一直对着墙）——
+            # 人离开后镜头回中位（pan≈0），下次有人在哪个区域都能更快扫到
+            if not detected and not night and self._person_present is False:
+                current_pan = float(self._position().get('pan') or 0.0)
+                if abs(current_pan) > 0.15 and time.monotonic() > self._track_cooldown_until:
+                    self._move_toward(0.0, current_pan)
             return  # 夜间不转；无人/无框不跟
         center_x = (box[0] + box[2]) / 2.0
         edge = self._proactive.num('track_edge', 0.22)
