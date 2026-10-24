@@ -630,7 +630,11 @@ class VoiceDaemon:
             return self.brain.stream(content, model='glm-5.3' if self._paused.is_set() else None)
         # 游戏模式中模型升档（发起人 10-24 需求）：flash 看游戏截图知识深度不够，
         # 游戏中的请求全部走 glm-5.3 完整版（输入 8元/百万 tokens，一局约 0.05 元）
-        gaming_model = 'glm-5.3' if self._paused.is_set() else None
+        # 游戏模式中模型升档 + 付费熔断（防止烧光余额）：
+        # 付费模型日耗超防线×2 → usage_guard 自动关断 → 回 flash 免费额度
+        gaming_model = None
+        if self._paused.is_set():
+            gaming_model = 'flash' if self.usage_guard.is_paid_disabled() else 'glm-5.3'
         return self.brain.stream(tagged, model=gaming_model)
 
     def _reset_frontend(self) -> None:
@@ -1302,7 +1306,7 @@ class VoiceDaemon:
         # 日耗 token 防线（发起人要求：防止余额被主脑烧掉）——
         # 累计每日 usage；超防线告警，双倍阈值自动停主动环（被动对话不受影响）
         try:
-            self.usage_guard.record(s.get("usage"))
+            self.usage_guard.record(s.get("usage"), model=str(s.get("model") or ""))
         except Exception:
             pass
 

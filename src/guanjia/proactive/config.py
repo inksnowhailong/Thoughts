@@ -38,6 +38,7 @@ _DEFAULTS: dict[str, object] = {
     'review_urgent_threshold': 0.9,
     'review_max_per_hour': 10,          # 独立限流（SX-12/JG-19）
     'expression_daily_budget': 8,       # 日总防爆值（V12b：不挤正常密度，只防话痨爆发）
+    'glm53_daily_cap_yuan': 2.0,         # 付费模型日耗上限（元）——超2倍自动退回flash
     'speak_window_sec': 21600,           # 开口防爆窗：6 小时（V12b）
     'speak_window_capacity': 4,         # 窗口内最多 4 次（防爆，非配额）
     'topic_cooldown_sec': 3600,         # 细话题冷却（防同一件事重复说）
