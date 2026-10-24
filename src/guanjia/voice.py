@@ -1855,14 +1855,6 @@ class VoiceDaemon:
             return {}
 
     # ---------- 主循环 ----------
-    def _startup_compact(self):
-        """启动时整理压缩主会话历史，防止积累过多。"""
-        if self.context_gardener is not None:
-            try:
-                self.context_gardener.run_cycle()
-            except Exception:
-                pass
-
     def run(self) -> None:
         logging.getLogger().addHandler(HubLogHandler(self.hub))
         s = self.store.current
@@ -1904,13 +1896,8 @@ class VoiceDaemon:
             self.timeline.start()  # 时间轴预热线程（混合时序——发起人裁决 7）
         if self.context_gardener is not None:
             self.context_gardener.start()
-            # 启动时立即压缩历史
-            try:
-                import threading as _st
-                _st.Thread(target=self._startup_compact, name='startup-compact', daemon=True).start()
-                log.info('startup_compact: triggered')
-            except Exception:
-                log.exception('startup_compact: failed')
+            # 不在启动时压缩：网关重建会话投影期间请求会被拒绝。
+            # 园丁只在静默窗口执行 compact，避免启动后用户立即说话时撞竞态。
         self.sleep_rehearsal.start()
         self.audit.start()
         if self.tray_on:
