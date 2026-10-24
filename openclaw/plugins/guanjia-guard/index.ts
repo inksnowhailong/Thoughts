@@ -9,7 +9,7 @@ import { startApprovalIpc } from "./src/approval-ipc";
 import { startRedactProxy } from "./src/redact";
 import { onUserTurn as habitOnUserTurn } from "./src/habits";
 import { createSpeakTool, stripVoiceTag } from "./src/speak";
-import { createCameraLookTool, createCameraPhotoTool, createCameraPtzTool, createEnvironmentSnapshotTool, createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool } from "./src/ps-tools";
+import { createCameraLookTool, createCameraPhotoTool, createCameraPtzTool, createEnvironmentSnapshotTool, createGetDesktopStatusTool, createGetLocationTool, createGetWeatherTool, createLaunchAppTool, createScreenCaptureTool } from "./src/ps-tools";
 import { bindTaskApproval, decideTaskApproval, createTaskCancelTool, createTaskReportTool, createTaskStartTool, createTaskStatusTool } from "./src/tasks";
 import { recordMainWatermark } from "./src/main-watermark";
 import { captureWechatInboundIdentity, diagnoseWechatInboundContext } from "./src/wechat-inbound";
@@ -100,6 +100,7 @@ export default definePluginEntry({
     api.registerTool(createCameraPtzTool({ workspaceDir }));
     api.registerTool(createCameraPhotoTool({ workspaceDir }));
     api.registerTool(createCameraLookTool({ workspaceDir }));
+    api.registerTool(createScreenCaptureTool({ workspaceDir }));
     api.registerTool(createTaskStartTool({ workspaceDir }));
     api.registerTool(createTaskStatusTool({ workspaceDir }));
     api.registerTool(createTaskCancelTool({ workspaceDir }));

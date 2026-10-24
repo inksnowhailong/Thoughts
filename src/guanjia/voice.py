@@ -1778,35 +1778,36 @@ class VoiceDaemon:
             self.vision_loop.stop()
         if self.context_gardener is not None:
             self.context_gardener.stop()  # 游戏态暂停眼睛循环，省 CPU 和网络
-        """进入游戏态：停流、清空积压、释放 ASR（CPU 内存）、通知 TTS 服务释放显存。主循环调用。"""
-        if self.watchdog is not None:
-            self.watchdog.disarm()  # 停流期间没有回调是正常的
-        s.stop()
+        """进入游戏态（发起人 10-24 改版：游戏中全听——喊「管家」能问攻略）。
+
+        不再停麦克风流和 ASR（麦克风 + 流式识别全保留，游戏性能受影响时再回来改轻听）。
+        只做：停视觉/园丁线程省资源、清积压、通知精识别可按显存卸载 GPU 模型。
+        TTS 不主动 unload（游戏中说话要花几秒重载，但比聋了强）。
+        """
+        if self.vision_loop is not None:
+            self.vision_loop.stop()
+        if self.context_gardener is not None:
+            self.context_gardener.stop()
         for q in (self.in_q, self.text_q):
             while not q.empty():
                 q.get_nowait()
-        self.asr = None
         final = getattr(self, "asr_final", None)
-        if final is not None:  # 精识别保留（SenseVoice 回退很小）；GPU 上的 FireRedASR2 显存紧张时由它自己让服务卸载
-            final.enter_gaming()
-        threading.Thread(target=self.tts.control, args=("unload",), name="tts-unload", daemon=True).start()
-        log.info("gaming: 音频流已停，流式 ASR 已释放；精识别按显存余量决定是否卸载 GPU 模型")
+        if final is not None:
+            final.enter_gaming()  # 精识别按显存余量决定是否卸载 GPU 模型
+        self._paused.set()  # 静默标志（不主动说话 + 主动环压制），但被动对话照常
+        log.info("gaming: 全听模式——麦克风保留，视觉/园丁暂停，不主动说话")
 
     def _resume_audio(self, s: sd.Stream) -> None:
         if self.vision_loop is not None:
             self.vision_loop.start()
         if self.context_gardener is not None:
             self.context_gardener.start()
-        self.asr = StreamingASR()
         final = getattr(self, "asr_final", None)
-        if final is not None:  # 已卸载的话后台让服务重新加载，加载完成前走 SenseVoice
-            final.leave_gaming()
+        if final is not None:
+            final.leave_gaming()  # 已卸载的话后台让服务重新加载
         self._reset_frontend()
-        s.start()
-        if self.watchdog is not None:
-            self.watchdog.arm()  # 从重新启动那刻起重新计时
-        threading.Thread(target=self.tts.control, args=("load",), name="tts-load", daemon=True).start()
-        log.info("gaming 结束: 音频流已恢复")
+        self._paused.clear()  # 清静默标志——恢复主动说话
+        log.info("gaming 结束: 视觉/园丁恢复，主动说话恢复")
 
     def _audio_devices(self) -> dict:
         """当前输入 / 输出设备名，随 audio.* 事件一起记（知道故障时用的是哪个设备）；查不到不影响启动。"""

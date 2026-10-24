@@ -311,6 +311,41 @@ export function createCameraLookTool(opts: PsToolOptions) {
 
 
 
+export function createScreenCaptureTool(opts: PsToolOptions) {
+  const projectRoot = process.env.GUANJIA_PROJECT_ROOT || "F:\\coding\\guanjia-v2-development";
+  const script = path.join(projectRoot, "openclaw", "workspace", "tools", "screen-capture.py");
+  return {
+    name: "screen_capture",
+    label: "Screenshot the screen",
+    catalogMode: DIRECT_ONLY,
+    description:
+      "截取电脑屏幕画面。主人问游戏攻略/屏幕上有什么/帮我看看屏幕时用这个工具" +
+      "（特别是游戏模式中——先截屏看清游戏画面再给建议）。截图会自动送达。",
+    parameters: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "截图标签（可选）" },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: { label?: unknown }) {
+      const label = typeof params?.label === "string" ? params.label : "";
+      const out = await new Promise<{ stdout: string; code: number | null }>((resolve) => {
+        execFile(
+          process.env.GUANJIA_PYTHON || path.join(projectRoot, ".venv", "Scripts", "python.exe"),
+          ["-X", "utf8", script, "shot", "--label", label],
+          { windowsHide: true, timeout: 15000, encoding: "utf8" },
+          (err: any, stdout) => resolve({ stdout: String(stdout ?? ""), code: err ? (typeof err.code === "number" ? err.code : null) : 0 }),
+        );
+      });
+      const r = lastJson(out.stdout);
+      if (!r?.ok) return textResult(`截屏失败：${r?.error ?? "未知错误"}`, { ok: false });
+      const mediaLine = typeof r.path === "string" ? `\nMEDIA: ${r.path}` : "";
+      return textResult(`已截取屏幕画面。${mediaLine}`);
+    },
+  };
+}
+
 export function createEnvironmentSnapshotTool(opts: PsToolOptions) {
   const runPs = opts.runPs ?? defaultRunPs;
   const projectRoot = process.env.GUANJIA_PROJECT_ROOT || "F:\\coding\\guanjia-v2-development";

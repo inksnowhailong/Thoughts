@@ -16,6 +16,7 @@
       "camera_photo",
       "camera_ptz",
       "camera_look",
+      "screen_capture",
       "task_start",
       "task_status",
       "task_cancel",
