@@ -1881,7 +1881,9 @@ class VoiceDaemon:
 
             self.tray = Tray(view=self.view, muted=self._muted.is_set, on_toggle_mute=self.toggle_mute,
                              on_restart=lambda: self.request_exit(EXIT_RESTART, "tray"),
-                             on_exit=lambda: self.request_exit(EXIT_QUIT, "tray"), on_open_panel=self.open_panel)
+                             on_exit=lambda: self.request_exit(EXIT_QUIT, "tray"), on_open_panel=self.open_panel,
+                             gaming=lambda: self._paused.is_set(),
+                             on_toggle_gaming=lambda: self.set_gaming(False))
             self.tray.start()
         failed = False
         shown = ""

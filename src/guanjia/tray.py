@@ -100,10 +100,14 @@ def promote_tray_icon(reg=None, prefix: str | tuple[str, ...] = TOOLTIP_PREFIXES
 class Tray:
     def __init__(self, view: Callable[[], TrayView], muted: Callable[[], bool], on_toggle_mute: Callable[[], None],
                  on_restart: Callable[[], None], on_exit: Callable[[], None],
-                 on_open_panel: Callable[[], None] | None = None) -> None:
+                 on_open_panel: Callable[[], None] | None = None,
+                 gaming: Callable[[], bool] | None = None,
+                 on_toggle_gaming: Callable[[], None] | None = None) -> None:
         self.view = view
         self.muted = muted
         self.on_toggle_mute = on_toggle_mute
+        self.gaming = gaming or (lambda: False)
+        self.on_toggle_gaming = on_toggle_gaming
         self.on_restart = on_restart
         self.on_exit = on_exit
         self.on_open_panel = on_open_panel
@@ -130,6 +134,8 @@ class Tray:
         items += [
             pystray.MenuItem("静音", lambda icon, item: self.on_toggle_mute(), checked=lambda item: self.muted(),
                              default=True),  # default = 左键单击触发
+            pystray.MenuItem("退出游戏模式", lambda icon, item: self.on_toggle_gaming(),
+                             visible=lambda item: self.gaming()),  # 只在游戏模式中显示
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("重启语音", lambda icon, item: self.on_restart()),
             pystray.MenuItem("退出语音", lambda icon, item: self.on_exit()),
