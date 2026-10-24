@@ -63,10 +63,11 @@ class ModularBrain:
         self.last_run_id: str | None = None
         self.last_meta: dict = {}
 
-    def stream(self, text: str, system: str | None = None) -> Iterator[str]:
+    def stream(self, text: str, system: str | None = None, *, model: str | None = None) -> Iterator[str]:
+        """透传 model 参数给底层 Brain（游戏模式模型升档用）。"""
         chunks: list[str] = []
         try:
-            for chunk in self._legacy.stream(text, system):
+            for chunk in self._legacy.stream(text, system, model=model):
                 chunks.append(chunk)
                 yield chunk
         finally:
