@@ -959,6 +959,35 @@ class VoiceDaemon:
         except Exception:
             pass
 
+    def _start_hotkey(self) -> None:
+        """F9 全局热键：一键切换游戏模式（发起人要求 F 功能键，选 F9——几乎无游戏绑定）。
+
+        keyboard 库只支持 Windows（本项目纯 Windows）；线程内跑事件等待循环。
+        按 F9：GAMING → IDLE 或 IDLE → GAMING，托盘图标变色即时可见。
+        """
+        try:
+            import keyboard  # 延迟导入：无 GUI 环境（--no-tray/单测）不需要
+        except ImportError:
+            log.warning('F9 热键不可用（keyboard 库未安装），用托盘菜单切换游戏模式')
+            return
+
+        def on_f9() -> None:
+            try:
+                gaming = self._paused.is_set()
+                self.set_gaming(not gaming)
+                state = '已进游戏模式（全听）' if not gaming else '已退出游戏模式'
+                log.info('F9 热键：%s', state)
+                if self.tray:
+                    self.tray.notify(f'{DISPLAY_NAME}：{state}')
+            except Exception as exc:  # noqa: BLE001
+                log.warning('F9 热键处理失败：%s', exc)
+
+        self._hotkey_thread = threading.Thread(
+            target=lambda: keyboard.add_hotkey('f9', on_f9) or keyboard.wait(),
+            name='f9-hotkey', daemon=True)
+        self._hotkey_thread.start()
+        log.info('F9 全局热键已注册：按 F9 切换游戏模式')
+
     def _accept_utterance(self, text: str, uid: str | None = None, speaker: str = "") -> None:
         """一句话放行：正在说就停（只停播放）；立刻放提示音；文字排进大脑队列。"""
         if self.state == "SPEAKING":
@@ -1886,6 +1915,8 @@ class VoiceDaemon:
                              gaming=lambda: self._paused.is_set(),
                              on_toggle_gaming=lambda: self.set_gaming(False))
             self.tray.start()
+        # F9 全局热键：一键切换游戏模式（发起人 10-24 需求——游戏中快速开关不占资源的模式）
+        self._start_hotkey()
         failed = False
         shown = ""
         last_stats, stats = time.monotonic(), (0, 0)
