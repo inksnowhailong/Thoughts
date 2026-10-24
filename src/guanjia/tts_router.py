@@ -13,7 +13,9 @@ voice.py 里把 TTSClient 换成 TTSRouter 即可；老的 `pcm, sr = synth(...)
 
 from __future__ import annotations
 
+import base64
 import io
+import json
 import logging
 import os
 import time
@@ -76,6 +78,32 @@ def _resample_stream(chunks: Iterator[np.ndarray], sr_in: int, sr_out: int) -> I
         n_tail = max(0, int(np.ceil((end + 1) / step - 1e-9)) - k)
         if n_tail:
             yield np.full(n_tail, last, dtype=np.float32)
+
+
+def _sse_to_pcm(byte_chunks: Iterator[bytes]) -> Iterator[bytes]:
+    """GLM-TTS SSE 流 → 裸 PCM 字节流。
+
+    响应是 text/event-stream，每行 data: {"choices":[{"delta":{"content":"<base64 PCM>"}}]}——
+    content 是 base64 编码的 PCM 块。之前直接把 SSE JSON 文本当 int16 PCM 解码导致爆炸噪音。
+    """
+    buf = b''
+    for b in byte_chunks:
+        buf += b
+        while b'\n' in buf:
+            line, buf = buf.split(b'\n', 1)
+            line = line.strip()
+            if not line.startswith(b'data:'):
+                continue
+            payload = line[5:].strip()
+            if payload == b'[DONE]':
+                return
+            try:
+                obj = json.loads(payload.decode('utf-8'))
+                content = obj['choices'][0].get('delta', {}).get('content', '')
+                if content:
+                    yield base64.b64decode(content)
+            except (json.JSONDecodeError, KeyError, IndexError, ValueError):
+                continue  # 非音频事件行跳过
 
 
 def _pcm_to_float32(byte_chunks: Iterator[bytes]) -> Iterator[np.ndarray]:
@@ -225,7 +253,7 @@ class TTSRouter:
                 if r.status_code != 200:
                     detail = r.read()[:200]
                     raise RuntimeError('glm http %d: %s' % (r.status_code, detail.decode('utf-8', 'replace')))
-                yield from _resample_stream(_pcm_to_float32(r.iter_bytes()), GLM_SR, TARGET_SR)
+                yield from _resample_stream(_pcm_to_float32(_sse_to_pcm(r.iter_bytes())), GLM_SR, TARGET_SR)
             finally:
                 self._resp = None
 
