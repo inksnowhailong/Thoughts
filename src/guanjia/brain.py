@@ -66,10 +66,11 @@ class Brain:
         self.last_run_id: str | None = None  # 最近一轮的网关 runId（chatcmpl_…），调试面板据此查网关内部耗时
         self.last_meta: dict = {}  # 最近一轮流里带的元信息：chunks / model / finish_reason / usage（有才有），统一事件日志用
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, model_override: str | None = None) -> dict[str, str]:
         h = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
-        if self.model:
-            h["x-openclaw-model"] = self.model
+        effective = model_override or self.model
+        if effective:
+            h["x-openclaw-model"] = effective
         if self.session_key:
             h["x-openclaw-session-key"] = self.session_key
         return h
@@ -89,11 +90,15 @@ class Brain:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
-    def stream(self, text: str, system: str | None = None) -> Iterator[str]:
-        """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（网关已经结束这一轮）。"""
+    def stream(self, text: str, system: str | None = None, *, model: str | None = None) -> Iterator[str]:
+        """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（网关已经结束这一轮）。
+
+        model 参数：单次请求的模型覆盖（x-openclaw-model 头）——
+        游戏模式中传 'glm-5.3'（完整版，比 flash 知识深度高一个量级）用于攻略分析。
+        """
         self.last_run_id = None
         meta = self.last_meta = {}  # 每轮换一个新字典，上一轮留给事件日志读的那份不会被改
-        with self._client.stream("POST", self.url, headers=self._headers(), json=self._body(text, system, stream=True)) as r:
+        with self._client.stream("POST", self.url, headers=self._headers(model), json=self._body(text, system, stream=True)) as r:
             self._resp = r
             try:
                 r.raise_for_status()

@@ -627,8 +627,11 @@ class VoiceDaemon:
                 {"type": "text", "text": tagged},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
             ]
-            return self.brain.stream(content)
-        return self.brain.stream(tagged)
+            return self.brain.stream(content, model='glm-5.3' if self._paused.is_set() else None)
+        # 游戏模式中模型升档（发起人 10-24 需求）：flash 看游戏截图知识深度不够，
+        # 游戏中的请求全部走 glm-5.3 完整版（输入 8元/百万 tokens，一局约 0.05 元）
+        gaming_model = 'glm-5.3' if self._paused.is_set() else None
+        return self.brain.stream(tagged, model=gaming_model)
 
     def _reset_frontend(self) -> None:
         """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
