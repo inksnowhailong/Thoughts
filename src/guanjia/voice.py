@@ -454,6 +454,7 @@ class VoiceDaemon:
         self._dropped = 0  # in_q 满丢掉的帧数
         self._underflows = 0  # 输出欠载次数
         self._paused = threading.Event()  # 游戏态：由运行态监控置位，主循环据此停开音频流
+        self._gaming_resources_suspended = False  # 全听模式只暂停视觉/园丁；显式记录，避免每 0.5s 重复执行
         self._muted = threading.Event()  # 托盘/面板静音：不听不说
         self._front_dirty = False  # 静音期间前端丢过帧，恢复时先复位 VAD/ASR（只有前端线程读写）
         self._exit_code: int | None = None  # 托盘/面板要求的退出码
@@ -657,8 +658,6 @@ class VoiceDaemon:
             try:
                 fr = self.in_q.get(timeout=0.2)
             except queue.Empty:
-                continue
-            if self._paused.is_set():  # 游戏态：丢弃停流前残留的帧
                 continue
             if self._muted.is_set():  # 静音：不听
                 self._front_dirty = True
@@ -1100,7 +1099,7 @@ class VoiceDaemon:
             rec_uid = item.uid if isinstance(item, (Heard, SayItem)) else None
             rec_obj = self.hub.record(rec_uid) if rec_uid else None
             is_inject = bool(rec_obj and rec_obj.get("source") == "inject")
-            if (self._paused.is_set() or self._muted.is_set()) and not is_inject:
+            if self._muted.is_set() and not is_inject:
                 continue
             try:
                 self._handle_item(item)
@@ -1810,16 +1809,14 @@ class VoiceDaemon:
         self.runtime.set_manual_gaming(on)
 
     def _suspend_audio(self, s: sd.Stream) -> None:
-        if self.vision_loop is not None:
-            self.vision_loop.stop()
-        if self.context_gardener is not None:
-            self.context_gardener.stop()  # 游戏态暂停眼睛循环，省 CPU 和网络
         """进入游戏态（发起人 10-24 改版：游戏中全听——喊「管家」能问攻略）。
 
         不再停麦克风流和 ASR（麦克风 + 流式识别全保留，游戏性能受影响时再回来改轻听）。
         只做：停视觉/园丁线程省资源、清积压、通知精识别可按显存卸载 GPU 模型。
         TTS 不主动 unload（游戏中说话要花几秒重载，但比聋了强）。
         """
+        if self._gaming_resources_suspended:
+            return
         if self.vision_loop is not None:
             self.vision_loop.stop()
         if self.context_gardener is not None:
@@ -1830,10 +1827,12 @@ class VoiceDaemon:
         final = getattr(self, "asr_final", None)
         if final is not None:
             final.enter_gaming()  # 精识别按显存余量决定是否卸载 GPU 模型
-        self._paused.set()  # 静默标志（不主动说话 + 主动环压制），但被动对话照常
+        self._gaming_resources_suspended = True
         log.info("gaming: 全听模式——麦克风保留，视觉/园丁暂停，不主动说话")
 
     def _resume_audio(self, s: sd.Stream) -> None:
+        if not self._gaming_resources_suspended:
+            return
         if self.vision_loop is not None:
             self.vision_loop.start()
         if self.context_gardener is not None:
@@ -1842,7 +1841,7 @@ class VoiceDaemon:
         if final is not None:
             final.leave_gaming()  # 已卸载的话后台让服务重新加载
         self._reset_frontend()
-        self._paused.clear()  # 清静默标志——恢复主动说话
+        self._gaming_resources_suspended = False
         log.info("gaming 结束: 视觉/园丁恢复，主动说话恢复")
 
     def _audio_devices(self) -> dict:
@@ -1932,8 +1931,9 @@ class VoiceDaemon:
             self.program_quiet.start()  # Q1：只读前台候选状态，不抑制任何语音
             try:
                 while not self._stop_evt.is_set():
+                    paused = self._paused.is_set()  # 游戏态只暂停资源，音频流保持 active
                     # 组件看门狗：线程死了自动重启，不让功能悄悄失效
-                    if not hasattr(self, '_watchdog_at') or time.monotonic() - self._watchdog_at > 30:
+                    if (not paused) and (not hasattr(self, '_watchdog_at') or time.monotonic() - self._watchdog_at > 30):
                         self._watchdog_at = time.monotonic()
                         for name, comp in [('vision_loop', self.vision_loop), ('context_gardener', self.context_gardener)]:
                             if comp is not None:
@@ -1943,10 +1943,9 @@ class VoiceDaemon:
                                     log.warning('watchdog: restarted dead %s thread', name)
                                     elog.emit('voice', 'watchdog.restart', f'{name} 线程死了，已自动重启')
                     time.sleep(0.5)
-                    paused = self._paused.is_set()  # 本轮只读一次，防监控线程中途翻转导致误判"流死了"
-                    if paused and s.active:
+                    if paused and not self._gaming_resources_suspended:
                         self._suspend_audio(s)
-                    elif not paused and not s.active:
+                    elif not paused and self._gaming_resources_suspended:
                         self._resume_audio(s)
                     dead = [t.name for t in threads if not t.is_alive()]
                     # 托盘/面板要求退出时工作线程会跟着结束，这不是崩溃：误判成崩溃会回退出码 1，看门狗又把它拉起来
@@ -1971,7 +1970,7 @@ class VoiceDaemon:
                         self._refresh_tray()
                         self.hub.status(self.status())
                         # 待确认压过静音 / 游戏中的颜色，但麦克风是否在听要看真实状态，不能看图标 key
-                        mic_off = self._muted.is_set() or self._paused.is_set()
+                        mic_off = self._muted.is_set()  # 游戏全听：游戏态麦克风仍在听
                         self.hub.stage(None, "mic", "blocked" if mic_off else "active", self.view().label)
                     while self._play_events:  # 回调记下的"真正写入输出流"的时刻与时长
                         t0, dur, g = self._play_events.popleft()
