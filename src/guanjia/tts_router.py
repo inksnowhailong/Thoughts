@@ -31,7 +31,7 @@ log = logging.getLogger('guanjia.tts_router')
 # ---- 主路：GLM-TTS（智谱云端，OpenAI /audio/speech 兼容风格）----
 GLM_URL = os.environ.get('GUANJIA_GLM_TTS_URL', 'https://open.bigmodel.cn/api/paas/v4/audio/speech')
 GLM_MODEL = 'glm-tts'
-GLM_VOICE = os.environ.get('GUANJIA_GLM_TTS_VOICE', 'tongtong')
+GLM_VOICE = os.environ.get('GUANJIA_GLM_TTS_VOICE', 'douji')
 GLM_SR = 24000        # GLM-TTS pcm 裸流采样率
 GLM_DTYPE = '<i2'     # GLM-TTS pcm 字节序：16bit 小端
 TARGET_SR = 16000     # 语音进程吃 16kHz
