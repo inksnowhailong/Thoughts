@@ -80,6 +80,7 @@ from guanjia.settings import SETTINGS_PATH, Settings, SettingsStore, to_dict
 from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper
 from guanjia.speaker import SPK_MODEL, STORE, SpeakerGate, backup_path
 from guanjia.status import DISPLAY_NAME, Health, HealthMonitor, TrayView, tcp_alive, tray_view
+from guanjia.game_advice import GameAdviceWorker
 from guanjia.task_manager import TaskManager
 from guanjia.task_dispatch import TaskDispatchScheduler
 from guanjia.task_executor import TaskNotice, TaskWorkerExecutor
@@ -537,6 +538,7 @@ class VoiceDaemon:
                                                floor_ratio=BARGE_FLOOR_RATIO, trigger_ms=BARGE_MS))
         self._mon_ms, self._mon_peak = 0, 0.0  # barge-mon 日志计时与区间 RMS 峰值（只有前端线程读写）
         self.usage_guard = UsageGuard()  # 日耗 token 防线（gateway.run 处累计）
+        self.game_advice = GameAdviceWorker(self.usage_guard)
         self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
                                      on_change=self._on_health, interval=HEALTH_EVERY_SEC)
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
@@ -628,15 +630,8 @@ class VoiceDaemon:
                 {"type": "text", "text": tagged},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
             ]
-            return self.brain.stream(content, model='glm-5.3' if self._paused.is_set() else None)
-        # 游戏模式中模型升档（发起人 10-24 需求）：flash 看游戏截图知识深度不够，
-        # 游戏中的请求全部走 glm-5.3 完整版（输入 8元/百万 tokens，一局约 0.05 元）
-        # 游戏模式中模型升档 + 付费熔断（防止烧光余额）：
-        # 付费模型日耗超防线×2 → usage_guard 自动关断 → 回 flash 免费额度
-        gaming_model = None
-        if self._paused.is_set():
-            gaming_model = 'flash' if self.usage_guard.is_paid_disabled() else 'glm-5.3'
-        return self.brain.stream(tagged, model=gaming_model)
+            return self.brain.stream(content)
+        return self.brain.stream(tagged)
 
     def _reset_frontend(self) -> None:
         """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
@@ -900,7 +895,14 @@ class VoiceDaemon:
             if monitor is not None:
                 monitor.note_activity()
             self.hub.update(uid, verdict="accept", reason=d.reason, sent=d.text)
-            self._accept_utterance(d.text, uid, speaker)
+            if self._paused.is_set() and self._is_game_advice(d.text):
+                # 游戏攻略分层：主程序不调模型，立即说"我看一下"，
+                # 独立 worker 截屏 → glm-5.3-flash 看图分析一次调用 → 回队列播报。
+                started = self.game_advice.submit(d.text, self._deliver_game_advice)
+                self.text_q.put(SayItem("我看一下" if started else "上一张还没看完，等我一下", uid))
+                log.info("game advice: %s question=%r", "submitted" if started else "busy", d.text)
+            else:
+                self._accept_utterance(d.text, uid, speaker)
             if source == "mic":
                 self._observe_accepted_voice(d.text, uid, speaker)
         elif d.verdict == "wake_only":
@@ -915,12 +917,26 @@ class VoiceDaemon:
         return self._on_heard(text, None, source="inject", dry_run=dry_run)
 
     _EMERGENCY_STOP_WORDS = ('别说了', '闭嘴', '别说话', '别出声', '别念了', '不要说了', '安静点', '别吵了')
+    _GAME_ADVICE_WORDS = (
+        '怎么打', '怎么玩', '出什么装', '怎么出装', '攻略', '对线',
+        '符文', '这局', '这波', '帮我看看游戏', '看看屏幕',
+    )
 
     @classmethod
     def _is_emergency_stop(cls, text: str) -> bool:
         """急停词本地匹配（YH-8）：短句且命中即急停；长句不误伤。"""
         cleaned = text.strip().strip('。，！？!?,. ')
         return 0 < len(cleaned) <= 6 and any(cleaned == w or cleaned.startswith(w) for w in cls._EMERGENCY_STOP_WORDS)
+
+    @classmethod
+    def _is_game_advice(cls, text: str) -> bool:
+        """游戏攻略意图本地识别：主程序不进模型，立即应答后交给后台 worker。"""
+        cleaned = re.sub(r'\s+', '', text)
+        return any(word in cleaned for word in cls._GAME_ADVICE_WORDS)
+
+    def _deliver_game_advice(self, text: str) -> None:
+        """后台 worker 完成后把结果放进直接播报队列，不再经过主脑。"""
+        self.text_q.put(SayItem(text))
 
     def _on_vision_edge(self, record: dict, edge: str) -> None:
         """视觉沿分发（主动环总入口）：A 身份感知 + C 触发引擎。
@@ -2022,6 +2038,8 @@ class VoiceDaemon:
             self.task_ipc.stop()
         if self.task_executor is not None:
             self.task_executor.shutdown()
+        if self.game_advice is not None:
+            self.game_advice.shutdown()
         if self.tray:
             self.tray.stop()
         self.control.shutdown()
