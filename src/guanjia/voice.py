@@ -1657,7 +1657,11 @@ class VoiceDaemon:
             return
         if self._turn_is_say:
             return
-        self.task_dispatch.record_start(self._turn_uid, task["id"])
+        if not self.task_dispatch.record_start(self._turn_uid, task["id"]):
+            # 没有主线语音轮（微信/面板/外部会话派活）：直接领取执行，
+            # 不能让任务挂在 queued 里永远没人管
+            self.start_task_worker(task["id"])
+            log.info("task dispatched directly (no voice turn): %s", task["id"])
 
     def _run_scheduled_task(self, task_id: str) -> None:
         """定时器到点回调：任务仍是 queued 才领取执行（被取消则跳过）。"""

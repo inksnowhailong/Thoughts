@@ -39,7 +39,9 @@ function client(opts: TaskToolOptions) {
         ...(body ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(1000),
       });
-      return response.status === 200 ? await response.json() : { ok: false, error: "rejected" };
+      if (response.status === 200) return await response.json();
+      // 非 200：尽量把守护进程给的原因带回去（如 bad_when），模型才能改对
+      try { return await response.json(); } catch { return { ok: false, error: "rejected" }; }
     } catch {
       return { ok: false, error: "unavailable" };
     }
@@ -91,7 +93,10 @@ export function createTaskStartTool(opts: TaskToolOptions) {
       if (typeof params.summary !== "string" || typeof params.goal !== "string") return textResult("任务没有创建：参数不对。", { ok: false, error: "bad_input" });
       const when = typeof params.when === "string" ? params.when : "";
       const result = await call("POST", "/start", { summary: params.summary, goal: params.goal, when });
-      return result.ok ? textResult(`任务已创建：${result.task.summary}。`, { ok: true, task: result.task }) : unavailable();
+      if (result.ok) return textResult(`任务已创建：${result.task.summary}。`, { ok: true, task: result.task });
+      if (result.error === "bad_when")
+        return textResult("任务没有创建：when 时间格式看不懂。用本地时间格式，例如 20:00（今晚八点）或 2026-10-26T08:30。", { ok: false, error: "bad_when" });
+      return unavailable();
     },
   };
 }

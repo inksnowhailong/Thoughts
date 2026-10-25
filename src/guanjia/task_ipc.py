@@ -21,19 +21,33 @@ _TASK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _parse_when(when: Any) -> float | None:
-    """把 when 字段解析为 epoch 秒；缺省/无效/已过时都返回 None（立即执行）。"""
+    """把 when 字段解析为 epoch 秒。
+
+    缺省 → None（立即执行）；纯时间 HH:MM 按今天（已过则明天）；
+    ISO 格式原样解析；填了但看不懂 → 抛 TaskError 拒绝创建——
+    绝不把"定时任务"静默降级成立即执行（bug 3 教训）。
+    """
     if not isinstance(when, str) or not when.strip():
         return None
-    from datetime import datetime
-    text = when.strip()
-    try:
-        # 支持 "2026-10-25T20:00" / "2026-10-25 20:00" / "2026-10-25T20:00:00"（本地时间）
-        parsed = datetime.fromisoformat(text.replace(" ", "T"))
-    except ValueError:
-        return None
+    from datetime import datetime, timedelta
+    import re as _re
     import time as _time
+    text = when.strip()
+    parsed = None
+    time_only = _re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
+    if time_only:
+        now = datetime.now()
+        parsed = now.replace(hour=int(time_only[1]), minute=int(time_only[2]),
+                            second=int(time_only[3] or 0), microsecond=0)
+        if parsed <= now:
+            parsed += timedelta(days=1)  # 今天的时刻已过 → 明天这个点
+    else:
+        try:
+            parsed = datetime.fromisoformat(text.replace(" ", "T"))
+        except ValueError:
+            raise TaskError("bad_when") from None
     epoch = parsed.timestamp()
-    return epoch if epoch > _time.time() else None
+    return epoch if epoch > _time.time() else None  # 明确给的历史时间 → 立即执行
 
 
 def _public(task: dict[str, Any]) -> dict[str, Any]:
@@ -160,8 +174,9 @@ class TaskIpc:
                         else:
                             self._send(404, {"ok": False})
                             return
-                except TaskError:
-                    self._send(409, {"ok": False})
+                except TaskError as exc:
+                    # 带上原因（如 bad_when），插件层据此告诉模型怎么改
+                    self._send(409, {"ok": False, "error": str(exc)})
                     return
                 self._send(200, {"ok": True, "task": _public(task)})
 
