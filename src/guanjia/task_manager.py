@@ -141,7 +141,7 @@ class TaskManager:
                 id=task_id,
                 summary=summary.strip(),
                 goal=goal.strip(),
-                session_key=f"agent:main:task-{task_id}",
+                session_key=f"agent:worker:task-{task_id}",
             )
             self._tasks[task.id] = task
             self._persist(task, "created")

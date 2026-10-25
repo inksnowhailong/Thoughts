@@ -50,7 +50,7 @@ function client(opts: TaskToolOptions) {
 export async function bindTaskApproval(workspaceDir: string, input: {
   sessionKey?: string; approvalId: string; description: string; expiresAt: number;
 }, fetchImpl?: FetchLike) {
-  const match = /^agent:main:task-([0-9a-f]{32})$/.exec(input.sessionKey ?? "");
+  const match = /^agent:worker:task-([0-9a-f]{32})$/.exec(input.sessionKey ?? "");
   if (!match) return false;
   const result = await client({ workspaceDir, fetchImpl })("POST", "/approval", {
     id: match[1], approval_id: input.approvalId, description: input.description, expires_at: input.expiresAt,
@@ -62,7 +62,7 @@ export async function bindTaskApproval(workspaceDir: string, input: {
 export async function decideTaskApproval(workspaceDir: string, input: {
   sessionKey?: string; decision: "approve" | "reject";
 }) {
-  const match = /^agent:main:task-([0-9a-f]{32})$/.exec(input.sessionKey ?? "");
+  const match = /^agent:worker:task-([0-9a-f]{32})$/.exec(input.sessionKey ?? "");
   if (!match) return false;
   const result = await client({ workspaceDir })("POST", "/approval-decision", { id: match[1], decision: input.decision });
   return result.ok === true;
@@ -76,7 +76,7 @@ export function createTaskStartTool(opts: TaskToolOptions) {
   const call = client(opts);
   return {
     name: "task_start", label: "Start background task", catalogMode: DIRECT_ONLY,
-    description: "Create a persistent background task for a multi-step task likely over 5 seconds. It only queues a task and never executes commands, downloads, or a model.",
+    description: "Create a persistent background task for a multi-step task likely over 5 seconds. The worker has a screen_capture tool, so tasks that need to see the current screen (game advice, what is on screen) belong here too. It only queues a task and never executes commands, downloads, or a model.",
     parameters: { type: "object", properties: { summary: { type: "string" }, goal: { type: "string" } }, required: ["summary", "goal"], additionalProperties: false },
     async execute(_id: string, params: { summary?: unknown; goal?: unknown }) {
       if (typeof params.summary !== "string" || typeof params.goal !== "string") return textResult("任务没有创建：参数不对。", { ok: false, error: "bad_input" });

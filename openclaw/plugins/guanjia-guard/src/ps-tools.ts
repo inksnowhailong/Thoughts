@@ -265,7 +265,7 @@ export function createCameraLookTool(opts: PsToolOptions) {
     catalogMode: DIRECT_ONLY,
     description:
       "用家里摄像头看画面并回答问题。主人问'看看屋里有什么/用摄像头看一下/往左看看是谁/你在看哪儿'时用这个工具，" +
-      "不要用 exec 调脚本。它会自主转向搜索画面再看清内容，question 填想看什么。",nd describe what is visible. " +
+      "不要用 exec 调脚本。它会自主转向搜索画面再看清内容，question 填想看什么。" +
       "Use whenever the owner asks '看看屋里有什么/用摄像头看一下/往左看看是谁/你在看哪儿'.",
     parameters: {
       type: "object",

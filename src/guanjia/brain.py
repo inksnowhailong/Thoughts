@@ -73,6 +73,10 @@ class Brain:
             h["x-openclaw-model"] = effective
         if self.session_key:
             h["x-openclaw-session-key"] = self.session_key
+            # 多 agent 架构：网关要求显式指定目标 agent，从会话键 agent:<id>:… 取第二段
+            parts = self.session_key.split(":")
+            if len(parts) >= 2 and parts[0] == "agent":
+                h["x-openclaw-agent-id"] = parts[1]
         return h
 
     def _body(self, text: str, system: str | None, stream: bool) -> dict:
