@@ -47,9 +47,9 @@ class TaskService:
         self.manager = manager
         self.workers = workers or TaskWorkerAdapter(manager)
 
-    def task_start(self, summary: str, goal: str) -> dict[str, Any]:
-        """创建 queued 任务并返回独立会话键；不自动执行，主线无需等待。"""
-        return self.manager.create(summary, goal)
+    def task_start(self, summary: str, goal: str, run_at: float | None = None) -> dict[str, Any]:
+        """创建 queued 任务并返回独立会话键；不自动执行，主线无需等待。run_at 在未来时为定时任务。"""
+        return self.manager.create(summary, goal, run_at=run_at)
 
     def task_status(self, task_id: str | None = None) -> dict[str, Any]:
         """查看单项或聚合状态；不读取任务会话正文。"""

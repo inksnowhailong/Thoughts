@@ -57,7 +57,9 @@ export function createSpeakTool(opts: SpeakToolOptions = {}) {
     description:
       "Speak a short sentence aloud on the home PC speakers in the butler's own voice (SCV). " +
       "Use when the owner asks to read or say something out loud on the computer (念一句 / 读出来 / 在电脑上说). " +
-      "Input: text, up to 300 characters. Fails with a clear reason if the voice daemon is not running, muted, or the owner is gaming.",
+      "Input: text, up to 300 characters. Fails with a clear reason if the voice daemon is not running, muted, or the owner is gaming. " +
+      "IMPORTANT: the spoken text will also be delivered to the owner's ears — do NOT repeat the same sentence in your final reply; " +
+      "keep the final reply empty or say something new, otherwise the owner hears it twice.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: "要念出来的话（口语，最多 300 字）" } },

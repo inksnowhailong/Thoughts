@@ -510,6 +510,7 @@ class VoiceDaemon:
         self.tasks = TaskService(self.task_manager)
         self.task_executor = TaskWorkerExecutor(self.tasks, policy=self.announcements, on_notice=self._on_task_notice)
         self.task_dispatch = TaskDispatchScheduler(self._emit_task_dispatch)
+        self._task_timers: dict[str, threading.Timer] = {}  # 定时任务到点执行器（run_at）
         self.hub = EventHub(records_file=RECORDS_FILE, elog=elog.get())  # 面板记录的每次变化同时派生统一事件日志
         s = self.store.current
         self.wake = WakeMatcher(s.wake_words)
@@ -1639,10 +1640,54 @@ class VoiceDaemon:
         return executor.submit(task_id)
 
     def _on_task_created(self, task: dict) -> None:
-        """Task IPC 的 /start 成功回调：只接受正在处理的主线语音轮。"""
+        """Task IPC 的 /start 成功回调：只接受正在处理的主线语音轮。
+
+        定时任务（run_at 在未来）：不进本轮派发，到点由定时器触发执行；
+        被取消的任务到点时状态已不是 queued，回调会自动跳过。
+        """
+        run_at = task.get("run_at")
+        if isinstance(run_at, (int, float)) and run_at > time.time():
+            delay = max(1.0, run_at - time.time())
+            timer = threading.Timer(delay, self._run_scheduled_task, [task["id"]])
+            timer.daemon = True
+            self._task_timers[task["id"]] = timer
+            timer.start()
+            log.info("task scheduled: %s run_at=%s (in %.0fs)", task["id"],
+                     time.strftime('%m-%d %H:%M', time.localtime(run_at)), delay)
+            return
         if self._turn_is_say:
             return
         self.task_dispatch.record_start(self._turn_uid, task["id"])
+
+    def _run_scheduled_task(self, task_id: str) -> None:
+        """定时器到点回调：任务仍是 queued 才领取执行（被取消则跳过）。"""
+        self._task_timers.pop(task_id, None)
+        try:
+            task = self._task_service().task_status(task_id)
+            if task.get("status") != "queued":
+                log.info("task scheduled skip: %s status=%s", task_id, task.get("status"))
+                return
+            self.start_task_worker(task_id)
+            log.info("task scheduled fired: %s", task_id)
+        except Exception:
+            log.exception("task scheduled fire failed: %s", task_id)
+
+    def _rearm_scheduled_tasks(self) -> None:
+        """启动时重挂定时任务：queued 且带 run_at 的任务到点执行（已过时立即执行）。"""
+        try:
+            for task in self._task_service().task_status().get("recent_tasks", []):
+                if task.get("status") != "queued" or not isinstance(task.get("run_at"), (int, float)):
+                    continue
+                run_at = task["run_at"]
+                delay = max(1.0, run_at - time.time())
+                timer = threading.Timer(delay, self._run_scheduled_task, [task["id"]])
+                timer.daemon = True
+                self._task_timers[task["id"]] = timer
+                timer.start()
+                log.info("task re-armed: %s run_at=%s (in %.0fs)", task["id"],
+                         time.strftime('%m-%d %H:%M', time.localtime(run_at)), delay)
+        except Exception:
+            log.exception("re-arm scheduled tasks failed")
 
     def _on_task_approval_decision(self, task_id: str, decision: str) -> None:
         """审批 IPC 已按 pending id 确认后才到这里；UI 和语音不接触 worker session。"""
@@ -1884,6 +1929,8 @@ class VoiceDaemon:
             self.task_ipc = None
             log.warning("任务 IPC 启动失败；task_* 工具将 fail-closed：%s", e)
             elog.emit("task", "task.ipc_unavailable", "任务 IPC 启动失败", level="warn", error=str(e))
+        # 重启恢复：queued 且带 run_at 的定时任务重新挂上到点执行
+        self._rearm_scheduled_tasks()
         threads = [threading.Thread(target=self._frontend, name="frontend", daemon=True),
                    threading.Thread(target=self._brainloop, name="brain", daemon=True)]
         for t in threads:

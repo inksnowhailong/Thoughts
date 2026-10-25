@@ -76,11 +76,21 @@ export function createTaskStartTool(opts: TaskToolOptions) {
   const call = client(opts);
   return {
     name: "task_start", label: "Start background task", catalogMode: DIRECT_ONLY,
-    description: "Create a persistent background task for a multi-step task likely over 5 seconds. The worker has a screen_capture tool, so tasks that need to see the current screen (game advice, what is on screen) belong here too. It only queues a task and never executes commands, downloads, or a model.",
-    parameters: { type: "object", properties: { summary: { type: "string" }, goal: { type: "string" } }, required: ["summary", "goal"], additionalProperties: false },
-    async execute(_id: string, params: { summary?: unknown; goal?: unknown }) {
+    description: "Create a persistent background task for a multi-step task likely over 5 seconds. The worker has a screen_capture tool, so tasks that need to see the current screen (game advice, what is on screen) belong here too. For a TIMED task (定时/到点提醒/几点再做), set `when` to a local time like 2026-10-25T20:00 — the worker will NOT run until then; omit `when` to run immediately. It only queues a task and never executes commands, downloads, or a model.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "任务简述（一句话）" },
+        goal: { type: "string", description: "任务目标（给干活 worker 的完整指令）" },
+        when: { type: "string", description: "执行时间（本地时间，如 2026-10-25T20:00）；定时任务必填，不填立即执行" },
+      },
+      required: ["summary", "goal"],
+      additionalProperties: false,
+    },
+    async execute(_id: string, params: { summary?: unknown; goal?: unknown; when?: unknown }) {
       if (typeof params.summary !== "string" || typeof params.goal !== "string") return textResult("任务没有创建：参数不对。", { ok: false, error: "bad_input" });
-      const result = await call("POST", "/start", { summary: params.summary, goal: params.goal });
+      const when = typeof params.when === "string" ? params.when : "";
+      const result = await call("POST", "/start", { summary: params.summary, goal: params.goal, when });
       return result.ok ? textResult(`任务已创建：${result.task.summary}。`, { ok: true, task: result.task }) : unavailable();
     },
   };
@@ -90,7 +100,7 @@ export function createTaskStatusTool(opts: TaskToolOptions) {
   const call = client(opts);
   return {
     name: "task_status", label: "Get task status", catalogMode: DIRECT_ONLY,
-    description: "Read task summary or one task status. Does not reveal task goals, worker session keys, or transcripts.",
+    description: "Read task summary or one task status. Omit `id` entirely to get the task summary — never invent ids like 'latest'. Does not reveal task goals, worker session keys, or transcripts.",
     parameters: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
     async execute(_id: string, params: { id?: unknown }) {
       if (params.id !== undefined && (typeof params.id !== "string" || !TASK_ID.test(params.id))) return textResult("任务编号不对。", { ok: false, error: "bad_id" });

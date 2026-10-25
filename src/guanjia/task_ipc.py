@@ -20,9 +20,25 @@ TASK_DESCRIPTOR = Path.home() / ".openclaw" / "workspace" / "guanjia" / "task-ip
 _TASK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
+def _parse_when(when: Any) -> float | None:
+    """把 when 字段解析为 epoch 秒；缺省/无效/已过时都返回 None（立即执行）。"""
+    if not isinstance(when, str) or not when.strip():
+        return None
+    from datetime import datetime
+    text = when.strip()
+    try:
+        # 支持 "2026-10-25T20:00" / "2026-10-25 20:00" / "2026-10-25T20:00:00"（本地时间）
+        parsed = datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return None
+    import time as _time
+    epoch = parsed.timestamp()
+    return epoch if epoch > _time.time() else None
+
+
 def _public(task: dict[str, Any]) -> dict[str, Any]:
     """跨进程只给工具层任务摘要，目标和 worker session 始终留在守护进程内。"""
-    keys = ("id", "summary", "status", "progress", "progress_percent", "result", "error", "updated_at")
+    keys = ("id", "summary", "status", "progress", "progress_percent", "result", "error", "updated_at", "run_at")
     item = {key: task[key] for key in keys if key in task}
     if task.get("approval"):
         item["approval"] = {"id": task["approval"]["id"], "description": task["approval"]["description"],
@@ -103,7 +119,8 @@ class TaskIpc:
                         summary, goal = body.get("summary"), body.get("goal")
                         if not isinstance(summary, str) or not isinstance(goal, str) or len(summary) > 120 or len(goal) > 1000:
                             raise TaskError("bad_input")
-                        task = owner.tasks.task_start(summary, goal)
+                        run_at = _parse_when(body.get("when"))
+                        task = owner.tasks.task_start(summary, goal, run_at=run_at)
                         if owner.on_started is not None:
                             try:
                                 owner.on_started(task)

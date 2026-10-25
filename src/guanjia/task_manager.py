@@ -67,6 +67,7 @@ class Task:
     progress: str = ""
     progress_percent: float | None = None
     approval: Approval | None = None
+    run_at: float | None = None  # 定时执行时刻（epoch 秒）；None = 立即执行
     result: str = ""
     error: str = ""
     created_at: float = field(default_factory=time.time)
@@ -87,6 +88,7 @@ class Task:
             progress=str(raw.get("progress", "")),
             progress_percent=raw.get("progress_percent"),
             approval=Approval(**approval) if approval else None,
+            run_at=raw.get("run_at"),
             result=str(raw.get("result", "")),
             error=str(raw.get("error", "")),
             created_at=float(raw["created_at"]),
@@ -131,10 +133,12 @@ class TaskManager:
                 manager._persist(task, "interrupted_on_restore")
         return manager
 
-    def create(self, summary: str, goal: str) -> dict[str, Any]:
-        """新任务先进入队列，由执行器随后调用 start。"""
+    def create(self, summary: str, goal: str, run_at: float | None = None) -> dict[str, Any]:
+        """新任务先进入队列，由执行器随后调用 start；run_at 在未来时为定时任务。"""
         if not summary.strip() or not goal.strip():
             raise TaskError("任务简述和目标不能为空")
+        if run_at is not None and run_at <= time.time():
+            run_at = None  # 过去的时间视为立即执行，不报错
         with self._lock:
             task_id = uuid.uuid4().hex
             task = Task(
@@ -142,6 +146,7 @@ class TaskManager:
                 summary=summary.strip(),
                 goal=goal.strip(),
                 session_key=f"agent:worker:task-{task_id}",
+                run_at=run_at,
             )
             self._tasks[task.id] = task
             self._persist(task, "created")

@@ -480,6 +480,7 @@ class ProactiveTrigger:
             'Authorization': f'Bearer {self._token}',
             'Content-Type': 'application/json',
             'x-openclaw-session-key': _REVIEW_SESSION,
+            'x-openclaw-agent-id': 'main',  # 多 agent 架构：网关要求显式指定，缺头会被 400 拒掉
         }
         try:
             with httpx.Client(timeout=30.0, trust_env=False) as client:
