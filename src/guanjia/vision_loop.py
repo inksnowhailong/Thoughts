@@ -356,12 +356,14 @@ class VisionLoop:
                 self._move_toward(self._standby_target_pan, current)
             return
         if night or not detected or box is None:
-            # 无人时回中（发起人反馈：摄像头一直对着墙）——
-            # 人离开后镜头回中位（pan≈0），下次有人在哪个区域都能更快扫到
+            # 无人时回看护位（发起人反馈：摄像头一直对着墙——
+            # 老标定把正对墙/电视特写的位置记成了 pan=0，回中反而永远面壁）：
+            # 目标改为 proactive.json 的 home_pan（2026-10-27 实拍校准 0.311，能看到电视/过道/冰箱）
             if not detected and not night and self._person_present is False:
+                home_pan = float(self._proactive.num('home_pan', 0.0))
                 current_pan = float(self._position().get('pan') or 0.0)
-                if abs(current_pan) > 0.15 and time.monotonic() > self._track_cooldown_until:
-                    self._move_toward(0.0, current_pan)
+                if abs(current_pan - home_pan) > 0.08 and time.monotonic() > self._track_cooldown_until:
+                    self._move_toward(home_pan, current_pan)
             return  # 夜间不转；无人/无框不跟
         center_x = (box[0] + box[2]) / 2.0
         edge = self._proactive.num('track_edge', 0.22)

@@ -138,7 +138,7 @@ class UsageGuard:
             try:
                 import json as _json
                 p = _REPO / 'data' / 'vision' / 'proactive.json'
-                data = _json.loads(p.read_text(encoding='utf-8'))
+                data = _json.loads(p.read_text(encoding='utf-8-sig'))  # 兼容 BOM 头，否则静默关停失效
                 data['proactive_enabled'] = False
                 p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
                 self._state['note'] = '主动环已自动关停（proactive_enabled=false），被动对话照常'

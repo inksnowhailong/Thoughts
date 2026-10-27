@@ -76,7 +76,8 @@ class ProactiveConfig:
 
     def _load(self) -> dict[str, object]:
         try:
-            data = json.loads(self.path.read_text(encoding='utf-8'))
+            # utf-8-sig：兼容 PowerShell Set-Content 写出的 BOM 头（2026-10-27 事故：BOM 让整份配置静默变默认值）
+            data = json.loads(self.path.read_text(encoding='utf-8-sig'))
             return data if isinstance(data, dict) else {}
         except Exception:
             return {}
