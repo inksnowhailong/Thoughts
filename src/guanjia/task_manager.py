@@ -68,6 +68,7 @@ class Task:
     progress_percent: float | None = None
     approval: Approval | None = None
     run_at: float | None = None  # 定时执行时刻（epoch 秒）；None = 立即执行
+    verify: dict | None = None   # L1 验收后置条件（方案 D）：过不了不许 complete
     result: str = ""
     error: str = ""
     created_at: float = field(default_factory=time.time)
@@ -89,6 +90,7 @@ class Task:
             progress_percent=raw.get("progress_percent"),
             approval=Approval(**approval) if approval else None,
             run_at=raw.get("run_at"),
+            verify=raw.get("verify") if isinstance(raw.get("verify"), dict) else None,
             result=str(raw.get("result", "")),
             error=str(raw.get("error", "")),
             created_at=float(raw["created_at"]),
@@ -133,12 +135,22 @@ class TaskManager:
                 manager._persist(task, "interrupted_on_restore")
         return manager
 
-    def create(self, summary: str, goal: str, run_at: float | None = None) -> dict[str, Any]:
-        """新任务先进入队列，由执行器随后调用 start；run_at 在未来时为定时任务。"""
+    def create(self, summary: str, goal: str, run_at: float | None = None,
+               verify: dict | None = None) -> dict[str, Any]:
+        """新任务先进入队列，由执行器随后调用 start；run_at 在未来时为定时任务。
+
+        verify 是 L1 验收后置条件（方案 D），例如：
+        {"kind": "process", "name": "cloudmusic"}     启动类：核实进程在跑
+        {"kind": "file", "path": "D:/x", "min_kb": 1} 产出类：核实文件存在
+        {"kind": "camera_contains", "text": "沙发"}   摄像头类：画面里有目标
+        {"kind": "screen_contains", "text": "结算"}   屏幕类：截屏里有目标
+        """
         if not summary.strip() or not goal.strip():
             raise TaskError("任务简述和目标不能为空")
         if run_at is not None and run_at <= time.time():
             run_at = None  # 过去的时间视为立即执行，不报错
+        if verify is not None and not isinstance(verify, dict):
+            raise TaskError("verify 必须是对象")
         with self._lock:
             task_id = uuid.uuid4().hex
             task = Task(
@@ -147,6 +159,7 @@ class TaskManager:
                 goal=goal.strip(),
                 session_key=f"agent:worker:task-{task_id}",
                 run_at=run_at,
+                verify=verify,
             )
             self._tasks[task.id] = task
             self._persist(task, "created")

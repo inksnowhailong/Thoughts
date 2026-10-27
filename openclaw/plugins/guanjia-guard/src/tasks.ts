@@ -78,21 +78,23 @@ export function createTaskStartTool(opts: TaskToolOptions) {
   const call = client(opts);
   return {
     name: "task_start", label: "Start background task", catalogMode: DIRECT_ONLY,
-    description: "Create a persistent background task for a multi-step task likely over 5 seconds. The worker has a screen_capture tool, so tasks that need to see the current screen (game advice, what is on screen) belong here too. For a TIMED task (定时/到点提醒/几点再做), set `when` to a local time like 2026-10-25T20:00 — the worker will NOT run until then; omit `when` to run immediately. It only queues a task and never executes commands, downloads, or a model.",
+    description: "Create a persistent background task for a multi-step task likely over 5 seconds. The worker has a screen_capture tool, so tasks that need to see the current screen (game advice, what is on screen) belong here too. For a TIMED task (定时/到点提醒/几点再做), set `when` to a local time like 2026-10-25T20:00 — the worker will NOT run until then; omit `when` to run immediately. For verifiable outcomes, set `verify` — the task is only marked complete after the check passes (launching an app: {\"kind\":\"process\",\"name\":\"cloudmusic\"}; producing a file: {\"kind\":\"file\",\"path\":\"D:/out.zip\",\"min_kb\":1}; physical world: {\"kind\":\"camera_contains\",\"text\":\"沙发\"}; screen: {\"kind\":\"screen_contains\",\"text\":\"结算\"}). It only queues a task and never executes commands, downloads, or a model.",
     parameters: {
       type: "object",
       properties: {
         summary: { type: "string", description: "任务简述（一句话）" },
         goal: { type: "string", description: "任务目标（给干活 worker 的完整指令）" },
         when: { type: "string", description: "执行时间（本地时间，如 2026-10-25T20:00）；定时任务必填，不填立即执行" },
+        verify: { type: "object", description: "验收后置条件 {kind,name|path|text,min_kb}；不填=只看 TASK_OUTCOME 证据" },
       },
       required: ["summary", "goal"],
       additionalProperties: false,
     },
-    async execute(_id: string, params: { summary?: unknown; goal?: unknown; when?: unknown }) {
+    async execute(_id: string, params: { summary?: unknown; goal?: unknown; when?: unknown; verify?: unknown }) {
       if (typeof params.summary !== "string" || typeof params.goal !== "string") return textResult("任务没有创建：参数不对。", { ok: false, error: "bad_input" });
       const when = typeof params.when === "string" ? params.when : "";
-      const result = await call("POST", "/start", { summary: params.summary, goal: params.goal, when });
+      const verify = params.verify && typeof params.verify === "object" ? params.verify : undefined;
+      const result = await call("POST", "/start", { summary: params.summary, goal: params.goal, when, verify });
       if (result.ok) return textResult(`任务已创建：${result.task.summary}。`, { ok: true, task: result.task });
       if (result.error === "bad_when")
         return textResult("任务没有创建：when 时间格式看不懂。用本地时间格式，例如 20:00（今晚八点）或 2026-10-26T08:30。", { ok: false, error: "bad_when" });

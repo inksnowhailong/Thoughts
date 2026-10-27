@@ -52,7 +52,7 @@ def _parse_when(when: Any) -> float | None:
 
 def _public(task: dict[str, Any]) -> dict[str, Any]:
     """跨进程只给工具层任务摘要，目标和 worker session 始终留在守护进程内。"""
-    keys = ("id", "summary", "status", "progress", "progress_percent", "result", "error", "updated_at", "run_at")
+    keys = ("id", "summary", "status", "progress", "progress_percent", "result", "error", "updated_at", "run_at", "verify")
     item = {key: task[key] for key in keys if key in task}
     if task.get("approval"):
         item["approval"] = {"id": task["approval"]["id"], "description": task["approval"]["description"],
@@ -134,7 +134,8 @@ class TaskIpc:
                         if not isinstance(summary, str) or not isinstance(goal, str) or len(summary) > 120 or len(goal) > 1000:
                             raise TaskError("bad_input")
                         run_at = _parse_when(body.get("when"))
-                        task = owner.tasks.task_start(summary, goal, run_at=run_at)
+                        verify = body.get("verify") if isinstance(body.get("verify"), dict) else None
+                        task = owner.tasks.task_start(summary, goal, run_at=run_at, verify=verify)
                         if owner.on_started is not None:
                             try:
                                 owner.on_started(task)

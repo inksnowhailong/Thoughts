@@ -538,6 +538,12 @@ class VoiceDaemon:
                                                floor_ratio=BARGE_FLOOR_RATIO, trigger_ms=BARGE_MS))
         self._mon_ms, self._mon_peak = 0, 0.0  # barge-mon 日志计时与区间 RMS 峰值（只有前端线程读写）
         self.usage_guard = UsageGuard()  # 日耗 token 防线（gateway.run 处累计）
+        # 分级方案 P2：语音直调引擎（灰度开关 GUANJIA_TALK_DIRECT，voice.env 热改）
+        self._talk_direct = None
+        if os.environ.get('GUANJIA_TALK_DIRECT', '').lower() in ('1', 'true', 'yes', 'on'):
+            from guanjia.talk_direct import TalkDirect, ToolBox
+            self._talk_direct = TalkDirect(ToolBox(task_caller=self._task_ipc_call))
+            log.info('talk_direct: 语音轮直调已启用（GUANJIA_TALK_DIRECT=1）')
         self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
                                      on_change=self._on_health, interval=HEALTH_EVERY_SEC)
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
@@ -602,11 +608,13 @@ class VoiceDaemon:
     def _open_stream(self, text: str):
         """一句话连同语音标记+最新缓存帧（多模态），一次请求发给大脑。
 
-        2026-10-23 恢复默认带图（实测数据证明图片不是延迟主因：
-        2K 纯文本输入的智谱首响与带图轮同为 ~6s，慢在智谱晚高峰排队）。
-        帧是隐私降级版（采集源头生效）；send_to_model=False 的待命/夜间帧不带。
-        画面里没答案时模型仍按 AGENTS.md 规则调 camera_look 主动看。
+        2026-10-27 分级方案 P2：GUANJIA_TALK_DIRECT=1 时语音轮直调智谱
+        （底盘+滚动摘要+当轮图，工具自执行，3~4 秒开口），不再走网关会话；
+        开关关闭/缺省时走原网关路径（灰度，改 voice.env 即回滚）。
+        微信/面板不受影响，仍走网关。
         """
+        if self._talk_direct is not None:
+            return self._talk_direct.stream(text, speaker=self._turn_speaker)
         tagged = tag_voice_text(text, speaker=self._turn_speaker)
         note = ''
         image_b64 = ''
@@ -1320,6 +1328,13 @@ class VoiceDaemon:
         uid, m = self._turn_uid, self._turn_marks
         if m is None:
             return
+        if name == "stream_end" and self._talk_direct is not None:
+            # 直调轮不走网关事件链，usage 在这里记进日耗防线
+            try:
+                self.usage_guard.record(getattr(self._talk_direct, 'last_usage', None),
+                                        model='glm-5.3-flash')
+            except Exception:
+                pass
         t = data.get("t", time.time())
         if name == "first_token":
             m["first_token"] = t
@@ -1614,9 +1629,31 @@ class VoiceDaemon:
                                   for key in ("active_tasks", "interrupted_tasks", "recent_tasks")}
 
     # ---------- O3 任务接口（仅供后续受控 OpenClaw 工具接线；本批不派发模型或进程） ----------
-    def task_start(self, summary: str, goal: str) -> dict:
+    def _task_ipc_call(self, action: str, body: dict) -> dict:
+        """直调工具箱的任务桥：TaskService 直走（同进程），无 TaskError 拦路。"""
+        try:
+            if action == '/start':
+                from guanjia.task_ipc import _parse_when
+                run_at = _parse_when(body.get('when'))
+                task = self.task_start(body.get('summary', ''), body.get('goal', ''),
+                                      run_at=run_at)
+                try:
+                    self._on_task_created(task)  # 派发登记/定时挂载（TaskIPC 同款回调链）
+                except Exception:
+                    pass
+                return {'ok': True, 'task': task}
+            if action == '/status':
+                return {'ok': True, 'task': self.task_status(body.get('id'))}
+            if action == '/cancel':
+                return {'ok': True, 'task': self.task_cancel(body.get('id', ''),
+                                                             body.get('reason', ''))}
+        except Exception as exc:  # noqa: BLE001
+            return {'ok': False, 'error': str(exc)}
+        return {'ok': False, 'error': 'bad_action'}
+
+    def task_start(self, summary: str, goal: str, run_at: float | None = None) -> dict:
         """创建 queued 任务，立即返回；主线不等待任何任务执行。"""
-        return self._task_service().task_start(summary, goal)
+        return self._task_service().task_start(summary, goal, run_at=run_at)
 
     def task_status(self, task_id: str | None = None) -> dict:
         """查看任务摘要或单项状态。"""
