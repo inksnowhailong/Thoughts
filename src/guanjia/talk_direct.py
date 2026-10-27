@@ -350,10 +350,10 @@ class RollingHistory:
             pass
 
     def append(self, user: str, reply: str, vision_line: str) -> None:
-        """一轮入账；user/reply 各截 500/300 字，画面一行（~20 字）。"""
+        """一轮入账；按语音轮规格截断（user 200 / reply 120——历史里超长回复会教坏模型跟着说长话）。"""
         self._turns.append({
-            'u': user.strip()[:500],
-            'a': reply.strip()[:300],
+            'u': user.strip()[:200],
+            'a': reply.strip()[:120],
             'v': vision_line.strip()[:60],
         })
         if len(self._turns) > _ROLLING_TURNS:
@@ -389,11 +389,19 @@ class TalkDirect:
         self._url = str(hub.get('models.brain.fuse', 'http://127.0.0.1:18793')).rstrip('/') + '/api/paas/v4/chat/completions'
         self._toolbox = toolbox or ToolBox()
         self._history = RollingHistory()
-        self._base: str | None = None  # 底盘（首用构建后字节不变）
+        self._base: str | None = None  # 底盘缓存（按源文件 mtime 失效）
+        self._base_sig: str | None = None
+        self.last_usage: dict = {}
+        self._turn_usage: dict = {}
 
     def _base_prompt(self) -> str:
-        """固定底盘：SOUL + USER + MEMORY + IDENTITY + 管家规则 + 红线 + 视觉说明。"""
-        if self._base is None:
+        """固定底盘：SOUL + USER + MEMORY + IDENTITY + 管家规则 + 红线 + 视觉说明。
+
+        字节不变保前缀缓存；面板改了提示词文件（SOUL/USER/MEMORY/AGENTS）时
+        按 mtime 自动重建——不重建就得等下次重启才生效。
+        """
+        sig = self._sources_sig()
+        if self._base is None or sig != self._base_sig:
             parts = [
                 _read('SOUL.md'),
                 _read('USER.md'),
@@ -404,7 +412,20 @@ class TalkDirect:
                 _VISION_NOTE,
             ]
             self._base = '\n\n'.join(p for p in parts if p)
+            self._base_sig = sig
         return self._base
+
+    @staticmethod
+    def _sources_sig() -> str:
+        """底盘源文件的 mtime 指纹（启动后面板编辑即可热生效）。"""
+        import hashlib
+        marks = []
+        for name in ('SOUL.md', 'USER.md', 'MEMORY.md', 'IDENTITY.md', 'AGENTS.md'):
+            try:
+                marks.append(str((_WS / name).stat().st_mtime))
+            except OSError:
+                marks.append('x')
+        return hashlib.md5('|'.join(marks).encode()).hexdigest()
 
     def _vision_frame_b64(self) -> tuple[str, str]:
         """最新隐私帧 → 640px base64；顺带返回画面本地摘要一行。"""
@@ -463,6 +484,7 @@ class TalkDirect:
         with httpx.Client(timeout=120.0, trust_env=False) as client:
             for round_no in range(_MAX_TOOL_ROUNDS):
                 body = {'model': _MODEL, 'messages': messages, 'tools': _TOOLS, 'stream': True}
+                self._turn_usage = {}
                 r = client.stream('POST', self._url, headers={
                     'Authorization': f'Bearer {self._key}',
                     'Content-Type': 'application/json',
@@ -505,6 +527,7 @@ class TalkDirect:
                         for _, slot in sorted(tool_calls.items())
                     ]
                 messages.append(assistant_msg)
+                self._merge_turn_usage()  # 趟结束：usage 入整轮账
                 if not tool_calls:
                     break  # 纯文本收尾，出循环
                 if round_no == _MAX_TOOL_ROUNDS - 1:
@@ -522,17 +545,29 @@ class TalkDirect:
         self._history.append(text, reply, vision_note)
 
     def _absorb_usage(self, usage: dict | None) -> None:
-        """流里最后一次 usage 才是整轮完整值（智谱 SSE 惯例）。"""
-        if isinstance(usage, dict) and usage:
-            self.last_usage = {
-                'input': int(usage.get('prompt_tokens') or 0),
-                'output': int(usage.get('completion_tokens') or 0),
-                'cacheRead': int((usage.get('prompt_tokens_details') or {}).get('cached_tokens') or 0),
-            }
+        """SSE 帧内 usage 是累计值（覆盖取最新帧）；趟间累加在 _merge_turn_usage。"""
+        if not isinstance(usage, dict) or not usage:
+            return
+        self._turn_usage = {
+            'input': int(usage.get('prompt_tokens') or 0),
+            'output': int(usage.get('completion_tokens') or 0),
+            'cacheRead': int((usage.get('prompt_tokens_details') or {}).get('cached_tokens') or 0),
+        }
+
+    def _merge_turn_usage(self) -> None:
+        """一趟模型调用结束：把本趟 usage 累加进整轮（工具循环多趟不丢账）。"""
+        turn = getattr(self, '_turn_usage', {})
+        self.last_usage = {
+            'input': self.last_usage.get('input', 0) + turn.get('input', 0),
+            'output': self.last_usage.get('output', 0) + turn.get('output', 0),
+            'cacheRead': self.last_usage.get('cacheRead', 0) + turn.get('cacheRead', 0),
+        }
+        self._turn_usage = {}
 
     def reset_base(self) -> None:
-        """提示词文件被面板编辑后调用：下次重组底盘。"""
+        """外部强制重置底盘（mtime 指纹已覆盖日常场景，此方法留给显式调用）。"""
         self._base = None
+        self._base_sig = None
 
 
 __all__ = ['TalkDirect', 'ToolBox', 'RollingHistory']
