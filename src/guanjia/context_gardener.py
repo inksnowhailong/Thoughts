@@ -72,10 +72,13 @@ class ContextGardener:
     # ---------- lifecycle ----------
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._thread and self._thread.is_alive() and not self._stop.is_set():
             return
+        # 旧线程可能还在长周期里（compact CLI 最长 180s）且已被要求停止：
+        # 不等它，直接起新线程接岗；旧线程持有已 set 的旧旗子，跑完当前周期自然退出，
+        # _running 锁保证新旧线程不会同时跑周期。
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name='context-gardener', daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(self._stop,), name='context-gardener', daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 2.0) -> None:
@@ -83,8 +86,9 @@ class ContextGardener:
         if self._thread:
             self._thread.join(timeout)
 
-    def _run(self) -> None:
-        while not self._stop.wait(_POLL_SEC):
+    def _run(self, stop: threading.Event) -> None:
+        """stop 通过参数传入：线程持有自己的旗子，start() 换新旗子不影响本线程退出。"""
+        while not stop.wait(_POLL_SEC):
             try:
                 if self._should_garden():
                     self.run_cycle()
