@@ -178,6 +178,11 @@ class ProactiveTrigger:
         self._speak = speak or self._default_speak
         self._timeline = timeline
         self._token = load_gateway_token()
+        # 直调智谱（经保险丝）的端点与密钥——评审/生成不再走网关会话（加速 10-27）
+        from guanjia.config_hub import ConfigHub
+        hub = ConfigHub()
+        self._zhipu_key = hub.key('zhipu')
+        self._model_url = str(hub.get('models.brain.fuse', 'http://127.0.0.1:18793')).rstrip('/') + '/api/paas/v4/chat/completions'
         self._log_path = log_path or (
             Path(str(self._config.path)).parent / 'proactive-log.jsonl'
         )
@@ -329,16 +334,29 @@ class ProactiveTrigger:
         if last is not None and now - last < self._expression_policy.topic_cooldown:
             self._log({'ok': True, 'stage': 'cooldown_precheck', 'edge': edge})
             return
-        # 4) 模型评审："值得说吗"——判断权归模型
-        review_start = time.monotonic()
-        verdict = self._ask_gateway(_REVIEW_PROMPT.format(
-            event=event, presence=presence_text, local_time=local_time, area=area))
-        review_ms = int((time.monotonic() - review_start) * 1000)
-        parsed = self._parse_json(verdict)
-        if not parsed or not parsed.get('say'):
-            self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
-                       'reason': str((parsed or {}).get('reason') or 'no_json')[:80]})
-            return
+        # 4) 说话内容来源——预热句快路（发起人 10-27 要求加速）：
+        # 当日预设（时间轴预热）生成时已过评审规格约束，直接用，省掉 9 秒级模型评审；
+        # 没有预设才走"值得说吗"模型评审（直调小上下文，2~3 秒）。
+        preset = None
+        if self._timeline is not None:
+            try:
+                preset = self._timeline.preset_for(presence_text, datetime.now().hour)
+            except Exception:
+                preset = None
+        if preset:
+            parsed = {'say': True, 'kind': 'companion', 'what_hint': 'preset'}
+            review_ms = 0
+            self._log({'ok': True, 'stage': 'preset_fastpath', 'edge': edge})
+        else:
+            review_start = time.monotonic()
+            verdict = self._ask_gateway(_REVIEW_PROMPT.format(
+                event=event, presence=presence_text, local_time=local_time, area=area))
+            review_ms = int((time.monotonic() - review_start) * 1000)
+            parsed = self._parse_json(verdict)
+            if not parsed or not parsed.get('say'):
+                self._log({'ok': True, 'stage': 'review_rejected', 'edge': edge,
+                           'reason': str((parsed or {}).get('reason') or 'no_json')[:80]})
+                return
         # 反馈闭环（A）：评审给出话题类型后复查限流——纯陪伴型有更严的被无视收敛
         kind = str(parsed.get('kind') or 'information')
         allowed, throttle_reason = self._feedback.should_throttle(kind)
@@ -370,13 +388,7 @@ class ProactiveTrigger:
         # 发起人要求称"先生"；对先生用"你"自然相称即可，不必每句都喊称呼
         if presence_text == '先生' and self._identity.should_address_by_name():
             address_rule = '对先生说话，自然称呼即可。'
-        # 混合时序（裁决 7）：优先当日预设（时间轴预热，沿时刻只填动态位）；箱空现想
-        preset = None
-        if self._timeline is not None:
-            try:
-                preset = self._timeline.preset_for(presence_text, datetime.now().hour)
-            except Exception:
-                preset = None
+        # 混合时序（裁决 7）：预设已在第 4 步取好（快路），箱空现想
         if preset:
             text = preset  # 预热生成时已约束 30 字/两句规格
             self._log({'ok': True, 'stage': 'preset_hit', 'edge': edge})
@@ -471,22 +483,40 @@ class ProactiveTrigger:
             return True  # 读不到就投——fail-open（在途作废是加分项不是安全闸）
 
     def _ask_gateway(self, prompt: str) -> str | None:
+        """直调智谱（经保险丝）——评审/生成 prompt 自包含，不驮网关会话上下文。
+
+        原来走网关会话（agent:main:proactive-review）要编译全套 system prompt +
+        记忆检索再发模型，首响 9 秒起（发起人 10-27 要求加速）。直调小 prompt
+        2~3 秒内出结果；thinking/low 由保险丝统一注入，模型仍走 glm-5.3-flash。
+        """
+        key = self._zhipu_key
+        if not key:
+            return None
         body = {
-            'model': 'openclaw',
+            'model': 'glm-5.3-flash',
             'messages': [{'role': 'user', 'content': prompt}],
-            'stream': False,
+            'stream': True,  # 流式避免保险丝 25 秒首字窗误杀
         }
         headers = {
-            'Authorization': f'Bearer {self._token}',
+            'Authorization': f'Bearer {key}',
             'Content-Type': 'application/json',
-            'x-openclaw-session-key': _REVIEW_SESSION,
-            'x-openclaw-agent-id': 'main',  # 多 agent 架构：网关要求显式指定，缺头会被 400 拒掉
+            'Accept': 'text/event-stream',
         }
+        parts: list[str] = []
         try:
-            with httpx.Client(timeout=30.0, trust_env=False) as client:
-                response = client.post(_GATEWAY_URL, headers=headers, json=body)
-                response.raise_for_status()
-                return str(response.json()['choices'][0]['message']['content'])
+            with httpx.Client(timeout=25.0, trust_env=False) as client:
+                with client.stream('POST', self._model_url, headers=headers, json=body) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.startswith('data:'):
+                            continue
+                        data = line[5:].strip()
+                        if data == '[DONE]':
+                            break
+                        chunk = json.loads(data)
+                        for choice in chunk.get('choices') or []:
+                            parts.append((choice.get('delta') or {}).get('content') or '')
+            return ''.join(parts).strip() or None
         except Exception:
             return None
 
