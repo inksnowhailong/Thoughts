@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, Protocol, Sequence
 
 
 def _identifier(value: str, field_name: str) -> str:
@@ -352,3 +352,38 @@ def task_spec_from_dict(value: Mapping[str, object]) -> TaskSpec:
         delivery_requirements=DeliveryRequirements(**value['delivery_requirements']),
         resources=tuple(ResourceRequest(**item) for item in value['resources']),
     )
+
+
+class WorkerAdapter(Protocol):
+    """Worker 后端协议：session_for + call 两方法（TS agent-runtime / 历史 OpenClaw 同形）。"""
+
+    def session_for(self, logical_session: str) -> str: ...
+
+    def call(
+        self, *, logical_session: str, model: str, command: str, operation_id: str | None = None,
+        messages: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True)
+class Materials:
+    """只有显式 TaskSpec 引用才允许到达 worker。"""
+
+    references: tuple[ArtifactRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.references) is not tuple or not all(isinstance(item, ArtifactRef) for item in self.references):
+            raise ValueError('materials references must be a tuple')
+
+
+@dataclass(frozen=True)
+class MemoryPacket:
+    """有界的短记忆摘要包（≤8 条 × ≤500 字，Worker 上下文预算）。"""
+
+    summaries: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.summaries) is not tuple or len(self.summaries) > 8:
+            raise ValueError('memory packet must contain at most eight summaries')
+        if not all(type(item) is str and 0 < len(item) <= 500 for item in self.summaries):
+            raise ValueError('memory summaries must be short strings')

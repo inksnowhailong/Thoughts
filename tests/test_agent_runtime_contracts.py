@@ -24,7 +24,7 @@ from guanjia.core.contracts import (
     task_spec_from_dict,
     task_spec_to_dict,
 )
-from guanjia.core.worker_runtime import MemoryPacket
+from guanjia.core.contracts import MemoryPacket
 from guanjia.permission.contracts import (
     ActorEvidence,
     AuthorizationRequest,

@@ -1,7 +1,7 @@
 """TS agent-runtime Worker 后端适配器（GUANJIA_WORKER_BACKEND=ts）。
 
-与 core/openclaw_adapter.py 实现同一 WorkerAdapter 协议（session_for / call），
-把 WorkerRuntime 的两阶段命令映射到 TS Runtime 的 /v1/worker/*：
+实现 WorkerAdapter 协议（core/contracts.py：session_for / call），
+把任务命令映射到 TS Runtime 的 /v1/worker/*：
 
 - command='start'  → POST /v1/worker/runs + 消费 SSE 事件流直到 outcome；
 - command='cancel' → POST /v1/worker/runs/{run_id}/cancel；
@@ -89,7 +89,7 @@ def _task_result_from_wire(task_id: str, revision: int, wire: Mapping[str, objec
 
 
 def _task_result_to_json_dict(result: TaskResult) -> dict[str, object]:
-    """call() 返回值必须 strict JSON（WorkerRuntime._strict_response 会再序列化一次）。"""
+    """call() 返回值必须 strict JSON（调用方会再序列化一次）。"""
     return {
         'result_id': result.result_id,
         'task_id': result.task_id,
@@ -321,17 +321,10 @@ class AgentRuntimeAdapter:
         return {'ok': True, 'backend': 'agent_runtime', 'status': str(body.get('status') or '')}
 
 
-def build_worker_adapter(openclaw_transport=None, *, state=None, namespace: str = 'guanjia'):
-    """WorkerAdapter 工厂：GUANJIA_WORKER_BACKEND=ts（新链路）| openclaw（缺省，行为不变）。
+def build_worker_adapter() -> 'AgentRuntimeAdapter':
+    """Worker 后端唯一工厂：TS agent-runtime。
 
-    openclaw 分支需要调用方提供 OpenClawTransport 实例（生产接线点见
-    Task Engine / 调度器；src 生产代码当前没有 OpenClawAdapter() 实例化点）。
+    （OpenClaw 分支已随退役删除——生产从未实例化过 OpenClawAdapter，历史回滚路径是
+    TaskExecutor 的 brain_factory Brain.ask，不是这个适配器。）
     """
-    backend = os.environ.get('GUANJIA_WORKER_BACKEND', 'openclaw').strip().lower()
-    if backend == 'ts':
-        return AgentRuntimeAdapter()
-    from .openclaw_adapter import OpenClawAdapter  # 缺省路径：默认行为逐字节不变
-
-    if openclaw_transport is None:
-        raise ValueError('GUANJIA_WORKER_BACKEND=openclaw requires an OpenClawTransport instance')
-    return OpenClawAdapter(openclaw_transport, state=state, namespace=namespace)
+    return AgentRuntimeAdapter()

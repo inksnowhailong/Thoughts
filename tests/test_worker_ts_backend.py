@@ -29,7 +29,6 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 from guanjia.core.agent_runtime_adapter import AgentRuntimeAdapter, build_worker_adapter  # noqa: E402
 from guanjia.core.contracts import TaskSpec  # noqa: E402
-from guanjia.core.worker_runtime import InMemoryWorkerStore, Materials, MemoryPacket, WorkerRuntime  # noqa: E402
 
 
 def check(condition: bool, name: str) -> None:
@@ -255,23 +254,7 @@ check(len(traces) == 1 and traces[0].stage == 'screen_capture' and traces[0].pay
 check(adapter.collected_events[0].sequence == 0 and adapter.collected_events[-1].sequence == 2,
       '事件 sequence 从信封透传')
 
-# ---------- 2. WorkerRuntime 状态机集成（无审批直通） ----------
-
-reset([progress_event('plan', 10), tool_trace_event(), outcome_event('completed')])
-
-runtime_adapter = AgentRuntimeAdapter(base_url=BASE, token='stub-token')
-runtime = WorkerRuntime(runtime_adapter, model='worker-model', store=InMemoryWorkerStore())
-spec = TaskSpec(task_id='task-77', revision=1, goal='看看屏幕上有什么')
-snapshot = runtime.start(spec, materials=Materials(), memory_packet=MemoryPacket(), operation_id='op-start-2')
-check(snapshot.status == 'running' and snapshot.session.startswith('ts:'),
-      'WorkerRuntime.start 经 TS 后端进入 running，session 为确定性映射')
-check('task-77' in runtime_adapter.results, 'run 完成后适配器持有 TaskResult')
-progress = runtime.progress('task-77', 50, operation_id='op-progress-2')
-check(progress.status == 'running', 'progress 命令同样走 noop 确认')
-done = runtime.result('task-77', 1, '报告完成', operation_id='op-result-2')
-check(done.status == 'completed', 'result 命令在 TS 后端由适配器确认（noop 分支）')
-
-# ---------- 3. 取消：command=cancel → POST /cancel → SSE outcome cancelled ----------
+# ---------- 2. 取消：command=cancel → POST /cancel → SSE outcome cancelled ----------
 
 reset([progress_event(), 'WAIT_CANCEL', outcome_event('cancelled', summary='任务已取消：主人喊停')])
 
@@ -291,7 +274,7 @@ cancel_runner.join(timeout=10)
 check(cancel_box[0].get('ok') is True and cancel_box[0].get('status') == 'cancelled',
       '取消后 SSE 以 outcome cancelled 收尾，call 返回 status=cancelled')
 
-# ---------- 4. 超时：注入短超时 → ReadTimeout → ok=False ----------
+# ---------- 3. 超时：注入短超时 → ReadTimeout → ok=False ----------
 
 reset([progress_event()])
 STATE.hold_open = True
@@ -304,31 +287,10 @@ check(timeout_response.get('ok') is False and 'timeout' in str(timeout_response.
       f'短超时触发读超时并返回 ok=False（{elapsed:.1f}s）')
 check(elapsed < 5, '超时及时返回，不会挂满 900 秒')
 
-# ---------- 5. 工厂开关 GUANJIA_WORKER_BACKEND ----------
+# ---------- 4. 工厂：build_worker_adapter 只产 TS 后端 ----------
 
-import os  # noqa: E402
-
-from guanjia.core.openclaw_adapter import OpenClawAdapter  # noqa: E402
-
-os.environ.pop('GUANJIA_WORKER_BACKEND', None)
-try:
-    build_worker_adapter()
-except ValueError:
-    check(True, '缺省 backend=openclaw：无 transport 时明确报错（默认行为不变，不误装新链路）')
-else:
-    check(False, '缺省 backend 应要求 OpenClawTransport')
-
-class _FakeTransport:
-    def invoke(self, request: dict) -> dict:
-        return {'ok': True, 'request_id': 'x'}
-
-os.environ['GUANJIA_WORKER_BACKEND'] = 'openclaw'
-legacy = build_worker_adapter(_FakeTransport())
-check(isinstance(legacy, OpenClawAdapter), 'backend=openclaw 返回原 OpenClawAdapter（行为不变）')
-
-os.environ['GUANJIA_WORKER_BACKEND'] = 'ts'
-modern = build_worker_adapter()
-check(isinstance(modern, AgentRuntimeAdapter), 'backend=ts 返回 AgentRuntimeAdapter')
-os.environ.pop('GUANJIA_WORKER_BACKEND', None)
+factory_adapter = build_worker_adapter()
+check(isinstance(factory_adapter, AgentRuntimeAdapter),
+      'build_worker_adapter 返回 AgentRuntimeAdapter（唯一后端，OpenClaw 分支已退役删除）')
 
 print('ALL PASS: test_worker_ts_backend')
