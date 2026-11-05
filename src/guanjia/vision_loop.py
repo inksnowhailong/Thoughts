@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 import time
 import urllib.request
@@ -181,6 +182,19 @@ class VisionLoop:
         self._baseline_reset = False               # 转动后首帧 change_score 置零（自转排除）
         self._leave_deep_until: float = 0.0        # 离开沿后 N 分钟深度降级窗
         self._track_cooldown_until: float = 0.0   # 跟转切换迟滞（防摆动）
+        # ---- 误检治理（2026-11-04 事故：沙发绿玩偶被 YOLO 0.81 置信连认 6 小时"人"，
+        # 镜头锁死沙发位，真人在别处说话也不理）：动静门控 + 静止疑似 VLM 仲裁 ----
+        self._static_since: float = 0.0            # 画面持续静止的起点（monotonic，0=有动静）
+        self._static_lock = False                  # 已被仲裁判为静物：锁定至画面有动静
+        self._person_check_at: float = 0.0         # VLM 仲裁限频（60 秒一次）
+        # ---- 周期重锚（省额度版，2026-11-04 发起人问模型消耗后收紧）：
+        # 位置漂移只来自转动指令的积分误差——"累计转过 ≥N 步"才值得重锚，
+        # 12 小时兜底一次即可；没转镜头的日子 0 次调用 ----
+        self._reanchor_at: float = time.monotonic() + max(
+            3600.0, self._proactive.num('reanchor_interval_sec', 43200))
+        self._moves_since_anchor = 0                # 上次重锚后累计的转动步数
+        self._person_checks_today = 0               # 当日真人仲裁调用数（日预算闸）
+        self._person_checks_date = time.strftime('%Y-%m-%d')
         self.on_edge: object | None = None        # 沿回调钩子：fn(record, edge) edge∈{entered,left}——A 身份感知接线用
         self.on_tick: object | None = None        # 每帧轻回调：fn(record)——在场身份 TTL 续期（V3）用；回调必须无阻塞
         # 独处计时（发起人定 1 小时）：人持续在场且无沿 → 模拟一次 entered 沿
@@ -192,9 +206,120 @@ class VisionLoop:
         """PTZ 惰性初始化；相机不在/ONVIF 不通时视觉循环照常拍照，只是不转。"""
         try:
             driver = OnvifPtzDriver(self._camera)
-            return LocalCameraPtzAdapter(driver)
+            adapter = LocalCameraPtzAdapter(driver)
         except Exception:
             return None
+        # 启动重锚（2026-11-03 发起人反馈"总是默认面壁"的另一半根因）：
+        # 摄像头断电重启后云台回硬件默认位（正对显示器/墙），position.json 却还记着
+        # 旧 pan；且本机 ONVIF GetStatus 恒为 (0,0)，没有绝对位置反馈，脱节后无人护位
+        # 永远纠不正。改调 camera-tool.py locate 的 VLM 实拍自定位（认显示器/冰箱/
+        # 沙发等参照物 → 绝对 pan）重锚软件估计；失败沿用旧估计，绝不拖垮视觉循环。
+        try:
+            anchor = self._vlm_reanchor()
+            if anchor is not None:
+                adapter.set_position(pan=anchor)
+        except Exception:
+            pass
+        return adapter
+
+    def _vlm_reanchor(self) -> float | None:
+        """调 camera-tool.py locate 让 VLM 认参照物，返回重锚后的绝对 pan（失败 None）。"""
+        import subprocess
+        tool = Path(r'F:\coding\guanjia-v2-development\openclaw\workspace\tools\camera-tool.py')
+        try:
+            result = subprocess.run(
+                [sys.executable, '-X', 'utf8', str(tool), 'locate'],
+                capture_output=True, text=True, timeout=45,
+            )
+        except Exception:
+            return None
+        for line in reversed((result.stdout or '').splitlines()):
+            line = line.strip()
+            if not line.startswith('{'):
+                continue
+            try:
+                data = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(data.get('pan'), (int, float)):
+                return float(data['pan'])
+            return None
+        return None
+
+    def _person_gate(self, detected: bool, changed: bool, change_score: float) -> bool:
+        """YOLO 命中 → 有效在场判定：动静门控 + 静止疑似 VLM 仲裁。
+
+        设计（针对 2026-11-04 玩偶误检事故）：
+        - 有动静的检测直接采信（人走动/进入必然带动画面变化）；
+        - 静止场景的检测不可信（玩偶/抱枕/海报常年 0.8 置信）：新入场无动静、
+          或在场但画面静止超时 → 交 VLM 仲裁"是不是真人"；
+        - 判为静物后锁定，直到画面重新有动静才解锁（防每帧重复仲裁）。
+        """
+        if not detected:
+            self._static_since = 0.0
+            return False
+        if changed or change_score >= self.config.change_threshold:
+            self._static_since = 0.0
+            self._static_lock = False
+            return True
+        if self._static_lock:
+            return False
+        now_mono = time.monotonic()
+        if self._static_since <= 0.0:
+            self._static_since = now_mono
+            return self._person_present
+        timeout = self._proactive.num('static_person_timeout_sec', 600)
+        if self._person_present and now_mono - self._static_since < timeout:
+            return True                     # 在场且静止未超时：先信（真人也可能久坐）
+        verdict = self._vlm_person_check()
+        if verdict is None:
+            return self._person_present     # 仲裁不可用：保守维持现状
+        if verdict:
+            self._static_since = now_mono   # 真人但安静：重新计时继续观察
+            return True
+        self._static_lock = True
+        self._static_since = 0.0
+        return False
+
+    def _vlm_person_check(self) -> bool | None:
+        """调 camera-tool.py person 让 VLM 判断画面里是否真人。
+
+        消耗闸（2026-11-04 发起人问模型消耗后加）：60 秒限频 + 当日预算
+        （person_check_daily_cap，默认 150 次）；超预算/失败返回 None，
+        门控保守维持现状，绝不因省额度把真人判没。
+        """
+        today = time.strftime('%Y-%m-%d')
+        if today != self._person_checks_date:
+            self._person_checks_date = today
+            self._person_checks_today = 0
+        if self._person_checks_today >= max(1, int(self._proactive.num('person_check_daily_cap', 150))):
+            return None
+        now_mono = time.monotonic()
+        if now_mono - self._person_check_at < 60.0:
+            return None
+        self._person_check_at = now_mono
+        self._person_checks_today += 1
+        import subprocess
+        tool = Path(r'F:\coding\guanjia-v2-development\openclaw\workspace\tools\camera-tool.py')
+        try:
+            result = subprocess.run(
+                [sys.executable, '-X', 'utf8', str(tool), 'person'],
+                capture_output=True, text=True, timeout=45,
+            )
+        except Exception:
+            return None
+        for line in reversed((result.stdout or '').splitlines()):
+            line = line.strip()
+            if not line.startswith('{'):
+                continue
+            try:
+                data = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(data.get('person'), bool):
+                return data['person']
+            return None
+        return None
 
     def request_standby(self, pan: float | None) -> None:
         """进入卧室待命（本地规则）：镜头朝卧室门口等离开沿，期间不说不跟。
@@ -256,11 +381,13 @@ class VisionLoop:
             self._baseline_reset = False
             self._last_small = None
         changed = change_score >= self.config.change_threshold
-        person_entered, person_left = self._update_person_state(detected)
+        # 误检治理：静止场景的 YOLO 命中先过动静门 + VLM 仲裁，才允许进入在场状态机
+        effective_detected = self._person_gate(detected, changed, change_score)
+        person_entered, person_left = self._update_person_state(effective_detected)
         if person_left:  # 离开沿 → 开深度降级窗（下一次有人前，画面里的残留帧也算敏感期）
             self._leave_deep_until = time.monotonic() + self._proactive.num('leave_window_min', 10) * 60
         interval = (
-            self.config.person_interval_sec if detected or self._person_present
+            self.config.person_interval_sec if effective_detected or self._person_present
             else self.config.changed_interval_sec if changed
             else self.config.normal_interval_sec
         )
@@ -278,6 +405,8 @@ class VisionLoop:
             'changed': changed,
             'person_present': self._person_present,
             'person_confidence': round(confidence, 4),
+            'person_detected_raw': detected,        # YOLO 原始命中（误检治理前的值，排障用）
+            'person_static_lock': self._static_lock,  # 静物锁定中（玩偶/抱枕误检已隔离）
             'person_entered': person_entered,
             'person_left': person_left,
             'person_box': self._round_box(box_norm),
@@ -326,7 +455,8 @@ class VisionLoop:
             except Exception:
                 pass  # tick 失败绝不拖垮视觉循环
         # ---- 本地跟转（patrol 模式、非夜间、人在边缘）+ 待命朝向保持 ----
-        self._steer(detected, box_norm, night, now_local)
+        # 用门控后的有效检测：静止误检（玩偶）绝不能带着镜头追假人
+        self._steer(effective_detected, box_norm, night, now_local)
         return record
 
     @staticmethod
@@ -360,10 +490,16 @@ class VisionLoop:
             # 老标定把正对墙/电视特写的位置记成了 pan=0，回中反而永远面壁）：
             # 目标改为 proactive.json 的 home_pan（2026-10-27 实拍校准 0.311，能看到电视/过道/冰箱）
             if not detected and not night and self._person_present is False:
-                home_pan = float(self._proactive.num('home_pan', 0.0))
-                current_pan = float(self._position().get('pan') or 0.0)
-                if abs(current_pan - home_pan) > 0.08 and time.monotonic() > self._track_cooldown_until:
-                    self._move_toward(home_pan, current_pan)
+                # 护位=沙发方向 + 下俯（2026-11-03 发起人实拍两轮定稿：0.6 / -0.35）
+                home_pan = float(self._proactive.num('home_pan', 0.6))
+                home_tilt = float(self._proactive.num('home_tilt', -0.35))
+                position = self._position()
+                current_pan = float(position.get('pan') or 0.0)
+                current_tilt = float(position.get('tilt') or 0.0)
+                off_target = (abs(current_pan - home_pan) > 0.08
+                              or abs(current_tilt - home_tilt) > 0.08)
+                if off_target and time.monotonic() > self._track_cooldown_until:
+                    self._move_toward(home_pan, current_pan, home_tilt, current_tilt)
             return  # 夜间不转；无人/无框不跟
         center_x = (box[0] + box[2]) / 2.0
         edge = self._proactive.num('track_edge', 0.22)
@@ -381,21 +517,42 @@ class VisionLoop:
             self._ptz.move(horizontal, 0.0, duration)
         except Exception:
             return
+        self._moves_since_anchor += 1  # 转动积分是位置漂移的唯一来源，累计后触发重锚
         self._settle_until = time.monotonic() + self._proactive.num('settle_sec', 1.6)
         self._baseline_reset = True
         self._track_cooldown_until = time.monotonic() + self._proactive.num('track_cooldown_sec', 2.0)
 
-    def _move_toward(self, target_pan: float, current_pan: float) -> None:
-        """朝目标 pan 归位（待命朝向）：按软件位置差给方向小步，逐步逼近。"""
+    def _move_toward(self, target_pan: float, current_pan: float,
+                     target_tilt: float | None = None,
+                     current_tilt: float | None = None) -> None:
+        """朝目标归位（护位/待命）：pan、tilt 分两次单轴小步，逐步逼近。
+
+        本机合并斜转（x、y 同时非零）实测不按预期执行（2026-11-03），必须单轴分开转。
+        """
         delta = target_pan - current_pan
-        direction = 1.0 if delta > 0 else -1.0
-        duration = min(0.5, max(0.08, abs(delta) * 0.3))
-        try:
-            self._ptz.move(direction, 0.0, duration)
-        except Exception:
+        if abs(delta) > 0.01:
+            direction = 1.0 if delta > 0 else -1.0
+            duration = min(0.5, max(0.08, abs(delta) * 0.3))
+            try:
+                self._ptz.move(direction, 0.0, duration)
+            except Exception:
+                return
+            self._moves_since_anchor += 1
+            self._settle_until = time.monotonic() + self._proactive.num('settle_sec', 1.6)
+            self._baseline_reset = True
+        if target_tilt is None or current_tilt is None:
             return
-        self._settle_until = time.monotonic() + self._proactive.num('settle_sec', 1.6)
-        self._baseline_reset = True
+        delta_tilt = target_tilt - current_tilt
+        if abs(delta_tilt) > 0.01:
+            direction_tilt = 1.0 if delta_tilt > 0 else -1.0
+            duration_tilt = min(0.5, max(0.08, abs(delta_tilt) * 0.3))
+            try:
+                self._ptz.move(0.0, direction_tilt, duration_tilt)
+            except Exception:
+                return
+            self._moves_since_anchor += 1
+            self._settle_until = time.monotonic() + self._proactive.num('settle_sec', 1.6)
+            self._baseline_reset = True
 
     def _run(self) -> None:
         interval = 0.0
@@ -403,9 +560,15 @@ class VisionLoop:
             if time.monotonic() < self._settle_until:
                 interval = 0.3  # 转动中不抓帧（停稳再拍）
                 continue
+            self._maybe_reanchor()
             try:
                 interval = float(self.capture_once()['next_interval_sec'])
-                self._write_json(self.health_path, {'ok': True, 'ts': datetime.now(timezone.utc).isoformat()})
+                self._write_json(self.health_path, {
+                    'ok': True, 'ts': datetime.now(timezone.utc).isoformat(),
+                    # 模型消耗审计（2026-11-04 发起人关注）：当日真人仲裁次数 + 距下次重锚的转动步数
+                    'vlm_person_checks_today': self._person_checks_today,
+                    'ptz_moves_since_anchor': self._moves_since_anchor,
+                })
             except Exception as exc:  # noqa: BLE001
                 self._write_json(self.health_path, {
                     'ok': False,
@@ -413,6 +576,36 @@ class VisionLoop:
                     'error': f'{type(exc).__name__}: {exc}',
                 })
                 interval = self.config.normal_interval_sec
+
+    def _maybe_reanchor(self) -> None:
+        """按需重锚（省额度版）：位置漂移只来自转动指令的积分误差，
+        所以累计转过 ≥reanchor_move_threshold 步才重锚，12 小时兜底一次；
+        没转镜头的日子 0 次调用。锚点桶粗（±0.15），小偏差不采信，大脱节（≥0.2）才纠。
+        """
+        if self._ptz is None or self._person_present:
+            return
+        threshold = max(1, int(self._proactive.num('reanchor_move_threshold', 15)))
+        due = (self._moves_since_anchor >= threshold
+               or time.monotonic() >= self._reanchor_at)
+        if not due:
+            return
+        try:
+            anchor = self._vlm_reanchor()
+        except Exception:
+            anchor = None
+        if anchor is None:
+            # 失败退避：10 分钟后再试，绝不每帧重试打爆调用
+            self._reanchor_at = time.monotonic() + 600.0
+            return
+        self._moves_since_anchor = 0
+        self._reanchor_at = time.monotonic() + max(
+            3600.0, self._proactive.num('reanchor_interval_sec', 43200))
+        try:
+            current = float(self._position().get('pan') or 0.0)
+            if abs(anchor - current) >= 0.2:
+                self._ptz.set_position(pan=anchor)
+        except Exception:
+            pass  # 采信失败不影响视觉循环
 
     def _position(self) -> dict[str, object]:
         """Read the software position maintained by LocalCameraPtzAdapter."""

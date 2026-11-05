@@ -1,4 +1,4 @@
-﻿from base64 import b64encode
+from base64 import b64encode
 from io import BytesIO
 import json
 from pathlib import Path
@@ -278,6 +278,66 @@ def active_visual_search_loop(
 
 
 
+def read_proactive_value(key: str, fallback: float) -> float:
+    """读 proactive.json 的数值项；缺键/损坏用兜底，绝不退回面壁位。"""
+    try:
+        cfg = json.loads(Path(r'F:\coding\guanjia-v2-development\data\vision\proactive.json')
+                         .read_text(encoding='utf-8-sig'))
+        value = cfg.get(key)
+        return float(value) if value is not None else fallback
+    except Exception:
+        return fallback
+
+
+def read_home_pan() -> float:
+    """无人护位 pan（沙发方向，2026-11-03 发起人实拍两轮定稿 0.6）。"""
+    return read_proactive_value('home_pan', 0.6)
+
+
+def read_home_tilt() -> float:
+    """无人护位俯仰（向下为负）。"""
+    return read_proactive_value('home_tilt', -0.35)
+
+
+# 参照物 → 绝对 pan（2026-11-03 实拍扫描校准：单轴右转步进 +0.1 逐步拍照定位）。
+# 本机 ONVIF GetStatus 恒 (0,0)，摄像头重启后软件 pan 必然脱节，
+# VLM 认参照物是唯一便宜的自愈手段。
+LANDMARK_PAN: dict[str, float] = {
+    'monitor': 0.0,    # 电脑桌/显示器/左侧白墙特写（行程一端，重启默认位）
+    'fridge': 0.311,   # 银色双门冰箱 + 过道
+    'cabinet': 0.45,   # 冰箱 + 白柜子
+    'sofa': 0.6,       # 客厅沙发/黄绿抱枕（护位，2026-11-03 定稿 0.6）
+    'curtain': 0.85,   # 浅色窗帘（行程另一端附近）
+}
+
+
+def vlm_locate_pan(cfg: LocalCameraConfig, driver: OnvifPtzDriver) -> dict[str, object]:
+    """实拍一张让 VLM 认参照物，返回 {'landmark', 'pan'}（认不出时 pan=None）。"""
+    jpeg = capture_jpeg_bytes(cfg, driver)
+    base_url, api_key = load_vlm_endpoint()
+    prompt = (
+        '这是家用摄像头画面。房间从左到右有五个参照物：\n'
+        'A=大块显示器屏幕/电脑桌（屏幕内容占画面主体）\n'
+        'B=银色双门冰箱（顶上有纸箱）+过道门\n'
+        'C=银色冰箱+白色柜子并排\n'
+        'D=客厅沙发（灰色靠垫/黄色抱枕/绿色玩偶，上方是大白墙也算这类）\n'
+        'E=浅色窗帘+窗户\n'
+        '注意：画面上方大片白墙不算独立参照物，按画面下方/边角的物体判断。\n'
+        '选画面主体最接近的一个，只输出一行 JSON（不要 markdown）：\n'
+        '{"landmark": "A|B|C|D|E"}'
+    )
+    reply = call_vlm_raw(base_url, api_key, jpeg, prompt, max_tokens=30)
+    # VLM 常回无引号 JSON（{landmark: C}），json.loads 会失败——用正则直接抠字母
+    landmark = 'unknown'
+    letter_match = (re.search(r'landmark"?\s*[:=]\s*"?([A-Ea-e])\b', reply)
+                    or re.search(r'\b([A-E])\b', reply))
+    if letter_match:
+        landmark = {'A': 'monitor', 'B': 'fridge', 'C': 'cabinet',
+                    'D': 'sofa', 'E': 'curtain'}[letter_match.group(1).upper()]
+    pan = LANDMARK_PAN.get(landmark)
+    return {'landmark': landmark, 'pan': pan}
+
+
 def calibrate_range(cfg: LocalCameraConfig, driver: OnvifPtzDriver, adapter: LocalCameraPtzAdapter,
                     speed: float = 0.6, step: float = 0.6, max_steps: int = 80) -> dict[str, object]:
     """Measure full pan travel by walking into both end stops, then return to center."""
@@ -314,8 +374,22 @@ def calibrate_range(cfg: LocalCameraConfig, driver: OnvifPtzDriver, adapter: Loc
     adapter.set_travel(travel_sec)
     adapter.move(-speed, 0, travel_sec / 2)
     adapter.set_position(pan=0.0)
+    # 标定完停在护位（沙发方向 + 下俯）而不是行程端点——
+    # 发起人反馈：标定/默认后镜头总是面壁。单轴分步转（合并斜转本机不执行）。
+    home_pan = read_home_pan()
+    if abs(home_pan) > 0.01:
+        direction = 1.0 if home_pan > 0 else -1.0
+        # duration = |Δpan| * 0.6 * travel_sec（与 _estimate_position 积分公式互逆）
+        adapter.move(direction, 0.0, min(5.0, abs(home_pan) * 0.6 * travel_sec))
+        adapter.set_position(pan=home_pan)
+    home_tilt = read_home_tilt()
+    if abs(home_tilt) > 0.01:
+        direction_tilt = 1.0 if home_tilt > 0 else -1.0
+        adapter.move(0.0, direction_tilt, min(5.0, abs(home_tilt) * 0.6 * travel_sec))
+        adapter.set_position(tilt=home_tilt)
     return {'ok': True, 'travel_sec': round(travel_sec, 2), 'steps': travel_steps,
-            'note': f'全范围约 {travel_sec:.1f} 秒，已回到中央'}
+            'note': f'全范围约 {travel_sec:.1f} 秒，已回到护位'
+                    f'（沙发方向，pan={home_pan:.3f}，tilt={home_tilt:.3f}）'}
 
 
 def main() -> None:
@@ -392,6 +466,35 @@ def main() -> None:
                 dur = 0.55
             adapter.move(h, v, dur, auto_stop=True)
             print(json.dumps({'ok': True, 'direction': cn, 'duration': dur, 'message': f'摄像头已往{cn}转了一下。'}, ensure_ascii=False))
+            return
+
+        if action == 'person':
+            # 真人仲裁（2026-11-04 玩偶误检事故）：YOLO 常把沙发玩偶/抱枕认成人
+            # （0.8 置信、一认几小时），静止场景的命中交给 VLM 判"是不是真人"。
+            # 不转镜头、单次调用，供视觉循环动静门控仲裁用。
+            jpeg = capture_jpeg_bytes(cfg, driver)
+            base_url, api_key = load_vlm_endpoint()
+            reply = call_vlm_raw(
+                base_url, api_key, jpeg,
+                '画面里有真人吗？玩偶、抱枕、海报、相框照片里的人不算。'
+                '只输出 JSON（不要 markdown）：{"person": true} 或 {"person": false}',
+                max_tokens=20,
+            )
+            m = re.search(r'person"?\s*[:=]\s*(true|false)', reply, re.I)
+            print(json.dumps({'ok': m is not None,
+                              'person': bool(m and m.group(1).lower() == 'true')},
+                             ensure_ascii=False))
+            return
+
+        if action == 'locate':
+            info = vlm_locate_pan(cfg, driver)
+            pan_set = False
+            if info.get('pan') is not None:
+                adapter.set_position(pan=float(info['pan']))
+                pan_set = True
+            print(json.dumps({'ok': True, 'landmark': info.get('landmark'),
+                              'pan': info.get('pan'), 'pan_set': pan_set},
+                             ensure_ascii=False))
             return
 
         if action == 'look':

@@ -92,6 +92,13 @@ Use the relevant skill for tool procedures. Keep local tool and environment note
 
 Record camera names, SSH hosts and users, preferred voices and speakers, and device nicknames here.
 
+**家用摄像头（Imou，ONVIF 本地控制）的脾气：**
+
+- ONVIF GetStatus 恒返回 (0,0)，不报绝对位置——位置全靠软件航位推算，会漂；漂移只来自转动指令，所以视觉循环"累计转过 15 步或 12 小时兜底"才 VLM 认参照物重锚一次（`camera-tool.py locate`），摄像头断电重启后靠启动重锚找回方向。当日真人仲裁次数可看 `data/vision/health.json` 的 `vlm_person_checks_today`。
+- 沙发上的绿玩偶会被 YOLO 误检成"人"（0.8 置信，2026-11-04 曾连续误检 6 小时把镜头锁死）——视觉循环已有动静门控 + VLM 仲裁（`camera-tool.py person`），画面静止时别轻信 `person_present`，看 `person_static_lock`。
+- 合并斜转（pan+tilt 同时转）这台机器不按预期执行，必须单轴分步转。
+- 无人护位（沙发方向）在 `data/vision/proactive.json` 的 `home_pan`/`home_tilt`，改完需重启语音服务生效。
+
 **Voice storytelling:** when `sag` (ElevenLabs TTS) is available, use voice for stories, movie summaries, and storytime.
 
 **Platform formatting:**
