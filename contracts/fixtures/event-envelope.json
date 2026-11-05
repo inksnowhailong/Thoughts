@@ -1,0 +1,21 @@
+{
+  "event_id": "evt-2041-dispatch",
+  "event_type": "task.dispatched",
+  "occurred_at": "2026-11-05T08:30:00Z",
+  "correlation_id": "corr-voice-8842",
+  "causation_id": null,
+  "idempotency_key": "idem-2041-dispatch",
+  "schema_version": 1,
+  "payload": {
+    "summary": "语音指令已派发为整理相册任务",
+    "turn": 3,
+    "confidence": 0.87,
+    "visible": true,
+    "fallback": null,
+    "tags": ["voice", "dispatch", "album"],
+    "context": {
+      "device": "desktop",
+      "locale": "zh-CN"
+    }
+  }
+}

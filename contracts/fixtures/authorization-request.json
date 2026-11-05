@@ -1,0 +1,22 @@
+{
+  "request_id": "perm-2041-5501",
+  "actor": {
+    "actor_id": "actor-owner",
+    "role": "owner",
+    "sources": [
+      "voice_enrollment",
+      "panel_login"
+    ]
+  },
+  "session_id": "session-8842",
+  "task_id": "task-2041",
+  "intent": "整理本周家庭相册并生成汇报",
+  "capability": "photos.read",
+  "object_scope": "media://photos/2026-W45",
+  "risk_scope": "readonly",
+  "within_intent_scope": true,
+  "reversibility": "reversible",
+  "provenance_summary": "声纹置信 0.92 叠加面板本机登录",
+  "now": "2026-11-05T08:31:03Z",
+  "action_fingerprint": "7e3b9c1d5a4f2860e1b7c9d3a5f4e2b8c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5"
+}

@@ -1,6 +1,9 @@
-"""大脑客户端：把识别出的文字交给 OpenClaw 网关（OpenAI 兼容的 /v1/chat/completions），流式收回回复文本。
+"""大脑客户端：把识别出的文字交给大脑服务（OpenAI 兼容的 /v1/chat/completions），流式收回回复文本。
 
-- token 从 ~/.openclaw/openclaw.json 读（gateway.auth.token），也可用环境变量 GUANJIA_GATEWAY_TOKEN 覆盖；
+- 大脑地址：默认 agent-runtime http://127.0.0.1:18800/v1/chat/completions（Phase 5 全量切换）；
+  GUANJIA_BRAIN_URL 环境变量可覆盖（回滚指回 http://127.0.0.1:18789/v1/chat/completions 即回 OpenClaw 网关）；
+- token：指 18800 时读 agent-runtime/config/runtime.json（与 agent-runtime 同 token），
+  指网关时从 ~/.openclaw/openclaw.json 读（gateway.auth.token）；GUANJIA_GATEWAY_TOKEN 均可覆盖；
 - 语音（P2 起）：带 x-openclaw-session-key: agent:main:main 进主线会话，不带 user、不带 system、默认不换模型
   （走网关默认 DeepSeek-V4-Flash）；每句话前加「[语音 时间]」标记，AGENTS.md 据此只在语音轮简短作答。
   标记放在用户消息里而不是 system：system 每轮变化会打掉网关的提示缓存，首字更慢；
@@ -21,7 +24,9 @@ import httpx
 
 from guanjia.prompts import render_voice_tag
 
-DEFAULT_URL = "http://127.0.0.1:18789/v1/chat/completions"
+# 大脑地址（Phase 5 全量切换）：默认 agent-runtime；回滚 = GUANJIA_BRAIN_URL 指回 18789 网关
+DEFAULT_URL = "http://127.0.0.1:18800/v1/chat/completions"
+RUNTIME_URL = os.environ.get("GUANJIA_BRAIN_URL", DEFAULT_URL)
 MAIN_SESSION_KEY = "agent:main:main"  # 主线会话：主人的语音 + 微信共用
 # 语音入口指定的网关模型（x-openclaw-model 头）；空串 = 不加头，走网关默认模型（DeepSeek-V4-Flash）
 VOICE_MODEL = os.environ.get("GUANJIA_VOICE_MODEL", "")
@@ -44,15 +49,25 @@ def load_gateway_token() -> str:
     env = os.environ.get("GUANJIA_GATEWAY_TOKEN")
     if env:
         return env
+    # 指向 agent-runtime（Phase 5 默认）：token = runtime.json（与 TS 服务同值）
+    if ":18800" in RUNTIME_URL:
+        runtime_json = Path(__file__).resolve().parents[2] / "agent-runtime" / "config" / "runtime.json"
+        try:
+            data = json.loads(runtime_json.read_text(encoding="utf-8"))
+            token = data.get("token")
+            if isinstance(token, str) and token.strip():
+                return token.strip()
+        except (OSError, ValueError):
+            pass
     cfg = Path.home() / ".openclaw" / "openclaw.json"
     data = json.loads(cfg.read_text(encoding="utf-8"))
     return data["gateway"]["auth"]["token"]
 
 
 class Brain:
-    """OpenClaw 网关的最小客户端。"""
+    """大脑服务（OpenClaw 网关 / agent-runtime）的最小客户端。"""
 
-    def __init__(self, url: str = DEFAULT_URL, token: str | None = None, timeout: float = STREAM_READ_TIMEOUT_SEC,
+    def __init__(self, url: str = RUNTIME_URL, token: str | None = None, timeout: float = STREAM_READ_TIMEOUT_SEC,
                  model: str | None = None, user: str | None = None, session_key: str | None = None,
                  transport: httpx.BaseTransport | None = None) -> None:
         self.url = url

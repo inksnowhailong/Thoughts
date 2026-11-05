@@ -57,7 +57,7 @@ def handler(request: httpx.Request) -> httpx.Response:
 b = Brain(token="t", session_key=MAIN_SESSION_KEY, model="", transport=httpx.MockTransport(handler))
 out = list(b.stream(tag_voice_text("你好", t)))
 check(out == ["你好，", "我在。"], "stream yields deltas")
-check(seen["url"] == "http://127.0.0.1:18789/v1/chat/completions", "local gateway url")
+check(seen["url"] == "http://127.0.0.1:18800/v1/chat/completions", "default brain url is agent-runtime (Phase 5)")
 check(seen["headers"].get("x-openclaw-session-key") == "agent:main:main", "main session header")
 check("x-openclaw-model" not in seen["headers"], "no model override (gateway default DeepSeek-V4-Flash)")
 check(seen["headers"].get("authorization") == "Bearer t", "gateway token header")

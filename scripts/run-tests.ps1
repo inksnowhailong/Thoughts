@@ -38,6 +38,23 @@ foreach ($r in $running) {
     $results += [pscustomobject]@{ Name = $r.F.Name; Rc = $r.P.ExitCode; Pass = $pass; Fail = $fail; Log = $r.Log }
 }
 
+# agent-runtime (TypeScript) 测试层：vitest 全量并入同一汇总；-Pattern 时仅在模式含 runtime 才跑
+$tsTokens = 'agent_runtime runtime contracts spike prompts compiler'
+$runTs = (-not $Pattern.Count) -or (@($Pattern | Where-Object { $tsTokens -like ('*' + $_.Replace('-', '_') + '*') }).Count -gt 0)
+$rtRoot = Join-Path $root 'agent-runtime'
+if ($runTs -and (Test-Path (Join-Path $rtRoot 'node_modules'))) {
+    $tsLog = Join-Path $logDir 'agent-runtime-vitest.txt'
+    $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c npm test --silent' -WorkingDirectory $rtRoot -NoNewWindow -PassThru `
+        -RedirectStandardOutput $tsLog -RedirectStandardError ($tsLog + '.err')
+    $null = $p.Handle
+    $p.WaitForExit()
+    $tsTxt = [IO.File]::ReadAllText($tsLog, [Text.Encoding]::UTF8)
+    $tsTxt = $tsTxt -replace ([string][char]27 + '\[[0-9;]*m'), ''  # 剥离 ANSI 颜色码
+    $tsPass = [regex]::Match($tsTxt, 'Tests\s+(\d+) passed(?:\s+\((\d+)\))?\s+').Groups[1].Value
+    $tsFail = [regex]::Match($tsTxt, 'Tests\s+\d+ passed\s+(\d+) failed').Groups[1].Value
+    $results += [pscustomobject]@{ Name = 'agent-runtime (vitest)'; Rc = $p.ExitCode; Pass = [int]$tsPass; Fail = [int]$tsFail; Log = $tsLog }
+}
+
 $bad = @($results | Where-Object { $_.Rc -ne 0 -or $_.Fail -gt 0 })
 foreach ($r in $results) { '{0,-34} rc={1} pass={2} fail={3}' -f $r.Name, $r.Rc, $r.Pass, $r.Fail }
 foreach ($r in $bad) {

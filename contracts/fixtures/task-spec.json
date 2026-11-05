@@ -1,0 +1,48 @@
+{
+  "task_id": "task-2041",
+  "revision": 3,
+  "goal": "整理本周家庭相册并生成一份九页汇报幻灯",
+  "constraints": [
+    "仅使用本地照片库",
+    "不得在 21:00 后播放提示音"
+  ],
+  "references": [
+    {
+      "uri": "media://photos/2026-W45",
+      "kind": "photo_album",
+      "sha256": "b6d4f3a2c1e5908d7a6b5c4d3e2f1098ab7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e",
+      "media_type": "application/json"
+    }
+  ],
+  "permission_scope": {
+    "purpose": "读取本周照片并生成汇报幻灯",
+    "target_scope": "media://photos/2026-W45",
+    "risk_scope": "readonly",
+    "grants": [
+      "photos.read",
+      "render.slides"
+    ]
+  },
+  "priority": 2,
+  "success_criteria": [
+    "汇报幻灯不少于九页",
+    "汇报文件落盘且校验一致"
+  ],
+  "delivery_requirements": {
+    "channels": [
+      "panel",
+      "voice"
+    ],
+    "must_be_visible": true,
+    "allow_delay": false,
+    "format_hint": "slides"
+  },
+  "resources": [
+    {
+      "resource": "renderer",
+      "mode": "exclusive",
+      "units": 1,
+      "release_on_pause": true
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-﻿# 语音守护进程看门狗（GuanjiaVoice 计划任务 → run-voice.vbs → 本脚本；全程隐藏窗口，跑在主人桌面会话里）
+# 语音守护进程看门狗（GuanjiaVoice 计划任务 → run-voice.vbs → 本脚本；全程隐藏窗口，跑在主人桌面会话里）
 #
 #   等依赖：网关 127.0.0.1:18789 能连上、TTS /health 返回 200（最多等 DepsTimeoutSec 秒，超时也照样起，托盘会显示出错）
 #   拉起 python -m guanjia.voice，按退出码决定：
@@ -110,6 +110,19 @@ function Test-Port([int]$Port) {
     try { return ($c.ConnectAsync('127.0.0.1', $Port).Wait(1000) -and $c.Connected) } catch { return $false } finally { $c.Close() }
 }
 
+# Wave1-C/Phase5（2026-11-05）：bridge(18801) 与 agent-runtime(18800) 随看门狗守护——
+# 每次拉起语音前后都探测，掉线自动拉起（wscript 启动器见 scripts/run-*.vbs；
+# 计划任务建不了的端口占用场景也安全：Test-Port 在就跳过）。
+function Ensure-Service([int]$Port, [string]$Vbs, [string]$Name) {
+    if (Test-Port $Port) { return }
+    Write-Log "service down ($Name :$Port), starting $Vbs"
+    try {
+        Start-Process -FilePath 'wscript.exe' -ArgumentList "//B `"$Vbs`"" -WindowStyle Hidden | Out-Null
+    } catch { Write-Log "start $Name failed: $($_.Exception.Message)" }
+}
+$BridgeVbs = Join-Path $Repo 'scripts\run-bridge.vbs'
+$AgentRuntimeVbs = Join-Path $Repo 'scripts\run-agent-runtime.vbs'
+
 function Test-Http([string]$Url) {
     try {
         $req = [System.Net.HttpWebRequest]::Create($Url)
@@ -199,6 +212,8 @@ function Save-Stderr([int]$Code, [switch]$Pre) {
 
 $backoff = $BackoffStartSec
 while ($true) {
+    Ensure-Service 18801 $BridgeVbs 'bridge'
+    Ensure-Service 18800 $AgentRuntimeVbs 'agent-runtime'
     Save-Stderr 0 -Pre  # 上一个看门狗被杀时没来得及存档的 stderr
     Wait-Deps
     Import-VoiceEnv
@@ -215,6 +230,8 @@ while ($true) {
     Write-Log "voice started pid=$($p.Id)"
     while (-not $p.WaitForExit(2000)) {
         if (-not (Test-ParentAlive)) { Write-Log 'parent gone (task ended), exit; job closes and takes python with it'; exit 0 }
+        Ensure-Service 18801 $BridgeVbs 'bridge'
+        Ensure-Service 18800 $AgentRuntimeVbs 'agent-runtime'
     }
     $code = $p.ExitCode
     $ran = [int]((Get-Date) - $t0).TotalSeconds

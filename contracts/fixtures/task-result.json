@@ -1,0 +1,41 @@
+{
+  "result_id": "result-2041-r3",
+  "task_id": "task-2041",
+  "revision": 3,
+  "summary": "已生成九页家庭相册汇报幻灯",
+  "artifacts": [
+    {
+      "uri": "file://reports/weekly-album-2026-W45.json",
+      "kind": "slide_deck",
+      "sha256": "e8dbb2403bad111a874a35b68d896db659960054b63d26ac074d3760c593e78d",
+      "media_type": "application/json"
+    }
+  ],
+  "evidence": [
+    {
+      "kind": "artifact_check",
+      "summary": "汇报文件已落盘且哈希校验一致",
+      "observed_at": "2026-11-05T08:52:30Z",
+      "artifacts": [
+        {
+          "uri": "file://reports/weekly-album-2026-W45.json",
+          "kind": "slide_deck",
+          "sha256": "e8dbb2403bad111a874a35b68d896db659960054b63d26ac074d3760c593e78d",
+          "media_type": "application/json"
+        }
+      ],
+      "details": {
+        "pages": 9,
+        "sha_match": true
+      },
+      "evidence_id": "ev-2041-1"
+    }
+  ],
+  "error": null,
+  "key_steps": [
+    "筛选照片一百二十八张",
+    "选定四十二张入册",
+    "渲染九页幻灯"
+  ],
+  "evidence_at": "2026-11-05T08:52:41Z"
+}

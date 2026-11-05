@@ -535,6 +535,10 @@ class MemoryRepository:
     def get(self, key: str) -> MemoryRecord | None:
         return self._backend.get(key)
 
+    def records(self) -> tuple[MemoryRecord, ...]:
+        """全量记录快照（服务侧自定义打分检索用；记录数有限，内存过滤足够）。"""
+        return self._backend.all()
+
     def query(self, query: MemoryQuery) -> MemoryPacket:
         needle = query.text.casefold()
         people = set(query.people)

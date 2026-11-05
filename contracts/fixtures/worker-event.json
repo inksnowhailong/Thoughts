@@ -1,0 +1,15 @@
+{
+  "task_id": "task-2041",
+  "revision": 3,
+  "event_type": "progress",
+  "stage": "collect_photos",
+  "emitted_at": "2026-11-05T08:41:12Z",
+  "percent": 45,
+  "payload": {
+    "current_step": 3,
+    "total_steps": 7,
+    "note": "正在筛选清晰照片"
+  },
+  "worker_event_id": "we-2041-0042",
+  "sequence": 42
+}

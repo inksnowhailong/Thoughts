@@ -1,0 +1,5 @@
+{
+  "port": 18800,
+  "bridgeUrl": "http://127.0.0.1:18801",
+  "token": "把这里换成一个随机 hex（node -e \"console.log(require('crypto').randomBytes(24).toString('hex'))\"），语音侧 GUANJIA_GATEWAY_TOKEN 用同一个值"
+}

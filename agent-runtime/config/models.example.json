@@ -1,0 +1,22 @@
+{
+  "roles": {
+    "main": {
+      "provider": "siliconflow",
+      "model": "deepseek-ai/DeepSeek-V4-Flash",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "apiKey": "sk-你的-key（不要把真实 key 提交进仓库）"
+    },
+    "worker": {
+      "provider": "siliconflow",
+      "model": "deepseek-ai/DeepSeek-V4-Flash",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "apiKey": "sk-你的-key（不要把真实 key 提交进仓库）"
+    },
+    "screen_vlm": {
+      "provider": "siliconflow",
+      "model": "Qwen/Qwen3.5-9B",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "apiKey": "sk-你的-key（不要把真实 key 提交进仓库）"
+    }
+  }
+}
