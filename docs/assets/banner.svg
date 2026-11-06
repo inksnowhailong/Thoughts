@@ -50,7 +50,7 @@
   </g>
   <g>
     <rect x="887" y="232" width="170" height="38" rx="19" fill="#ffffff" fill-opacity="0.06" stroke="#a78bfa" stroke-opacity="0.5"/>
-    <text x="972" y="257" text-anchor="middle" font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans SC',sans-serif" font-size="17" fill="#e9d5ff">游戏态静默</text>
+    <text x="972" y="257" text-anchor="middle" font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans SC',sans-serif" font-size="17" fill="#e9d5ff">看懂屏幕内容</text>
   </g>
 
   <!-- voice waveform -->
