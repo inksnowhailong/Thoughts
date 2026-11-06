@@ -2,7 +2,12 @@
 models/
 tmp/
 data/
+memory/
 __pycache__/
 node_modules/
 *.wav
 .env
+
+# 本地设计文档不入库（保留 docs/assets 下的 README 横幅）
+docs/*
+!docs/assets/
