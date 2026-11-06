@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.svg" alt="思绪 guanjia — 家用语音管家 Agent" width="100%"/>
+<img src="docs/assets/banner.svg" alt="思绪 — 家用语音管家 Agent" width="100%"/>
 
 <br/>
 
@@ -193,7 +193,7 @@ Python 侧 pytest 套件（bridge 73 测、worker 后端 13 测、记忆 15 测�
 
 ```powershell
 # 1. 安装依赖
-git clone <your-repo-url> guanjia && cd guanjia
+git clone https://github.com/inksnowhailong/Thoughts.git Thoughts && cd Thoughts
 uv sync
 
 # 2. 大脑（agent-runtime）
