@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConversationStore } from '../../src/main-agent/conversation.js';
-import { MemoryEngine } from '../../src/memory-engine/service.js';
 import { mockToolState, resetMockToolState, toLangChainTools as mockTools } from '../../src/main-agent/tool-mock.js';
 import { ObservabilityHub } from '../../src/observability/runtime.js';
 import { buildApp } from '../../src/server/app.js';
@@ -86,26 +86,46 @@ describe('鉴权', () => {
 
 describe('Mission Control 记忆浏览', () => {
   it('分页读取真实记忆并显示关联详情', async () => {
-    const engine = new MemoryEngine(path.join(dir, 'memory.sqlite3'));
-    await engine.initialize();
-    const memory = await engine.createMemory({
+    const memoryDatabasePath = path.join(dir, 'memory.sqlite3');
+    const memoryDatabase = new Database(memoryDatabasePath);
+    memoryDatabase.exec('CREATE TABLE guanjia_memories (key TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+    const timestamp = new Date().toISOString();
+    const memory = {
+      id: 'memory-1',
+      key: 'local-storage',
       content: 'The household uses SQLite for local memory.',
-      briefContent: 'Local memory uses SQLite.',
-      memoryType: 'project_fact',
-      tags: ['SQLite'],
-      createdBy: 'test',
-    }) as { id: string };
-    const a = buildApp({ token: TOKEN, memoryEngine: engine });
+      memory_type: 'project_fact',
+      source: 'user',
+      confidence: 0.9,
+      importance: 8,
+      retention: 'long_term',
+      people: ['household'],
+      evidence: [{ reference: 'turn-1', source: 'user', observed_at: timestamp }],
+      media: [],
+      created_at: timestamp,
+      updated_at: timestamp,
+      last_used_at: null,
+      use_count: 2,
+    };
+    memoryDatabase.prepare('INSERT INTO guanjia_memories (key, payload) VALUES (?, ?)')
+      .run(memory.key, JSON.stringify(memory));
+    memoryDatabase.close();
+    const a = buildApp({ token: TOKEN, guanjiaMemoryDatabasePath: memoryDatabasePath });
     try {
       const page = await a.inject({
         method: 'GET',
-        url: '/api/observability/memories?limit=1&offset=0&q=household',
+        url: '/api/observability/memories?limit=1&offset=0&q=household&type=project_fact',
         headers: auth,
       });
       expect(page.statusCode).toBe(200);
       expect(page.json()).toMatchObject({
         total: 1,
-        items: [expect.objectContaining({ id: memory.id, briefContent: 'Local memory uses SQLite.' })],
+        items: [expect.objectContaining({
+          id: memory.id,
+          key: memory.key,
+          briefContent: memory.content,
+          memoryType: memory.memory_type,
+        })],
       });
 
       const detail = await a.inject({
@@ -114,7 +134,12 @@ describe('Mission Control 记忆浏览', () => {
         headers: auth,
       });
       expect(detail.statusCode).toBe(200);
-      expect(detail.json()).toMatchObject({ id: memory.id, content: 'The household uses SQLite for local memory.' });
+      expect(detail.json()).toMatchObject({
+        id: memory.id,
+        content: memory.content,
+        evidence: memory.evidence,
+        source: memory.source,
+      });
     } finally {
       await a.close();
     }

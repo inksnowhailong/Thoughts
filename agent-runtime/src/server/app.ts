@@ -18,6 +18,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { handleVoiceTurn, type VoiceTurnOptions } from '../main-agent/agent.js';
 import { compileRole } from '../prompts/compiler.js';
 import { MemoryEngine } from '../memory-engine/service.js';
+import { GuanjiaMemoryExplorer } from '../memory-engine/guanjia-explorer.js';
 import { registerMemoryRoutes } from '../memory-engine/routes.js';
 import {
   ObservabilityHub,
@@ -33,6 +34,7 @@ export interface AppOptions {
   /** 透传给 handleVoiceTurn（测试注入假模型/临时会话目录等）。 */
   agentOpts?: VoiceTurnOptions;
   memoryEngine?: MemoryEngine;
+  guanjiaMemoryDatabasePath?: string;
   observability?: ObservabilityHub;
   logger?: boolean;
 }
@@ -55,6 +57,7 @@ function cookieValue(cookieHeader: string | undefined, name: string): string | u
 export function buildApp(opts: AppOptions): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
   const observability = opts.observability ?? new ObservabilityHub(':memory:');
+  const guanjiaMemory = new GuanjiaMemoryExplorer(opts.guanjiaMemoryDatabasePath);
 
   app.addHook('onRequest', async (req, reply) => {
     const requestPath = req.url.split('?')[0];
@@ -228,7 +231,6 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     return { accepted: accepted.length, offsets: accepted };
   });
   app.get('/api/observability/memories', async (request, reply) => {
-    if (!opts.memoryEngine) return reply.code(503).send({ error: 'memory_engine_not_configured' });
     const query = request.query as { limit?: string; offset?: string; q?: string; type?: string };
     const limit = query.limit === undefined ? 50 : Number(query.limit);
     const offset = query.offset === undefined ? 0 : Number(query.offset);
@@ -236,7 +238,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       || !Number.isInteger(offset) || offset < 0) {
       return reply.code(400).send({ error: 'invalid_memory_page' });
     }
-    return opts.memoryEngine.browseMemories({
+    return guanjiaMemory.browse({
       limit,
       offset,
       query: query.q,
@@ -244,9 +246,8 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     });
   });
   app.get('/api/observability/memories/:memoryId', async (request, reply) => {
-    if (!opts.memoryEngine) return reply.code(503).send({ error: 'memory_engine_not_configured' });
     const params = request.params as { memoryId: string };
-    const memory = await opts.memoryEngine.getMemoryDetail(params.memoryId);
+    const memory = guanjiaMemory.get(params.memoryId);
     if (!memory) return reply.code(404).send({ error: 'memory_not_found' });
     return memory;
   });

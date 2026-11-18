@@ -83,7 +83,8 @@ main.memory-view .timeline{display:none}
 <body>
 <header>
   <span class="brand">思绪</span><span class="sub">运行控制台 / 实时观测</span>
-  <span class="status"><i id="connectionLamp" class="lamp"></i><span id="connection">正在连接</span></span>
+  <span class="status"><i id="connectionLamp" class="lamp"></i><span id="connection">正在连接观测服务</span></span>
+  <span class="status" id="guanjiaStatus">管家未接入</span>
   <span class="grow"></span>
   <span class="muted">追踪</span><span id="traceId" class="id">—</span>
   <nav aria-label="控制台视图">
@@ -161,10 +162,9 @@ main.memory-view .timeline{display:none}
         <circle class="core" cx="635" cy="305" r="3"/>
         <text x="635" y="319">工具路由</text><text class="subtext" x="635" y="331">能力调用</text>
       </g>
-      <text x="95" y="390" fill="#666" font-size="9" font-family="Consolas">连线表示代码调用关系；高亮仅由真实执行记录触发</text>
     </svg>
     <div id="memoryCanvas" class="memory-canvas">
-      <h2>记忆数据 / 来源：记忆引擎</h2>
+      <h2>记忆数据 / 来源：管家主记忆库</h2>
       <div id="memorySummary" class="muted">正在读取记忆索引</div>
       <h2 id="memoryPreviewTitle">选择一条记忆查看内容</h2>
       <pre id="memoryPreview">记忆详情将在此显示</pre>
@@ -212,6 +212,20 @@ main.memory-view .timeline{display:none}
     memory: { items: [], total: 0, offset: 0, limit: 30, selectedId: null },
     activeNodes: new Map(),
   };
+  const memorySourceLabel = (source) => ({
+    user: '用户提供',
+    user_correction: '用户纠正',
+    observation: '日常观察',
+    task: '任务记录',
+    self_loop: '自主整理',
+    system: '系统记录',
+  })[source] ?? source ?? '未知';
+  const memoryRetentionLabel = (retention) => ({
+    permanent: '永久',
+    long_term: '长期',
+    adaptive: '动态调整',
+    temporary: '临时',
+  })[retention] ?? retention ?? '未知';
   const statusLabel = (status) => ({
     running: '运行中',
     waiting: '等待审批',
@@ -321,7 +335,7 @@ main.memory-view .timeline{display:none}
     byId('memoryCanvas').style.display = tab === 'memory' ? 'block' : 'none';
     document.querySelector('main').classList.toggle('memory-view', tab === 'memory');
     byId('viewTitle').textContent = ({ live: '实时拓扑', traces: '执行追踪', memory: '记忆浏览', nodes: '系统状态' })[tab];
-    byId('viewSub').textContent = tab === 'memory' ? '只读 / 数据来自记忆引擎' : '仅显示实际运行状态';
+    byId('viewSub').textContent = tab === 'memory' ? '只读 / 数据来自管家主记忆库' : '仅显示实际运行状态';
     byId('topology').style.display = tab === 'memory' ? 'none' : '';
     byId('topologyNote').style.display = tab === 'memory' ? 'none' : '';
     if (tab === 'memory') loadMemories();
@@ -494,6 +508,14 @@ main.memory-view .timeline{display:none}
     document.querySelectorAll('.edge').forEach((edge) => {
       edge.classList.toggle('in-trace', Boolean(touched.has(edge.dataset.source) || touched.has(edge.dataset.target)));
     });
+  }
+
+  function renderGuanjiaStatus(nodes) {
+    const voice = nodes.find((node) => node.id === 'voice-runtime');
+    const status = !voice?.observed ? '管家未接入'
+      : voice.health === 'online' ? '管家在线'
+        : voice.health === 'offline' ? '管家已离线' : '管家状态未知';
+    byId('guanjiaStatus').textContent = status;
   }
 
   function renderInspector(title, values, rawSections = []) {
@@ -771,6 +793,7 @@ main.memory-view .timeline{display:none}
 
   async function loadSnapshot() {
     state.snapshot = await request('/api/observability/snapshot');
+    renderGuanjiaStatus(state.snapshot.nodes ?? []);
     if (state.tab !== 'traces') state.traces = state.snapshot.recentTraces;
     byId('watermark').textContent = `事件序号 ${state.snapshot.watermark}`;
     for (const event of state.snapshot.recentEvents) renderEvent(event);
@@ -790,11 +813,11 @@ main.memory-view .timeline{display:none}
     const source = new EventSource(`/api/observability/events?after=${encodeURIComponent(watermark)}`);
     state.source = source;
     source.onopen = () => {
-      byId('connection').textContent = '实时连接';
+      byId('connection').textContent = '观测通道已连接';
       byId('connectionLamp').classList.add('on');
     };
     source.onerror = () => {
-      byId('connection').textContent = '正在重连';
+      byId('connection').textContent = '观测通道重连中';
       byId('connectionLamp').classList.remove('on');
     };
     const handleRuntimeEvent = (message) => {
@@ -854,7 +877,7 @@ main.memory-view .timeline{display:none}
       const button = make('button', `entry${memory.id === state.memory.selectedId ? ' selected' : ''}`);
       button.type = 'button';
       button.append(make('strong', '', memory.briefContent));
-      button.append(make('small', '', `${memory.memoryType} · ${statusLabel(memory.status)} · 版本 ${memory.version}`));
+      button.append(make('small', '', `${memory.memoryType} · ${memorySourceLabel(memory.source)} · 重要度 ${memory.importance}`));
       button.addEventListener('click', () => selectMemory(memory.id));
       list.append(button);
     }
@@ -876,13 +899,16 @@ main.memory-view .timeline{display:none}
       renderInspector('记忆 / ' + memory.memoryType, [
         ['记忆 ID', memory.id],
         ['类型', memory.memoryType],
-        ['状态', statusLabel(memory.status)],
-        ['版本', String(memory.version)],
+        ['来源', memorySourceLabel(memory.source)],
+        ['保留策略', memoryRetentionLabel(memory.retention)],
+        ['置信度', String(memory.confidence)],
+        ['重要度', String(memory.importance)],
         ['创建时间', time(memory.createdAt)],
         ['更新时间', time(memory.updatedAt)],
-        ['来源类型', memory.origin],
-      ], [['完整内容', memory.content], ['标签 / 实体', { tags: memory.tags, entities: memory.entities }],
-        ['记忆来源', memory.sources], ['关联关系', memory.relations], ['版本历史', memory.versions]]);
+        ['最近使用', time(memory.lastUsedAt)],
+        ['使用次数', String(memory.useCount)],
+      ], [['完整内容', memory.content], ['涉及人员', memory.people],
+        ['证据来源', memory.evidence], ['关联媒体', memory.media]]);
     } catch (error) { showError(error); }
   }
 
