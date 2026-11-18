@@ -57,6 +57,7 @@ from guanjia.approval_ipc import ApprovalIpc
 from guanjia.barge import BargeConfig, BargeDetector
 from guanjia.brain import MAIN_SESSION_KEY, Brain, tag_voice_text
 from guanjia.modular_brain import ModularBrain
+from guanjia.observability import ObservationClient, Span, Trace
 from guanjia.vision_loop import VisionLoop, vision_note
 from guanjia.context_gardener import ContextGardener
 from guanjia.control import CONTROL_PORT, start_control_server
@@ -316,6 +317,12 @@ class VoiceDaemon:
     store = SettingsStore()
     wake = WakeMatcher(Settings().wake_words)
     _turn_uid = None
+    observability = None
+    _turn_observation: Trace | None = None
+    _turn_observation_span: Span | None = None
+    _tts_observation_span: Span | None = None
+    _playback_observation_span: Span | None = None
+    _playback_observation_samples = 0
     _turn_is_say = False  # 这一轮是 /say（主程序让念）：念的时候、念完都不算免喊窗口
     _turn_tools = 0  # 这一轮已见到的工具调用数（审计跟随累加），「只说没做」兜底据此判断
     _turn_gate: frozenset = frozenset()  # 这一轮已见到的拦截 / 确认类审计 decision，「编造拦截」兜底据此判断
@@ -429,6 +436,11 @@ class VoiceDaemon:
         self.task_dispatch = TaskDispatchScheduler(self._emit_task_dispatch)
         self._task_timers: dict[str, threading.Timer] = {}  # 定时任务到点执行器（run_at）
         self.hub = EventHub(records_file=RECORDS_FILE, elog=elog.get())  # 面板记录的每次变化同时派生统一事件日志
+        try:
+            self.observability = ObservationClient()
+        except Exception:
+            self.observability = None
+            log.exception("observability bridge unavailable; voice continues without remote tracing")
         s = self.store.current
         self.wake = WakeMatcher(s.wake_words)
         self.down = Downsampler(self.sr)
@@ -479,6 +491,8 @@ class VoiceDaemon:
         self._asr_stream = self.asr.new_stream()  # 当前这句话的 ASR 流，每段结束换新流
         self._preroll: deque[np.ndarray] = deque(maxlen=PREROLL_MS // 10)  # 最近 0.5s 的 16k 块
         self._was_speech = False  # 上一块 VAD 是否处于人声状态，用于捕捉起判沿
+        self._speech_started_at: str | None = None
+        self._speech_started_clock: float | None = None
 
     # ---------- 音频回调 ----------
     def _callback(self, indata, outdata, frames, time_info, status) -> None:
@@ -529,7 +543,33 @@ class VoiceDaemon:
         OpenClaw 网关已退役；当前主线使用 agent-runtime，面板经本机控制口。
         """
         if self._talk_direct is not None:
-            return self._talk_direct.stream(text, speaker=self._turn_speaker)
+            source = self._talk_direct.stream(text, speaker=self._turn_speaker)
+
+            def observed():
+                trace = getattr(self, "_turn_observation", None)
+                parent = getattr(self, "_turn_observation_span", None)
+                span = trace.start_span(
+                    "model-provider", "直连模型调用",
+                    {"logicalInput": text, "providerPayload": "未采集"},
+                    parent_span_id=parent.span_id if parent is not None else None,
+                ) if trace is not None else None
+                chunks = []
+                try:
+                    for chunk in source:
+                        chunks.append(chunk)
+                        yield chunk
+                    if span is not None:
+                        span.finish("completed", {
+                            "content": "".join(chunks),
+                            "usage": getattr(self._talk_direct, "last_usage", None),
+                            "providerPayload": "未采集",
+                        })
+                except Exception as error:
+                    if span is not None:
+                        span.finish("failed", error=str(error))
+                    raise
+
+            return observed()
         tagged = tag_voice_text(text, speaker=self._turn_speaker)
         note = ''
         image_b64 = ''
@@ -552,7 +592,11 @@ class VoiceDaemon:
                 {"type": "text", "text": tagged},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
             ]
-            return self.brain.stream(content, model='glm-5.3' if self._paused.is_set() else None)
+            options = {"model": 'glm-5.3' if self._paused.is_set() else None}
+            if self._turn_observation_span is not None:
+                options["traceparent"] = self._turn_observation_span.traceparent
+                options["trace_started_at"] = self._turn_observation.started_at
+            return self.brain.stream(content, **options)
         # 游戏模式中模型升档（发起人 10-24 需求）：flash 看游戏截图知识深度不够，
         # 游戏中的请求全部走 glm-5.3 完整版（输入 8元/百万 tokens，一局约 0.05 元）
         # 游戏模式中模型升档 + 付费熔断（防止烧光余额）：
@@ -560,7 +604,11 @@ class VoiceDaemon:
         gaming_model = None
         if self._paused.is_set():
             gaming_model = 'flash' if self.usage_guard.is_paid_disabled() else 'glm-5.3'
-        return self.brain.stream(tagged, model=gaming_model)
+        options = {"model": gaming_model}
+        if self._turn_observation_span is not None:
+            options["traceparent"] = self._turn_observation_span.traceparent
+            options["trace_started_at"] = self._turn_observation.started_at
+        return self.brain.stream(tagged, **options)
 
     def _reset_frontend(self) -> None:
         """VAD / ASR 流 / 预滚 / 打断状态全部复位（游戏态恢复、静音恢复时调用）。"""
@@ -571,6 +619,8 @@ class VoiceDaemon:
         self._asr_stream = self.asr.new_stream()
         self._preroll.clear()
         self._was_speech = False
+        self._speech_started_at = None
+        self._speech_started_clock = None
         self.barge.reset()
 
     def _playing(self) -> bool:
@@ -606,6 +656,8 @@ class VoiceDaemon:
         speaking_now = self.vad.is_speech()
         if speaking_now:
             if not self._was_speech:  # 起判沿：VAD 要人声满 0.25s 才翻 true，先把预滚补喂进 ASR
+                self._speech_started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                self._speech_started_clock = time.monotonic()
                 self.hub.stage(None, "vad", "active", "有人在说话")
                 self._prewarm_final()  # 让 GPU 识别服务趁这段话还没说完先给显卡加热（空闲时显卡在 P8，冷启动慢一倍多）
                 for c in self._preroll:
@@ -617,7 +669,8 @@ class VoiceDaemon:
         rms = float(np.sqrt(np.mean(x * x))) if len(x) else 0.0  # 增益前的原始电平，打断阈值按它标定
         self._barge_step(rms, fr.playing)
         self._was_speech = speaking_now
-        for seg in self.vad.pop_segments():
+        segments = self.vad.pop_segments()
+        for seg in segments:
             stream, self._asr_stream = self._asr_stream, self.asr.new_stream()  # 每句一条新流，不带上一句残留
             if seg.duration < MIN_UTT_SEC:
                 continue
@@ -651,7 +704,12 @@ class VoiceDaemon:
             front_ms = round((time.monotonic() - t_asr) * 1000)  # 识别 ∥ 声纹 并行后的总耗时
             log.debug("front asr=%dms speaker=%sms parallel_total=%dms", asr_ms, spk_ms, front_ms)
             self._on_heard(text, score, source="mic", stream_text=stream_text, seg_sec=seg.duration,
-                           asr_ms=asr_ms, spk_ms=spk_ms, front_ms=front_ms, speaker=speaker, asr=asr_res)
+                           asr_ms=asr_ms, spk_ms=spk_ms, front_ms=front_ms, speaker=speaker, asr=asr_res,
+                           capture_started_at=getattr(self, "_speech_started_at", None),
+                           capture_started_clock=getattr(self, "_speech_started_clock", None))
+        if segments:
+            self._speech_started_at = None
+            self._speech_started_clock = None
 
     def _prewarm_final(self) -> None:
         """起判沿时调：二次识别器若是 GPU 后端，非阻塞地让服务给显卡加热；没有该能力（老式假识别器）或已释放时什么都不做。"""
@@ -742,10 +800,89 @@ class VoiceDaemon:
                 return True
         return False
 
+    def _start_observation_trace(self, text: str, *, source: str, speaker: str,
+                                 stream_text: str, asr_ms: int | None, spk_ms: int | None,
+                                 seg_sec: float | None, asr: FinalResult | None,
+                                 capture_started_at: str | None = None,
+                                 capture_started_clock: float | None = None) -> Trace | None:
+        client = getattr(self, "observability", None)
+        if client is None or source != "mic":
+            return None
+        asr_seconds = max(0, asr_ms or 0) / 1000
+        asr_started_at = datetime.fromtimestamp(time.time() - asr_seconds, timezone.utc) \
+            .isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        capture_seconds = max(0, seg_sec or 0)
+        capture_at = capture_started_at or datetime.fromtimestamp(
+            time.time() - asr_seconds - capture_seconds, timezone.utc,
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        capture_clock = capture_started_clock if capture_started_clock is not None \
+            else time.monotonic() - asr_seconds - capture_seconds
+        try:
+            trace = client.start_trace(
+                MAIN_SESSION_KEY, text, started_at=capture_at,
+                started_clock=capture_clock,
+            )
+            capture_span = trace.start_span(
+                "audio-capture", "语音片段采集",
+                {"durationSeconds": seg_sec, "sampleRate": SR16K},
+                started_at=capture_at,
+                started_clock=capture_clock,
+            )
+            capture_span.finish(
+                "completed",
+                {"durationSeconds": seg_sec, "sampleCount": round((seg_sec or 0) * SR16K)},
+                ended_at=asr_started_at,
+                duration_ms=round((seg_sec or 0) * 1000),
+            )
+            vad_span = trace.start_span(
+                "vad", "语音活动检测",
+                {"speechDetected": True, "durationSeconds": seg_sec},
+                parent_span_id=capture_span.span_id,
+                started_at=capture_at,
+                started_clock=capture_clock,
+            )
+            vad_span.finish(
+                "completed",
+                {"speechDetected": True},
+                ended_at=asr_started_at,
+                duration_ms=round((seg_sec or 0) * 1000),
+            )
+            asr_span = trace.start_span(
+                "asr", "语音识别",
+                {"streamText": stream_text, "durationSeconds": seg_sec, "source": source},
+                parent_span_id=vad_span.span_id,
+                started_at=asr_started_at,
+                started_clock=time.monotonic() - asr_seconds,
+            )
+            asr_span.finish("completed", {
+                "text": text,
+                "backend": asr.backend if asr is not None else "streaming",
+                "confidence": asr.conf if asr is not None else None,
+                "fallback": asr.fallback if asr is not None else None,
+                "durationMs": asr_ms,
+            })
+            trace.root_span_id = asr_span.span_id
+            if spk_ms is not None:
+                speaker_seconds = max(0, spk_ms) / 1000
+                speaker_started_at = datetime.fromtimestamp(time.time() - speaker_seconds, timezone.utc) \
+                    .isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                speaker_span = trace.start_span(
+                    "speaker-recognition", "说话人识别", {"durationMs": spk_ms},
+                    parent_span_id=vad_span.span_id,
+                    started_at=speaker_started_at,
+                    started_clock=time.monotonic() - speaker_seconds,
+                )
+                speaker_span.finish("completed", {"speaker": speaker or None})
+            return trace
+        except Exception:
+            log.exception("failed to record recognized voice input")
+            return None
+
     def _on_heard(self, text: str, score: float | None, *, source: str, stream_text: str = "",
                   seg_sec: float | None = None, asr_ms: int | None = None, spk_ms: int | None = None,
                   front_ms: int | None = None, speaker: str = "", dry_run: bool = False,
-                  asr: FinalResult | None = None) -> dict:
+                  asr: FinalResult | None = None, capture_started_at: str | None = None,
+                  capture_started_clock: float | None = None) -> dict:
         """一句识别结果的去留（麦克风和面板注入共用）：记一条面板记录，放行就交给大脑，只喊唤醒词就应答。
         去留只看碎音、唤醒词、免喊窗口；声纹不拦截，speaker（"主人" / "未知" / 库里的名字 / ""=没有）只做标签，
         随记录和事件落盘，放行时带进语音标记告诉模型是谁在说话。"""
@@ -801,6 +938,12 @@ class VoiceDaemon:
             log.info("拒绝：%s text=%r (stream: %r)", d.reason, text, stream_text)
         result = {"uid": uid, "verdict": d.verdict, "stage": d.stage, "reason": d.reason, "text": d.text,
                   "wake": d.wake, "in_window": in_window, "dry_run": dry_run, "speaker": speaker}
+        observation = None if dry_run else self._start_observation_trace(
+            text, source=source, speaker=speaker, stream_text=stream_text, asr_ms=asr_ms,
+            spk_ms=spk_ms, seg_sec=seg_sec, asr=asr,
+            capture_started_at=capture_started_at,
+            capture_started_clock=capture_started_clock,
+        )
         # pending 存在时，确认词先走守卫 IPC；原话绝不进模型，参数也始终留在守卫。
         ipc = getattr(self, "approval_ipc", None)
         pending = ipc.latest() if ipc is not None else None
@@ -809,13 +952,17 @@ class VoiceDaemon:
             ok = ipc.decide(pending["id"], decision)
             if not ok:
                 self.hub.finish(uid, verdict="rejected", reason="审批 IPC 拒绝或已过期")
+                if observation is not None:
+                    observation.finish(output={"verdict": "rejected", "reason": "approval expired"})
                 return {**result, "verdict": "rejected", "reason": "审批 IPC 拒绝或已过期"}
             self._followup_until = time.monotonic() + APPROVAL_FOLLOWUP_SEC
             if decision == "approve":
                 self.hub.update(uid, verdict="approval", reason="已批准，要求重试原调用", sent=APPROVAL_RETRY_MARKER)
-                self._accept_utterance(APPROVAL_RETRY_MARKER, uid, speaker)
+                self._accept_utterance(APPROVAL_RETRY_MARKER, uid, speaker, observation)
             else:
                 self.hub.finish(uid, verdict="approval", reason="已拒绝")
+                if observation is not None:
+                    observation.finish(output={"verdict": "approval", "decision": "reject"})
             return {**result, "verdict": "approval", "reason": "已批准" if decision == "approve" else "已拒绝"}
         if dry_run:
             self.hub.finish(uid, verdict=d.verdict, reason=d.reason + "（模拟，未执行）", sent=d.text)
@@ -828,8 +975,12 @@ class VoiceDaemon:
         elif d.verdict == "wake_only":
             self.hub.update(uid, verdict="wake_only", reason=d.reason)
             self._wake_ack(uid)
+            if observation is not None:
+                observation.finish(output={"verdict": "wake_only", "reason": d.reason})
         else:
             self.hub.finish(uid, verdict=d.verdict, reason=d.reason)
+            if observation is not None:
+                observation.finish(output={"verdict": d.verdict, "reason": d.reason})
         return result
 
     def inject(self, text: str, dry_run: bool = True) -> dict:
@@ -916,13 +1067,14 @@ class VoiceDaemon:
         self._hotkey_thread.start()
         log.info('F9 全局热键已注册：按 F9 切换游戏模式')
 
-    def _accept_utterance(self, text: str, uid: str | None = None, speaker: str = "") -> None:
+    def _accept_utterance(self, text: str, uid: str | None = None, speaker: str = "",
+                          trace: Trace | None = None) -> None:
         """一句话放行：正在说就停（只停播放）；立刻放提示音；文字排进大脑队列。"""
         if self.state == "SPEAKING":
             self.stop_speaking("新一轮")
         if self.store.current.earcon:
             self.play_q.put((self._gen, self._earcon))
-        self.text_q.put(Heard(text, uid, speaker) if (uid or speaker) else text)
+        self.text_q.put(Heard(text, uid, speaker, trace) if (uid or speaker or trace is not None) else text)
 
     def _wake_ack(self, uid: str | None) -> None:
         """只喊了唤醒词：应答一声（合成好的「在呢」，TTS 不在时用提示音），从应答结束起打开免喊窗口。"""
@@ -1043,6 +1195,22 @@ class VoiceDaemon:
         self._turn_t0 = time.monotonic()
         self._turn_uid, self._turn_gen = uid, gen
         self._turn_marks = marks = {"turn_start": time.time()}
+        observation = item.trace if isinstance(item, Heard) else None
+        self._turn_observation = observation
+        self._turn_observation_span = None
+        self._tts_observation_span = None
+        self._playback_observation_span = None
+        self._playback_observation_samples = 0
+        res: TurnResult | None = None
+        if observation is not None:
+            text = item.text
+            try:
+                self._turn_observation_span = observation.start_span(
+                    "main-agent", "主智能体处理",
+                    {"sessionId": observation.session_id, "userText": text, "speaker": item.speaker or None},
+                )
+            except Exception:
+                log.exception("failed to start main-agent observation span")
         try:
             if isinstance(item, SayItem):
                 res = self.runner.run_say(item.text, gen)
@@ -1074,6 +1242,14 @@ class VoiceDaemon:
             while gen == self._gen and self._playing() and not self._stop_evt.is_set():
                 time.sleep(0.05)
             current = gen == self._gen
+            if self._playback_observation_span is not None:
+                self._playback_observation_span.finish(
+                    "completed" if current and not res.aborted else "failed",
+                    {"sampleCount": self._playback_observation_samples,
+                     "interrupted": not current or res.aborted},
+                    None if current and not res.aborted else "playback_interrupted",
+                )
+                self._playback_observation_span = None
             # O5b：仅本轮 task_start 经 IPC 登记的候选，且首句真实入队并完整播完才领取。
             # 任何模型/TTS 错误或主人打断都会清空候选，任务保持 queued。
             scheduler = getattr(self, "task_dispatch", None)
@@ -1102,6 +1278,30 @@ class VoiceDaemon:
                 threading.Thread(target=self._fill_gateway_phases, args=(uid, run_id, dict(marks)), name="runtrace",
                                  daemon=True).start()
         finally:
+            if self._playback_observation_span is not None:
+                self._playback_observation_span.finish("failed", error="turn_ended_before_playback_completion")
+                self._playback_observation_span = None
+            if self._tts_observation_span is not None:
+                self._tts_observation_span.finish("failed", error="turn_ended_before_tts_completion")
+                self._tts_observation_span = None
+            if observation is not None:
+                failed = res is None or bool(res.error)
+                output = None if res is None else {
+                    "reply": res.reply,
+                    "spoken": res.spoken,
+                    "unspoken": res.unspoken,
+                    "aborted": res.aborted,
+                    "error": res.error,
+                }
+                if self._turn_observation_span is not None:
+                    self._turn_observation_span.finish(
+                        "failed" if failed else "completed", output,
+                        res.error if res is not None else "turn_exception",
+                    )
+                observation.finish("failed" if failed else "completed", output,
+                                   res.error if res is not None else "turn_exception")
+            self._turn_observation = None
+            self._turn_observation_span = None
             self._turn_uid, self._turn_marks, self._turn_is_say, self._turn_speaker = None, None, False, ""
             with self._lock:
                 if gen == self._gen:
@@ -1239,6 +1439,22 @@ class VoiceDaemon:
     def _on_turn_event(self, name: str, data: dict) -> None:
         """TurnRunner 的进度 → 面板环节状态与耗时记点。"""
         uid, m = self._turn_uid, self._turn_marks
+        trace = getattr(self, "_turn_observation", None)
+        main_span = getattr(self, "_turn_observation_span", None)
+        if trace is not None and main_span is not None:
+            if name == "tts_start":
+                self._tts_observation_span = trace.start_span(
+                    "tts", "语音合成", {"text": data.get("text", "")},
+                    parent_span_id=main_span.span_id,
+                )
+            elif name == "tts_done" and self._tts_observation_span is not None:
+                self._tts_observation_span.finish("completed", {
+                    "text": data.get("text", ""), "durationMs": data.get("ms"),
+                })
+                self._tts_observation_span = None
+            elif name == "tts_fail" and self._tts_observation_span is not None:
+                self._tts_observation_span.finish("failed", error=str(data.get("error", "tts_failed")))
+                self._tts_observation_span = None
         if m is None:
             return
         if name == "stream_end" and self._talk_direct is not None:
@@ -1342,6 +1558,17 @@ class VoiceDaemon:
             pcm = np.concatenate([np.zeros(self.sr * LEAD_SILENCE_MS // 1000, dtype=np.float32), pcm])
             self._turn_first = False
             log.info("first audio %.2fs after turn start", time.monotonic() - self._turn_t0)
+        observation = getattr(self, "_turn_observation", None)
+        parent = getattr(self, "_turn_observation_span", None)
+        if observation is not None and parent is not None:
+            if self._playback_observation_span is None:
+                self._playback_observation_span = observation.start_span(
+                    "audio-playback", "音频播放",
+                    {"sampleRate": self.sr},
+                    parent_span_id=parent.span_id,
+                )
+                self._playback_observation_samples = 0
+            self._playback_observation_samples += len(pcm)
         self.play_q.put((gen, pcm))  # 即使此刻恰好被打断，回调也会按代次丢掉它
 
     def _begin_speaking(self) -> int:
@@ -2013,6 +2240,8 @@ class VoiceDaemon:
             self.task_ipc.stop()
         if self.task_executor is not None:
             self.task_executor.shutdown()
+        if self.observability is not None:
+            self.observability.close()
         if self.tray:
             self.tray.stop()
         self.control.shutdown()

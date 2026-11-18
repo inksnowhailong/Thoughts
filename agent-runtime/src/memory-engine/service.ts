@@ -35,6 +35,7 @@ import {
   rawMemories,
 } from './schema.js';
 import { extractedMemorySchema, ModelRouter } from './evaluator.js';
+import type { ObservabilityHub, TraceRecorder } from '../observability/runtime.js';
 
 type RecallRow = {
   id: string;
@@ -136,10 +137,16 @@ export class MemoryEngine {
   private scheduler: NodeJS.Timeout | null = null;
   private jobProcessor: NodeJS.Timeout | null = null;
   private processingJob = false;
+  private readonly observability?: ObservabilityHub;
 
-  constructor(databasePath = DEFAULT_MEMORY_DATABASE_PATH, modelRouter = new ModelRouter()) {
+  constructor(
+    databasePath = DEFAULT_MEMORY_DATABASE_PATH,
+    modelRouter = new ModelRouter(),
+    observability?: ObservabilityHub,
+  ) {
     this.client = new MemoryDatabaseClient(databasePath);
     this.modelRouter = modelRouter;
+    this.observability = observability;
   }
 
   async initialize(): Promise<void> {
@@ -449,7 +456,11 @@ export class MemoryEngine {
     }
   }
 
-  async evaluateMemory(input: EvaluatorRequest): Promise<Record<string, unknown>> {
+  async evaluateMemory(
+    input: EvaluatorRequest,
+    observation?: TraceRecorder,
+    parentSpanId?: string,
+  ): Promise<Record<string, unknown>> {
     const [memory] = await this.client.db.select().from(memories)
       .where(eq(memories.id, input.memoryId)).limit(1);
     if (!memory) throw new MemoryEngineError(404, 'memory_not_found');
@@ -496,10 +507,43 @@ export class MemoryEngine {
         sources: sources.filter((source) => source.memoryId === candidate.id).slice(0, 10),
       })),
     };
+    const evaluatorSpan = observation?.startSpan('model-provider', 'MEMORY EVALUATOR', {
+      taskType: input.taskType,
+      modelInputCapture: 'artifact',
+    }, parentSpanId);
+    const inputArtifact = evaluatorSpan ? await observation?.captureArtifact({
+      spanId: evaluatorSpan.id,
+      type: 'memory_evaluator_input',
+      contentType: 'application/json',
+      content: { taskType: input.taskType, evidence },
+    }) : undefined;
     let evaluated: Awaited<ReturnType<ModelRouter['evaluate']>>;
     try {
       evaluated = await this.modelRouter.evaluate(input.taskType, evidence);
+      const outputArtifact = evaluatorSpan ? await observation?.captureArtifact({
+        spanId: evaluatorSpan.id,
+        type: 'memory_evaluator_output',
+        contentType: 'application/json',
+        content: evaluated,
+      }) : undefined;
+      evaluatorSpan?.finish('completed', {
+        model: evaluated.model,
+        inputArtifact: inputArtifact?.reference ?? null,
+        outputArtifact: outputArtifact?.reference ?? null,
+        captureStatus: {
+          input: inputArtifact?.status ?? 'not_available',
+          output: outputArtifact?.status ?? 'not_available',
+        },
+      });
     } catch (error) {
+      evaluatorSpan?.finish('failed', {
+        model: null,
+        inputArtifact: inputArtifact?.reference ?? null,
+        captureStatus: {
+          input: inputArtifact?.status ?? 'not_available',
+          output: 'not_available',
+        },
+      }, error instanceof Error ? error.message : String(error));
       const message = error instanceof Error ? error.message : String(error);
       if (message === 'memory_evaluator_not_configured') throw new MemoryEngineError(503, message);
       throw new MemoryEngineError(502, message);
@@ -1234,6 +1278,16 @@ export class MemoryEngine {
         return claimed;
       }, { behavior: 'immediate' });
       if (!job) return null;
+      const observation = this.observability?.startTrace({
+        sessionId: `memory-consolidation/${job.id}`,
+        userText: `记忆整理任务：${job.jobType}`,
+        model: 'memory-engine',
+      });
+      const jobSpan = observation?.startSpan('memory-engine', 'MEMORY CONSOLIDATION', {
+        jobId: job.id,
+        jobType: job.jobType,
+        inputIds: job.inputIds,
+      });
       const processedIds = new Set((job.checkpoint.processedIds as string[] | undefined) ?? []);
       try {
         if (job.jobType === 'basic') {
@@ -1242,7 +1296,7 @@ export class MemoryEngine {
             for (const batch of chunk(job.inputIds, batchSize)) {
               const pendingIds = batch.filter((id) => !processedIds.has(id));
               if (!pendingIds.length) continue;
-              await this.processRawBatch(pendingIds);
+              await this.processRawBatch(pendingIds, observation, jobSpan?.id);
               pendingIds.forEach((id) => processedIds.add(id));
               await this.client.db.update(consolidationJobs).set({
                 checkpoint: { processedIds: [...processedIds] },
@@ -1262,13 +1316,17 @@ export class MemoryEngine {
             if (candidates.length || taskType === 'importance' || taskType === 'retention') {
               if (taskType === 'conflicts') {
                 for (const candidateMemoryId of candidates) {
-                  await this.evaluateMemory({ taskType, memoryId, candidateMemoryIds: [candidateMemoryId] });
+                  await this.evaluateMemoryObserved(observation, jobSpan?.id, {
+                    taskType, memoryId, candidateMemoryIds: [candidateMemoryId],
+                  });
                   const [primary] = await this.client.db.select({ status: memories.status }).from(memories)
                     .where(eq(memories.id, memoryId)).limit(1);
                   if (primary?.status !== 'active') break;
                 }
               } else {
-                await this.evaluateMemory({ taskType, memoryId, candidateMemoryIds: candidates });
+                await this.evaluateMemoryObserved(observation, jobSpan?.id, {
+                  taskType, memoryId, candidateMemoryIds: candidates,
+                });
               }
             }
             processedIds.add(memoryId);
@@ -1287,6 +1345,8 @@ export class MemoryEngine {
           checkpoint: { completedAt: new Date().toISOString() },
           updatedAt: new Date(),
         }).where(eq(consolidationJobs.id, job.id)).returning();
+        jobSpan?.finish('completed', { jobId: job.id, status: completed.status });
+        observation?.finish('completed', { jobId: job.id, status: completed.status });
         return completed;
       } catch (error) {
         const retryCount = job.retryCount + 1;
@@ -1299,6 +1359,9 @@ export class MemoryEngine {
           updatedAt: new Date(),
         }).where(eq(consolidationJobs.id, job.id)).returning();
         if (status === 'failed') console.error(`[memory-engine] consolidation job ${job.id} failed:`, message);
+        const observationStatus = status === 'failed' ? 'failed' : 'waiting';
+        jobSpan?.finish(observationStatus, { jobId: job.id, status, error: message }, message);
+        observation?.finish(observationStatus, { jobId: job.id, status, error: message }, message);
         return failed;
       }
     } finally {
@@ -1306,7 +1369,11 @@ export class MemoryEngine {
     }
   }
 
-  private async processRawBatch(rawIds: string[]): Promise<void> {
+  private async processRawBatch(
+    rawIds: string[],
+    observation?: TraceRecorder,
+    parentSpanId?: string,
+  ): Promise<void> {
     const raws = await this.client.db.select().from(rawMemories)
       .where(inArray(rawMemories.id, rawIds));
     let extracted: Awaited<ReturnType<ModelRouter['extractMemories']>> | undefined;
@@ -1318,7 +1385,45 @@ export class MemoryEngine {
         occurredAt: raw.occurredAt.toISOString(),
         content: JSON.stringify(raw.content).slice(0, 4000),
       }));
-      extracted = await this.modelRouter.extractMemories(events);
+      const extractionSpan = observation?.startSpan('memory-engine', 'MEMORY EXTRACTION', {
+        rawMemoryIds: rawIds,
+        inputCapture: 'artifact',
+      }, parentSpanId);
+      const inputArtifact = extractionSpan ? await observation?.captureArtifact({
+        spanId: extractionSpan.id,
+        type: 'memory_extraction_input',
+        contentType: 'application/json',
+        content: { events },
+      }) : undefined;
+      try {
+        extracted = await this.modelRouter.extractMemories(events);
+        const outputArtifact = extractionSpan ? await observation?.captureArtifact({
+          spanId: extractionSpan.id,
+          type: 'memory_extraction_output',
+          contentType: 'application/json',
+          content: extracted,
+        }) : undefined;
+        extractionSpan?.finish('completed', {
+          model: extracted.model,
+          proposalCount: extracted.memories.length,
+          inputArtifact: inputArtifact?.reference ?? null,
+          outputArtifact: outputArtifact?.reference ?? null,
+          captureStatus: {
+            input: inputArtifact?.status ?? 'not_available',
+            output: outputArtifact?.status ?? 'not_available',
+          },
+        });
+      } catch (error) {
+        extractionSpan?.finish('failed', {
+          model: null,
+          inputArtifact: inputArtifact?.reference ?? null,
+          captureStatus: {
+            input: inputArtifact?.status ?? 'not_available',
+            output: 'not_available',
+          },
+        }, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
     }
 
     const rawById = new Map(raws.map((raw) => [raw.id, raw]));
@@ -1391,6 +1496,26 @@ export class MemoryEngine {
           reason: 'Automatically accepted after source fingerprint and evidence validation.',
         });
       }
+    }
+  }
+
+  private async evaluateMemoryObserved(
+    observation: TraceRecorder | undefined,
+    parentSpanId: string | undefined,
+    input: EvaluatorRequest,
+  ): Promise<unknown> {
+    const span = observation?.startSpan('memory-engine', 'MEMORY EVALUATION', {
+      taskType: input.taskType,
+      memoryId: input.memoryId,
+      candidateMemoryIds: input.candidateMemoryIds ?? [],
+    }, parentSpanId);
+    try {
+      const result = await this.evaluateMemory(input, observation, span?.id);
+      span?.finish('completed', { result });
+      return result;
+    } catch (error) {
+      span?.finish('failed', null, error instanceof Error ? error.message : String(error));
+      throw error;
     }
   }
 

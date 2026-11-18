@@ -48,7 +48,11 @@ export function registerWorkerRoutes(app: FastifyInstance, opts: WorkerRoutesOpt
 
   app.post('/v1/worker/runs', async (req, reply) => {
     try {
-      return manager.createRun(req.body);
+      return manager.createRun(req.body, {
+        ...(typeof req.headers.traceparent === 'string' ? { traceparent: req.headers.traceparent } : {}),
+        ...(typeof req.headers['x-observability-started-at'] === 'string'
+          ? { startedAt: req.headers['x-observability-started-at'] } : {}),
+      });
     } catch (e) {
       return sendError(reply, e);
     }

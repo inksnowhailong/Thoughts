@@ -20,6 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { registerWorkerRoutes } from '../../src/worker/routes.js';
 import { WorkerRunManager } from '../../src/worker/runs.js';
 import { ScriptedChatModel } from '../helpers/scripted-model.js';
+import { ObservabilityHub } from '../../src/observability/runtime.js';
 
 // ---------- mock bridge ----------
 
@@ -167,13 +168,18 @@ function buildApp(manager: WorkerRunManager): FastifyInstance {
   return app;
 }
 
-function newManager(model: ScriptedChatModel, checkpointPath?: string): WorkerRunManager {
+function newManager(
+  model: ScriptedChatModel,
+  checkpointPath?: string,
+  observability?: ObservabilityHub,
+): WorkerRunManager {
   return new WorkerRunManager({
     bridgeUrl: bridge.url,
     token: TOKEN,
     model,
     checkpointPath: checkpointPath ?? path.join(tempDir, `checkpoints-${randomUUID()}.sqlite3`),
     audit: true,
+    observability,
   });
 }
 
@@ -204,6 +210,42 @@ function events(manager: WorkerRunManager, runId: string) {
 // ---------- 测试 ----------
 
 describe('Worker Runtime（LangGraph + 审批 interrupt + checkpoint）', () => {
+  it('records Worker, model, and tool spans with model artifacts', async () => {
+    const observability = new ObservabilityHub(':memory:');
+    const manager = newManager(new ScriptedChatModel([
+      { content: '', tool_calls: [{ id: 'obs-tool-1', name: 'get_weather', args: { city: '北京' } }] },
+      { content: '北京今天晴。' },
+    ]), undefined, observability);
+    const app = buildApp(manager);
+    try {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/v1/worker/runs',
+        headers: { authorization: `Bearer ${TOKEN}` },
+        payload: makeBody(),
+      });
+      expect(created.statusCode).toBe(200);
+      const runId = created.json().run_id as string;
+      await waitOutcome(manager, runId);
+
+      const [summary] = observability.listTraces();
+      const trace = observability.getTrace(summary.traceId);
+      expect(trace?.status).toBe('completed');
+      expect(trace?.spans.map((span) => span.name)).toContain('WORKER TASK');
+      expect(trace?.spans.map((span) => span.name)).toContain('WORKER MODEL INVOCATION');
+      expect(trace?.spans.map((span) => span.name)).toContain('WORKER TOOL get_weather');
+      expect(trace?.spans.find((span) => span.name === 'WORKER MODEL INVOCATION')?.artifacts)
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'worker_model_request' }),
+          expect.objectContaining({ type: 'worker_model_response' }),
+        ]));
+    } finally {
+      await app.close();
+      manager.dispose();
+      observability.close();
+    }
+  });
+
   it('使用共享记忆引擎记录任务并为 Worker 召回记忆', async () => {
     const model = new ScriptedChatModel([{ content: '任务完成。' }]);
     const writes: Array<Record<string, unknown>> = [];

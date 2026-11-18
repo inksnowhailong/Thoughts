@@ -51,7 +51,10 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .raw-head{display:flex;align-items:center;gap:7px;margin:14px 0 5px;color:var(--dim);font-size:9px;letter-spacing:.12em}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#0b0c0e;border:1px solid var(--faint);padding:8px;margin:0;max-height:230px;overflow:auto;font-size:10px;line-height:1.5}
 .timeline{grid-column:1/4;grid-row:2;padding:10px 12px;overflow:auto}
-.timeline-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}.timeline-head .panel-title{margin:0}
+.timeline-head{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}.timeline-head .panel-title{margin:0}
+.replay-controls{display:flex;align-items:center;gap:4px}.replay-controls input[type=range]{width:110px;padding:0}
+.artifact-tools{display:flex;gap:5px;margin:6px 0}.artifact-tools input{min-width:0;flex:1}
+.artifact-view{max-height:300px;overflow:auto}.dynamic-edge{stroke-dasharray:3 3}
 #bars{display:flex;flex-direction:column;gap:4px}
 .bar-row{display:grid;grid-template-columns:140px 1fr 54px;gap:8px;align-items:center;min-height:18px}
 .bar-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c5c5c5}
@@ -87,7 +90,7 @@ main.memory-view .timeline{display:none}
     <button class="selected" data-tab="live">实时</button>
     <button data-tab="traces">历史</button>
     <button data-tab="memory">记忆</button>
-    <button data-tab="nodes">节点</button>
+    <button data-tab="nodes">系统</button>
   </nav>
 </header>
 <main>
@@ -95,6 +98,9 @@ main.memory-view .timeline{display:none}
     <section id="traceScreen" class="screen active">
       <h2 class="panel-title">执行记录</h2>
       <div id="traceList" class="trace-list"></div>
+      <div id="tracePaging" class="row" style="justify-content:space-between;margin-top:8px">
+        <button id="traceNewer" type="button">更新</button><span id="tracePage" class="muted">最近记录</span><button id="traceOlder" type="button">更早</button>
+      </div>
     </section>
     <section id="memoryScreen" class="screen">
       <h2 class="panel-title">记忆浏览 / 只读</h2>
@@ -114,6 +120,9 @@ main.memory-view .timeline{display:none}
     <section id="nodeScreen" class="screen">
       <h2 class="panel-title">系统节点</h2>
       <div id="nodeList"></div>
+      <h2 class="panel-title" style="margin-top:16px">数据保留</h2>
+      <div id="retentionSummary" class="muted">正在读取</div>
+      <button id="cleanupRetention" type="button" style="margin-top:8px">清理过期记录</button>
     </section>
     <section id="eventScreen">
       <h2 class="panel-title">运行事件</h2>
@@ -123,10 +132,10 @@ main.memory-view .timeline{display:none}
   <section class="center">
     <div class="center-head"><strong id="viewTitle">实时拓扑</strong><span id="viewSub">仅显示实际观测到的执行</span><span class="grow"></span><span id="watermark" class="mono">事件序号 —</span></div>
     <svg id="topology" viewBox="0 0 800 440" role="img" aria-label="运行拓扑">
-      <path class="edge" data-edge="gateway-main" d="M170 220 H320"/>
-      <path class="edge" data-edge="main-memory" d="M430 205 C500 160 520 132 590 132"/>
-      <path class="edge" data-edge="main-model" d="M430 220 H590"/>
-      <path class="edge" data-edge="main-tools" d="M430 235 C500 280 520 310 590 310"/>
+      <path class="edge" data-edge="gateway-main" data-source="agent-runtime" data-target="main-agent" d="M170 220 H320"/>
+      <path class="edge" data-edge="main-memory" data-source="main-agent" data-target="memory-engine" d="M430 205 C500 160 520 132 590 132"/>
+      <path class="edge" data-edge="main-model" data-source="main-agent" data-target="model-provider" d="M430 220 H590"/>
+      <path class="edge" data-edge="main-tools" data-source="main-agent" data-target="tool-router" d="M430 235 C500 280 520 310 590 310"/>
       <g class="node" data-node="agent-runtime" tabindex="0" role="button" aria-label="智能体运行时">
         <rect class="shape" x="95" y="188" width="75" height="64"/>
         <circle class="core" cx="132.5" cy="216" r="3"/>
@@ -168,7 +177,20 @@ main.memory-view .timeline{display:none}
     <div id="inspectorRaw"></div>
   </aside>
   <section class="timeline">
-    <div class="timeline-head"><h2 class="panel-title">执行时间轴</h2><span id="timelineTrace" class="muted"></span><span class="grow"></span><span class="badge">实际步骤耗时</span></div>
+    <div class="timeline-head">
+      <h2 class="panel-title">执行时间轴</h2><span id="timelineTrace" class="muted"></span><span class="grow"></span>
+      <div class="replay-controls" aria-label="历史回放">
+        <button id="pinTrace" type="button" disabled>固定追踪</button>
+        <button id="replayPrevious" type="button" disabled aria-label="上一步">上一步</button>
+        <button id="replayToggle" type="button" disabled>播放</button>
+        <button id="replayNext" type="button" disabled aria-label="下一步">下一步</button>
+        <input id="replaySeek" type="range" min="0" max="0" value="0" aria-label="回放进度">
+        <select id="replaySpeed" aria-label="回放速度">
+          <option value="0.5">0.5 倍</option><option value="1" selected>1 倍</option><option value="2">2 倍</option>
+        </select>
+      </div>
+      <span class="badge">历史回放仅重现事件</span>
+    </div>
     <div id="bars"><span class="empty">选择一条追踪，查看实际执行步骤</span></div>
   </section>
 </main>
@@ -184,6 +206,9 @@ main.memory-view .timeline{display:none}
     eventOffsets: new Set(),
     source: null,
     tab: 'live',
+    historyOffset: 0,
+    historyLimit: 50,
+    replay: { events: [], index: -1, timer: null },
     memory: { items: [], total: 0, offset: 0, limit: 30, selectedId: null },
     activeNodes: new Map(),
   };
@@ -202,12 +227,20 @@ main.memory-view .timeline{display:none}
     retracted: '已撤回',
   })[status] ?? status ?? '未知';
   const nodeLabel = (id) => ({
+    'voice-runtime': '语音运行时',
+    'audio-capture': '音频采集',
+    vad: '语音活动检测',
+    asr: '语音识别',
+    'speaker-recognition': '说话人识别',
     'agent-runtime': '智能体运行时',
     'main-agent': '主智能体',
+    'worker-runtime': '工作节点',
     'memory-engine': '记忆引擎',
     'model-provider': '模型服务',
     'tool-router': '工具路由',
-  })[id] ?? id;
+    tts: '语音合成',
+    'audio-playback': '音频播放',
+  })[id] ?? '其他节点';
   const nodeTypeLabel = (type) => ({
     processor: '处理模块',
     agent: '智能体',
@@ -230,6 +263,10 @@ main.memory-view .timeline{display:none}
     'span.completed': '步骤完成',
     'span.failed': '步骤失败',
     'span.waiting': '等待审批',
+    'node.registered': '节点注册',
+    'node.heartbeat': '节点心跳',
+    'node.health_changed': '节点状态变化',
+    'artifact.created': '原始数据已保存',
   })[type] ?? type;
   const byId = (id) => document.getElementById(id);
   const make = (tag, className, text) => {
@@ -244,6 +281,16 @@ main.memory-view .timeline{display:none}
       const body = await response.text();
       throw new Error(`HTTP ${response.status}: ${body}`);
     }
+    return response.json();
+  };
+  const send = async (url, method, body) => {
+    const response = await fetch(url, {
+      method,
+      credentials: 'same-origin',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
     return response.json();
   };
   const pretty = (value) => value === null || value === undefined
@@ -269,15 +316,17 @@ main.memory-view .timeline{display:none}
     byId('traceScreen').classList.toggle('active', tab === 'live' || tab === 'traces');
     byId('memoryScreen').classList.toggle('active', tab === 'memory');
     byId('nodeScreen').classList.toggle('active', tab === 'nodes');
+    byId('tracePaging').style.display = tab === 'traces' ? '' : 'none';
     byId('eventScreen').style.display = tab === 'live' ? '' : 'none';
     byId('memoryCanvas').style.display = tab === 'memory' ? 'block' : 'none';
     document.querySelector('main').classList.toggle('memory-view', tab === 'memory');
-    byId('viewTitle').textContent = ({ live: '实时拓扑', traces: '执行追踪', memory: '记忆浏览', nodes: '系统节点' })[tab];
+    byId('viewTitle').textContent = ({ live: '实时拓扑', traces: '执行追踪', memory: '记忆浏览', nodes: '系统状态' })[tab];
     byId('viewSub').textContent = tab === 'memory' ? '只读 / 数据来自记忆引擎' : '仅显示实际运行状态';
     byId('topology').style.display = tab === 'memory' ? 'none' : '';
     byId('topologyNote').style.display = tab === 'memory' ? 'none' : '';
     if (tab === 'memory') loadMemories();
-    if (tab === 'nodes') renderNodes();
+    if (tab === 'nodes') { renderNodes(); loadRetention(); }
+    if (tab === 'traces') loadHistory();
   }
 
   function renderTraceList() {
@@ -292,6 +341,20 @@ main.memory-view .timeline{display:none}
       list.append(button);
     }
     if (state.traces.length === 0) list.append(make('span', 'empty', '还没有实际执行记录'));
+    const first = state.traces.length ? state.historyOffset + 1 : 0;
+    byId('tracePage').textContent = state.tab === 'traces'
+      ? `第 ${first}–${state.historyOffset + state.traces.length} 条`
+      : '最近记录';
+    byId('traceNewer').disabled = state.historyOffset === 0;
+    byId('traceOlder').disabled = state.traces.length < state.historyLimit;
+  }
+
+  async function loadHistory() {
+    try {
+      const page = await request(`/api/observability/traces?limit=${state.historyLimit}&offset=${state.historyOffset}`);
+      state.traces = page.traces;
+      renderTraceList();
+    } catch (error) { showError(error); }
   }
 
   function renderNodes() {
@@ -302,10 +365,84 @@ main.memory-view .timeline{display:none}
       const button = make('button', `entry${state.selectedNode === node.id ? ' selected' : ''}`);
       button.type = 'button';
       button.append(make('strong', '', nodeLabel(node.id)));
-      button.append(make('small', '', `${nodeTypeLabel(node.type)} · 健康：${statusLabel(node.health)} · 执行：${statusLabel(node.execution)} · ${node.observed ? '已有记录' : '暂无步骤记录'}`));
+      const instances = node.instances.length ? ` · 实例 ${node.instances.length}` : '';
+      button.append(make('small', '', `${nodeTypeLabel(node.type)} · 健康：${statusLabel(node.health)} · 执行：${statusLabel(node.execution)}${instances} · ${node.observed ? '已有记录' : '暂无步骤记录'}`));
       button.addEventListener('click', () => selectNode(node.id));
       list.append(button);
     }
+  }
+
+  async function loadRetention() {
+    try {
+      const stats = await request('/api/observability/retention');
+      byId('retentionSummary').textContent =
+        `追踪 ${stats.traceCount} 条 · 事件 ${stats.eventCount} 条 · 原始数据 ${stats.artifactCount} 份 / ${stats.artifactBytes} 字节`;
+    } catch (error) { showError(error); }
+  }
+
+  function renderDynamicTopology() {
+    if (!state.snapshot) return;
+    const svg = byId('topology');
+    svg.querySelectorAll('.dynamic-node,.dynamic-edge').forEach((item) => item.remove());
+    const positions = new Map([
+      ['agent-runtime', [132, 220]], ['main-agent', [375, 220]],
+      ['memory-engine', [635, 132]], ['model-provider', [635, 212]],
+      ['tool-router', [635, 310]],
+    ]);
+    const zoneX = { INPUT: 55, RUNTIME: 350, MEMORY: 750, PROVIDERS: 750, OUTPUT: 750 };
+    const zoneCounts = new Map();
+    for (const node of state.snapshot.nodes) {
+      const existing = svg.querySelector(`[data-node="${CSS.escape(node.id)}"]`);
+      if (existing) {
+        existing.classList.toggle('unknown', !node.observed);
+        existing.classList.toggle('error', node.health === 'offline' || node.execution === 'error');
+        continue;
+      }
+      const count = zoneCounts.get(node.zone) ?? 0;
+      zoneCounts.set(node.zone, count + 1);
+      const x = zoneX[node.zone] ?? 730;
+      const y = 62 + (count % 7) * 47;
+      positions.set(node.id, [x, y]);
+      const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      group.setAttribute('class', `node dynamic-node${node.observed ? '' : ' unknown'}${node.health === 'offline' ? ' error' : ''}`);
+      group.dataset.node = node.id;
+      group.setAttribute('tabindex', '0');
+      group.setAttribute('role', 'button');
+      group.setAttribute('aria-label', nodeLabel(node.id));
+      const shape = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      shape.setAttribute('class', 'shape');
+      shape.setAttribute('x', String(x - 31));
+      shape.setAttribute('y', String(y - 16));
+      shape.setAttribute('width', '62');
+      shape.setAttribute('height', '32');
+      const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      title.setAttribute('x', String(x));
+      title.setAttribute('y', String(y + 3));
+      title.textContent = nodeLabel(node.id);
+      group.append(shape, title);
+      group.addEventListener('click', () => selectNode(node.id));
+      group.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); }
+      });
+      svg.append(group);
+    }
+    const connections = state.snapshot.connections ?? [];
+    for (const connection of connections) {
+      const edgeId = `${connection.source}-${connection.target}`;
+      if (svg.querySelector(`[data-edge="${CSS.escape(edgeId)}"]`)) continue;
+      if (!positions.has(connection.source) || !positions.has(connection.target)) continue;
+      const [x1, y1] = positions.get(connection.source);
+      const [x2, y2] = positions.get(connection.target);
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('class', 'edge dynamic-edge');
+      path.dataset.edge = edgeId;
+      path.dataset.source = connection.source;
+      path.dataset.target = connection.target;
+      path.setAttribute('d', `M${x1} ${y1} L${x2} ${y2}`);
+      svg.insertBefore(path, svg.firstChild);
+    }
+    renderTracePath();
+    renderTopologyActivity();
   }
 
   function renderEvent(event) {
@@ -321,6 +458,16 @@ main.memory-view .timeline{display:none}
     if (state.events.length > 200) state.events.pop();
   }
 
+  function renderTopologyActivity() {
+    document.querySelectorAll('.edge').forEach((edge) => {
+      const source = edge.dataset.source;
+      const target = edge.dataset.target;
+      edge.classList.toggle('active', Boolean(
+        (source && state.activeNodes.get(source)) || (target && state.activeNodes.get(target)),
+      ));
+    });
+  }
+
   function updateNodeActivity(event) {
     if (!event.nodeId) return;
     const count = state.activeNodes.get(event.nodeId) ?? 0;
@@ -334,36 +481,18 @@ main.memory-view .timeline{display:none}
       ? `执行中：${active.map(nodeLabel).join(' / ')}`
       : '当前没有执行中的追踪';
     renderTracePath();
-    const edgeMap = {
-      'agent-runtime': ['gateway-main'],
-      'main-agent': ['gateway-main'],
-      'memory-engine': ['main-memory'],
-      'model-provider': ['main-model'],
-      'tool-router': ['main-tools'],
-    };
-    document.querySelectorAll('.edge').forEach((edge) => edge.classList.remove('active'));
-    for (const id of active) {
-      for (const edge of edgeMap[id] ?? []) document.querySelector(`[data-edge="${edge}"]`)?.classList.add('active');
-    }
+    renderTopologyActivity();
   }
 
   function renderTracePath() {
-    const nodeEdges = {
-      'agent-runtime': ['gateway-main'],
-      'main-agent': ['gateway-main'],
-      'memory-engine': ['main-memory'],
-      'model-provider': ['main-model'],
-      'tool-router': ['main-tools'],
-    };
     const touched = new Set(state.selectedTrace?.spans.map((span) => span.nodeId) ?? []);
     document.querySelectorAll('.node').forEach((node) => {
       const id = node.dataset.node;
       node.classList.toggle('active', Boolean(id && state.activeNodes.get(id)));
       node.classList.toggle('in-trace', Boolean(id && touched.has(id)));
     });
-    const touchedEdges = new Set([...touched].flatMap((id) => nodeEdges[id] ?? []));
     document.querySelectorAll('.edge').forEach((edge) => {
-      edge.classList.toggle('in-trace', Boolean(edge.dataset.edge && touchedEdges.has(edge.dataset.edge)));
+      edge.classList.toggle('in-trace', Boolean(touched.has(edge.dataset.source) || touched.has(edge.dataset.target)));
     });
   }
 
@@ -387,20 +516,29 @@ main.memory-view .timeline{display:none}
     }
   }
 
-  function selectNode(nodeId) {
+  async function selectNode(nodeId) {
     state.selectedNode = nodeId;
     state.selectedSpan = null;
     document.querySelectorAll('.node').forEach((node) => node.classList.toggle('selected', node.dataset.node === nodeId));
     const node = state.snapshot?.nodes.find((item) => item.id === nodeId);
+    let detail = node;
+    try { detail = await request(`/api/observability/nodes/${encodeURIComponent(nodeId)}`); }
+    catch (error) { showError(error); }
+    if (state.selectedNode !== nodeId) return;
     const spans = state.selectedTrace?.spans.filter((span) => span.nodeId === nodeId) ?? [];
     renderInspector(nodeLabel(nodeId), [
       ['节点标识', nodeId],
-      ['节点类型', node ? nodeTypeLabel(node.type) : undefined],
-      ['健康状态', node ? statusLabel(node.health) : undefined],
-      ['执行状态', node ? statusLabel(node.execution) : undefined],
-      ['已观测', node?.observed ? '是' : '暂无步骤记录'],
+      ['节点类型', detail ? nodeTypeLabel(detail.type) : undefined],
+      ['健康状态', detail ? statusLabel(detail.health) : undefined],
+      ['执行状态', detail ? statusLabel(detail.execution) : undefined],
+      ['已观测', detail?.observed ? '是' : '暂无步骤记录'],
+      ['运行实例', String(detail?.instances?.length ?? 0)],
       ['追踪步骤数', String(spans.length)],
-    ], spans.map((span) => [span.name, { status: span.status, durationMs: span.durationMs, input: span.input, output: span.output }]));
+    ], [
+      ['实例列表', detail?.instances],
+      ['最近执行步骤', detail?.recentSpans],
+      ...spans.map((span) => [spanLabel(span.name), { status: statusLabel(span.status), durationMs: span.durationMs, input: span.input, output: span.output }]),
+    ]);
   }
 
   function selectSpan(span) {
@@ -419,17 +557,24 @@ main.memory-view .timeline{display:none}
       ['结束时间', time(span.endedAt)],
       ['耗时', duration(span.durationMs)],
     ], [['完整输入', span.input], ['完整输出', span.output], ['错误信息', span.error]]);
+    renderArtifacts(span);
     if (trace) byId('traceId').textContent = trace.traceId;
   }
 
   async function selectTrace(traceId) {
     try {
+      const changed = state.selectedTrace?.traceId !== traceId;
       state.selectedTrace = await request(`/api/observability/traces/${encodeURIComponent(traceId)}`);
       state.selectedNode = null;
       state.selectedSpan = null;
+      if (changed) {
+        stopReplay();
+        await loadReplay(traceId);
+      }
       renderTracePath();
       renderTraceList();
       renderTimeline();
+      renderReplayControls();
       const trace = state.selectedTrace;
       byId('traceId').textContent = trace.traceId;
       renderInspector('追踪 / ' + statusLabel(trace.status), [
@@ -439,8 +584,160 @@ main.memory-view .timeline{display:none}
         ['结束时间', time(trace.endedAt)],
         ['总耗时', duration(trace.durationMs)],
         ['步骤数', String(trace.spans.length)],
+        ['保留状态', trace.pinned ? '已固定' : '自动清理'],
       ], [['完整输入', trace.input], ['完整输出', trace.output], ['错误信息', trace.error]]);
     } catch (error) { showError(error); }
+  }
+
+  async function loadReplay(traceId) {
+    const events = [];
+    let after = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const page = await request(`/api/observability/traces/${encodeURIComponent(traceId)}/replay?after=${after}&limit=1000`);
+      events.push(...page.events);
+      hasMore = page.hasMore;
+      if (page.events.length) after = page.events[page.events.length - 1].hubOffset;
+      else hasMore = false;
+    }
+    state.replay.events = events;
+    state.replay.index = events.length ? 0 : -1;
+    byId('replaySeek').max = String(Math.max(0, events.length - 1));
+    byId('replaySeek').value = String(Math.max(0, state.replay.index));
+  }
+
+  function stopReplay() {
+    if (state.replay.timer !== null) clearInterval(state.replay.timer);
+    state.replay.timer = null;
+    byId('replayToggle').textContent = '播放';
+  }
+
+  function renderReplayControls() {
+    const hasEvents = state.replay.events.length > 0;
+    const index = state.replay.index;
+    byId('pinTrace').disabled = !state.selectedTrace;
+    byId('pinTrace').textContent = state.selectedTrace?.pinned ? '取消固定' : '固定追踪';
+    byId('replayPrevious').disabled = !hasEvents || index <= 0;
+    byId('replayNext').disabled = !hasEvents || index >= state.replay.events.length - 1;
+    byId('replayToggle').disabled = !hasEvents;
+    byId('replaySeek').disabled = !hasEvents;
+    byId('replaySeek').max = String(Math.max(0, state.replay.events.length - 1));
+    byId('replaySeek').value = String(Math.max(0, index));
+  }
+
+  function renderReplayFrame() {
+    const events = state.replay.events.slice(0, state.replay.index + 1);
+    state.activeNodes.clear();
+    for (const event of events) {
+      const count = state.activeNodes.get(event.nodeId) ?? 0;
+      if (event.eventType === 'span.started') state.activeNodes.set(event.nodeId, count + 1);
+      if (['span.completed', 'span.failed', 'span.waiting'].includes(event.eventType)) {
+        if (count <= 1) state.activeNodes.delete(event.nodeId);
+        else state.activeNodes.set(event.nodeId, count - 1);
+      }
+    }
+    const event = state.replay.events[state.replay.index];
+    if (event) {
+      byId('topologyNote').textContent = `回放 ${state.replay.index + 1}/${state.replay.events.length} · ${time(event.timestamp)} · ${eventLabel(event.eventType)}`;
+      const span = state.selectedTrace?.spans.find((item) => item.spanId === event.spanId);
+      if (span) selectSpan(span);
+      else renderInspector('回放事件 / ' + eventLabel(event.eventType), [
+        ['事件类型', eventLabel(event.eventType)],
+        ['发生时间', time(event.timestamp)],
+        ['节点', nodeLabel(event.nodeId)],
+        ['事件序号', String(event.hubOffset)],
+      ], [['完整事件', event]]);
+    }
+    renderTracePath();
+    renderTopologyActivity();
+    renderReplayControls();
+  }
+
+  function stepReplay(delta) {
+    if (!state.replay.events.length) return;
+    state.replay.index = Math.max(0, Math.min(state.replay.events.length - 1, state.replay.index + delta));
+    renderReplayFrame();
+  }
+
+  function playReplay() {
+    if (state.replay.timer !== null) {
+      stopReplay();
+      return;
+    }
+    if (state.replay.index >= state.replay.events.length - 1) state.replay.index = 0;
+    const speed = Number(byId('replaySpeed').value);
+    byId('replayToggle').textContent = '暂停';
+    state.replay.timer = setInterval(() => {
+      if (state.replay.index >= state.replay.events.length - 1) {
+        stopReplay();
+        return;
+      }
+      stepReplay(1);
+    }, 500 / speed);
+    renderReplayFrame();
+  }
+
+  function renderArtifacts(span) {
+    const refs = span.artifacts ?? [];
+    if (!refs.length) return;
+    const raw = byId('inspectorRaw');
+    const section = make('section', 'artifact-section');
+    section.append(make('div', 'raw-head', '原始数据 / Artifact'));
+    for (const artifact of refs) {
+      const header = make('div', 'raw-head', `${artifact.type} · ${artifact.byteLength} 字节 · ${artifact.completeness === 'complete' ? '完整' : '部分'}`);
+      const load = make('button', '', '加载');
+      const exportButton = make('button', '', '导出');
+      const copy = make('button', '', '复制');
+      load.type = exportButton.type = copy.type = 'button';
+      const tools = make('div', 'artifact-tools');
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.placeholder = '在原始数据中查找';
+      search.setAttribute('aria-label', '查找原始数据');
+      const result = make('span', 'muted', '');
+      const output = make('pre', 'artifact-view', '尚未加载');
+      const content = { text: '', chunks: [] };
+      const readArtifact = async () => {
+        if (content.chunks.length) return;
+        const parts = [];
+        let offset = 0;
+        const decoder = new TextDecoder();
+        let text = '';
+        while (true) {
+          const part = await request(`/api/observability/artifacts/${encodeURIComponent(artifact.artifactId)}?offset=${offset}&limit=524288`);
+          const bytes = Uint8Array.from(atob(part.content), (char) => char.charCodeAt(0));
+          parts.push(bytes);
+          text += decoder.decode(bytes, { stream: part.nextOffset !== null });
+          if (part.nextOffset === null) break;
+          offset = part.nextOffset;
+        }
+        content.text = text;
+        content.chunks = parts;
+        output.textContent = text;
+      };
+      load.addEventListener('click', () => readArtifact().catch(showError));
+      copy.addEventListener('click', () => readArtifact()
+        .then(() => navigator.clipboard.writeText(content.text)).catch(showError));
+      exportButton.addEventListener('click', () => readArtifact().then(() => {
+        const blob = new Blob(content.chunks, { type: artifact.contentType });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${artifact.artifactId}.json`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      }).catch(showError));
+      search.addEventListener('input', () => {
+        if (!content.text) return;
+        const query = search.value;
+        const matches = query ? content.text.split(query).length - 1 : 0;
+        const position = query ? content.text.indexOf(query) : -1;
+        result.textContent = query ? `${matches} 处 · 首次位置 ${position}` : '';
+      });
+      header.append(load, copy, exportButton);
+      tools.append(search, result);
+      section.append(header, tools, output);
+    }
+    raw.append(section);
   }
 
   function renderTimeline() {
@@ -474,11 +771,13 @@ main.memory-view .timeline{display:none}
 
   async function loadSnapshot() {
     state.snapshot = await request('/api/observability/snapshot');
-    state.traces = state.snapshot.recentTraces;
+    if (state.tab !== 'traces') state.traces = state.snapshot.recentTraces;
     byId('watermark').textContent = `事件序号 ${state.snapshot.watermark}`;
     for (const event of state.snapshot.recentEvents) renderEvent(event);
-    renderTraceList();
+    if (state.tab === 'traces') await loadHistory();
+    else renderTraceList();
     renderNodes();
+    renderDynamicTopology();
     if (state.selectedTrace && state.traces.some((trace) => trace.traceId === state.selectedTrace.traceId)) {
       await selectTrace(state.selectedTrace.traceId);
     } else if (state.traces.length > 0) {
@@ -498,11 +797,17 @@ main.memory-view .timeline{display:none}
       byId('connection').textContent = '正在重连';
       byId('connectionLamp').classList.remove('on');
     };
-    source.addEventListener('runtime', (message) => {
+    const handleRuntimeEvent = (message) => {
       const event = JSON.parse(message.data);
       byId('watermark').textContent = `事件序号 ${event.hubOffset}`;
       renderEvent(event);
       updateNodeActivity(event);
+      if (event.traceId === state.selectedTrace?.traceId
+        && !state.replay.events.some((item) => item.hubOffset === event.hubOffset)) {
+        state.replay.events.push(event);
+        state.replay.events.sort((left, right) => left.hubOffset - right.hubOffset);
+        renderReplayControls();
+      }
       if (event.eventType === 'trace.completed' || event.eventType === 'trace.failed') {
         loadSnapshot().catch(showError);
       } else if (state.selectedTrace?.traceId === event.traceId) {
@@ -510,7 +815,14 @@ main.memory-view .timeline{display:none}
       } else if (event.eventType === 'trace.started') {
         loadSnapshot().catch(showError);
       }
-    });
+      if (event.eventType.startsWith('node.')) loadSnapshot().catch(showError);
+    };
+    for (const type of [
+      'trace.started', 'trace.completed', 'trace.failed',
+      'span.started', 'span.completed', 'span.failed', 'span.waiting',
+      'node.registered', 'node.heartbeat', 'node.health_changed',
+      'artifact.created',
+    ]) source.addEventListener(type, handleRuntimeEvent);
     source.addEventListener('resync_required', () => {
       source.close();
       loadSnapshot().then(() => connectEvents(state.snapshot.watermark)).catch(showError);
@@ -590,6 +902,47 @@ main.memory-view .timeline{display:none}
   byId('memoryFilter').addEventListener('click', () => { state.memory.offset = 0; loadMemories(); });
   byId('memoryPrev').addEventListener('click', () => { state.memory.offset = Math.max(0, state.memory.offset - state.memory.limit); loadMemories(); });
   byId('memoryNext').addEventListener('click', () => { state.memory.offset += state.memory.limit; loadMemories(); });
+  byId('traceNewer').addEventListener('click', () => {
+    state.historyOffset = Math.max(0, state.historyOffset - state.historyLimit);
+    loadHistory();
+  });
+  byId('traceOlder').addEventListener('click', () => {
+    state.historyOffset += state.historyLimit;
+    loadHistory();
+  });
+  byId('replayPrevious').addEventListener('click', () => stepReplay(-1));
+  byId('replayNext').addEventListener('click', () => stepReplay(1));
+  byId('replayToggle').addEventListener('click', playReplay);
+  byId('replaySeek').addEventListener('input', () => {
+    stopReplay();
+    state.replay.index = Number(byId('replaySeek').value);
+    renderReplayFrame();
+  });
+  byId('replaySpeed').addEventListener('change', () => {
+    if (state.replay.timer !== null) {
+      stopReplay();
+      playReplay();
+    }
+  });
+  byId('pinTrace').addEventListener('click', async () => {
+    const trace = state.selectedTrace;
+    if (!trace) return;
+    try {
+      await send(`/api/observability/traces/${encodeURIComponent(trace.traceId)}/pin`, 'POST', {
+        pinned: !trace.pinned,
+      });
+      byId('cleanupRetention').addEventListener('click', async () => {
+        if (!window.confirm('清理超过 30 天且未固定的追踪、事件与原始数据？')) return;
+        try {
+          const result = await send('/api/observability/retention/cleanup', 'POST');
+          byId('retentionSummary').textContent =
+            `已清理追踪 ${result.stats.traces} 条、事件 ${result.stats.events} 条、原始数据 ${result.stats.artifacts} 份`;
+          await loadRetention();
+        } catch (error) { showError(error); }
+      });
+      await selectTrace(trace.traceId);
+    } catch (error) { showError(error); }
+  });
 
   loadSnapshot().then(() => connectEvents(state.snapshot.watermark)).catch(showError);
 })();

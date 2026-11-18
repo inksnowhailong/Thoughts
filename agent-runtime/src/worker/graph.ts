@@ -30,6 +30,7 @@ import type { TaskResultWire } from '../contracts/task-result.js';
 import { artifactRefToDict, type ArtifactRef, type TaskSpec } from '../contracts/task-spec.js';
 import type { WorkerRunEvent } from '../contracts/worker-api.js';
 import { isPolicyConfirmationError, type ToolDeps } from '../tools/registry.js';
+import type { TraceRecorder } from '../observability/runtime.js';
 
 /** 工具循环上限（防失控）。 */
 export const MAX_TOOL_STEPS = 12;
@@ -63,6 +64,8 @@ export interface WorkerGraphCtx {
   cancelReason: () => string;
   /** act/retry 捕获 PolicyConfirmationError 后先向 bridge 登记审批（失败不阻断挂起）。 */
   registerApproval: (approval: PendingApproval) => Promise<void>;
+  observability?: TraceRecorder;
+  parentSpanId?: string;
 }
 
 // ---------- State ----------
@@ -224,9 +227,72 @@ async function planNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
       : ctx.model.bindTools
         ? ctx.model.bindTools(ctx.tools as never)
         : ctx.model;
-  const response = await bound.invoke(state.messages as never);
-  const ai = response as AIMessage;
-  return { messages: [ai] };
+  const modelName = (ctx.model as BaseChatModel & { model?: string }).model ?? ctx.model.constructor.name;
+  const request = {
+    provider: ctx.model.constructor.name,
+    model: modelName,
+    messages: state.messages.map((message) => ({
+      type: message.getType(),
+      content: message.content,
+      name: message.name,
+      additionalKwargs: message.additional_kwargs,
+      ...('tool_calls' in message ? { toolCalls: message.tool_calls } : {}),
+      ...('tool_call_id' in message ? { toolCallId: message.tool_call_id } : {}),
+    })),
+    toolDefinitions: ctx.tools.map((tool) => ({
+      name: typeof tool.name === 'string' ? tool.name : 'unknown',
+      description: typeof tool.description === 'string' ? tool.description : '',
+    })),
+    capture: { logicalRequest: 'complete', providerPayload: 'not_available', transportPayload: 'not_available' },
+  };
+  const modelSpan = ctx.observability?.startSpan('model-provider', 'WORKER MODEL INVOCATION', {
+    provider: request.provider,
+    model: request.model,
+    requestCapture: 'artifact',
+    providerPayloadCapture: 'not_available',
+    transportPayloadCapture: 'not_available',
+  }, ctx.parentSpanId);
+  const requestArtifact = modelSpan ? await ctx.observability?.captureArtifact({
+    spanId: modelSpan.id,
+    type: 'worker_model_request',
+    contentType: 'application/json',
+    content: request,
+  }) : undefined;
+  try {
+    const response = await bound.invoke(state.messages as never);
+    const ai = response as AIMessage;
+    const responseArtifact = modelSpan ? await ctx.observability?.captureArtifact({
+      spanId: modelSpan.id,
+      type: 'worker_model_response',
+      contentType: 'application/json',
+      content: {
+        content: ai.content,
+        toolCalls: ai.tool_calls ?? [],
+        responseMetadata: ai.response_metadata ?? {},
+        usageMetadata: ai.usage_metadata ?? null,
+      },
+    }) : undefined;
+    modelSpan?.finish('completed', {
+      requestArtifact: requestArtifact?.reference ?? null,
+      responseArtifact: responseArtifact?.reference ?? null,
+      captureStatus: {
+        request: requestArtifact?.status ?? 'not_available',
+        response: responseArtifact?.status ?? 'not_available',
+      },
+      toolCallCount: ai.tool_calls?.length ?? 0,
+      usage: ai.usage_metadata ?? null,
+    });
+    return { messages: [ai] };
+  } catch (error) {
+    modelSpan?.finish('failed', {
+      requestArtifact: requestArtifact?.reference ?? null,
+      captureStatus: {
+        request: requestArtifact?.status ?? 'not_available',
+        response: 'not_available',
+      },
+    }, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }
 
 async function actNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
@@ -248,10 +314,26 @@ async function actNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
       message: `调用 ${tc.name}`,
     });
     const startedAt = Date.now();
+    const toolSpan = ctx.observability?.startSpan('tool-router', `WORKER TOOL ${tc.name}`, {
+      tool: tc.name,
+      args: tc.args ?? {},
+      callId: tc.id ?? null,
+    }, ctx.parentSpanId);
     try {
       const result = await invokeTool(ctx.tools, tc.name, (tc.args ?? {}) as Record<string, unknown>);
       newMessages.push(new ToolMessage({ content: result, tool_call_id: tc.id ?? '', id: tc.id }));
       const parsed = parseToolJson(result);
+      const resultArtifact = toolSpan ? await ctx.observability?.captureArtifact({
+        spanId: toolSpan.id,
+        type: 'worker_tool_result',
+        contentType: 'application/json',
+        content: { result },
+      }) : undefined;
+      toolSpan?.finish(parsed?.ok === false ? 'failed' : 'completed', {
+        resultArtifact: resultArtifact?.reference ?? null,
+        captureStatus: resultArtifact?.status ?? 'not_available',
+        summary: traceSummary(result),
+      }, parsed?.ok === false ? traceSummary(result) : null);
       collectFromToolResult(parsed, keySteps, artifacts);
       executed += 1;
       ctx.emit({
@@ -263,6 +345,7 @@ async function actNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
       });
     } catch (e) {
       if (isPolicyConfirmationError(e)) {
+        toolSpan?.finish('waiting', { awaitingApproval: true, summary: e.summary });
         const approval: PendingApproval = {
           capabilityId: e.capabilityId,
           todoId: e.todoId,
@@ -299,6 +382,7 @@ async function actNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
         };
       }
       const failure = `工具执行失败：${e instanceof Error ? e.message : String(e)}`;
+      toolSpan?.finish('failed', null, failure);
       newMessages.push(new ToolMessage({ content: failure, tool_call_id: tc.id ?? '', id: tc.id }));
       executed += 1;
       ctx.emit({
@@ -361,11 +445,18 @@ async function retryNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
   const startedAt = Date.now();
   if (state.approvalCredential) ctx.deps.credential = state.approvalCredential;
   let result: string;
+  const toolSpan = ctx.observability?.startSpan('tool-router', `WORKER TOOL ${pa.toolName} RETRY`, {
+    tool: pa.toolName,
+    args: pa.args,
+    callId: pa.toolCallId,
+    retry: true,
+  }, ctx.parentSpanId);
   try {
     result = await invokeTool(ctx.tools, pa.toolName, pa.args);
   } catch (e) {
     ctx.deps.credential = undefined; // 一次性凭证用完即清，不泄漏到后续工具
     if (isPolicyConfirmationError(e)) {
+      toolSpan?.finish('waiting', { awaitingApproval: true, summary: e.summary });
       const approval: PendingApproval = {
         capabilityId: e.capabilityId,
         todoId: e.todoId,
@@ -385,6 +476,7 @@ async function retryNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
       return { pendingApproval: approval, approvalDecision: null, approvalCredential: null };
     }
     const failure = `工具执行失败：${e instanceof Error ? e.message : String(e)}`;
+    toolSpan?.finish('failed', null, failure);
     return {
       messages: [new ToolMessage({ content: failure, tool_call_id: pa.toolCallId, id: pa.toolCallId })],
       pendingApproval: null,
@@ -397,6 +489,17 @@ async function retryNode(ctx: WorkerGraphCtx, state: WorkerStateType) {
   ctx.deps.credential = undefined;
   const parsed = parseToolJson(result);
   const ok = parsed?.ok === true;
+  const resultArtifact = toolSpan ? await ctx.observability?.captureArtifact({
+    spanId: toolSpan.id,
+    type: 'worker_tool_result',
+    contentType: 'application/json',
+    content: { result },
+  }) : undefined;
+  toolSpan?.finish(ok ? 'completed' : 'failed', {
+    resultArtifact: resultArtifact?.reference ?? null,
+    captureStatus: resultArtifact?.status ?? 'not_available',
+    summary: traceSummary(result),
+  }, ok ? null : traceSummary(result));
   const keySteps: string[] = [];
   const artifacts: ArtifactRef[] = [];
   collectFromToolResult(parsed, keySteps, artifacts);

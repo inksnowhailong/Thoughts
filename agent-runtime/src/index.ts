@@ -15,9 +15,9 @@ async function main(): Promise<void> {
     console.error('缺少 token：在 agent-runtime/config/runtime.json 里配置，或设置 AGENT_RUNTIME_TOKEN');
     process.exit(1);
   }
-  const memoryEngine = new MemoryEngine();
-  await memoryEngine.initialize();
   const observability = new ObservabilityHub();
+  const memoryEngine = new MemoryEngine(undefined, undefined, observability);
+  await memoryEngine.initialize();
   const app = buildApp({ token: cfg.token, logger: false, memoryEngine, observability });
   await app.listen({ port: cfg.port, host: '127.0.0.1' });
   console.log(`agent-runtime ${AGENT_RUNTIME_VERSION} 监听 http://127.0.0.1:${cfg.port}（bridge ${cfg.bridgeUrl}）`);
@@ -26,9 +26,13 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (closing) return;
     closing = true;
-    app.close().finally(() => {
+    app.close().then(async () => {
+      await memoryEngine.close();
       observability.close();
       process.exit(0);
+    }).catch((error: unknown) => {
+      console.error('Agent Runtime shutdown failed:', error);
+      process.exit(1);
     });
   };
   process.on('SIGINT', shutdown);

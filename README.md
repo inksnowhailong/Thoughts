@@ -18,7 +18,7 @@
 
 Memory Engine 的详细接口、检索、生命周期与巩固说明见 [`agent-runtime/src/memory-engine/README.md`](agent-runtime/src/memory-engine/README.md)。配置 `SILICONFLOW_API_KEY` 后，可使用 SiliconFlow 完成记忆提取、评估与向量嵌入；原始对话内容会发送至该服务用于提取。
 
-Mission Control 当前采集 Agent Runtime 内的对话与工具调用；语音采集/ASR/TTS、跨进程 Worker 和 Provider 传输层尚未接入。Trace 数据会保存完整提示词、用户输入、模型输出及工具参数，请将本机 `data/agent-runtime/observability.sqlite` 视为私密数据。实现范围见 [`agent-runtime/src/observability/README.md`](agent-runtime/src/observability/README.md)。
+Mission Control 采集语音识别、主 Agent、Worker、模型、工具、Memory 检索与巩固事件，并支持历史回放、Artifact 查看/导出和追踪固定保留。Provider/HTTP 传输层真实载荷受模型 SDK 限制，面板会明确标记“未采集”，不以逻辑请求冒充传输数据。Trace 数据可能包含完整提示词、用户输入、模型输出及工具参数，请将本机 `data/agent-runtime/observability.sqlite` 和同目录 `artifacts` 视为私密数据。实现边界见 [`agent-runtime/src/observability/README.md`](agent-runtime/src/observability/README.md)。
 
 ## 开发与验证
 

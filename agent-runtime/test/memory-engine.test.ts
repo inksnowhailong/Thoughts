@@ -15,6 +15,7 @@ import { handleVoiceTurn } from '../src/main-agent/agent.js';
 import { ConversationStore } from '../src/main-agent/conversation.js';
 import { buildApp } from '../src/server/app.js';
 import { ScriptedChatModel } from './helpers/scripted-model.js';
+import { ObservabilityHub } from '../src/observability/runtime.js';
 
 let temporaryDirectory: string | undefined;
 afterEach(() => {
@@ -99,7 +100,8 @@ describe('Memory Engine Phases 1–5', () => {
   it('automatically promotes raw events after checking evidence', async () => {
     temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'memory-engine-consolidation-'));
     vi.stubEnv('SILICONFLOW_API_KEY', '');
-    const engine = new MemoryEngine(path.join(temporaryDirectory, 'memory.sqlite3'));
+    const observability = new ObservabilityHub(':memory:');
+    const engine = new MemoryEngine(path.join(temporaryDirectory, 'memory.sqlite3'), undefined, observability);
     try {
       await engine.initialize();
       const evidenceText = 'The Orion project chose SQLite.';
@@ -141,6 +143,11 @@ describe('Memory Engine Phases 1–5', () => {
       await engine.triggerConsolidation({ jobType: 'basic', batchSize: 10 });
       const job = await engine.processConsolidationJob() as { status: string };
       expect(job.status).toBe('completed');
+      const trace = observability.getTrace(observability.listTraces()[0].traceId);
+      expect(trace?.spans.map((span) => span.name)).toContain('MEMORY CONSOLIDATION');
+      expect(trace?.spans.map((span) => span.name)).toContain('MEMORY EXTRACTION');
+      expect(trace?.spans.flatMap((span) => span.artifacts ?? []).map((artifact) => artifact.type))
+        .toEqual(expect.arrayContaining(['memory_extraction_input', 'memory_extraction_output']));
       const proposals = await engine.listConsolidationProposals('accepted');
       expect(proposals).toHaveLength(1);
       expect(proposals[0].status).toBe('accepted');
@@ -157,6 +164,7 @@ describe('Memory Engine Phases 1–5', () => {
       expect(expanded.memories[0].sources[0].rawMemoryId).toBe(raw.id);
     } finally {
       await engine.close();
+      observability.close();
     }
   });
 

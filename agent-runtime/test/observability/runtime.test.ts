@@ -53,4 +53,65 @@ describe('ObservabilityHub', () => {
     next.finish('completed');
     hub.close();
   });
+
+  it('ingests producer retries idempotently and reads artifacts in bounded byte ranges', async () => {
+    directory = mkdtempSync(path.join(tmpdir(), 'thoughts-observability-'));
+    const hub = new ObservabilityHub(path.join(directory, 'observability.sqlite'));
+    const trace = hub.startTrace({ sessionId: 'session-retry', userText: 'hello', model: 'test-model' });
+    const span = trace.startSpan('model-provider', 'MODEL INVOCATION', {});
+    const event = {
+      eventId: 'producer-event-1',
+      producerId: 'python:test',
+      producerSequence: 1,
+      eventType: 'span.started',
+      timestamp: new Date().toISOString(),
+      traceId: trace.traceId,
+      spanId: 'external-span-1',
+      nodeId: 'asr',
+      payload: { name: '语音识别', input: { text: 'hello' } },
+    };
+
+    const first = hub.recordExternalEvent(event);
+    const duplicate = hub.recordExternalEvent(event);
+    expect(duplicate?.hubOffset).toBe(first?.hubOffset);
+    expect(hub.retentionStats().eventCount).toBe(4);
+
+    const captured = await hub.captureArtifact({
+      traceId: trace.traceId,
+      spanId: span.id,
+      type: 'test_payload',
+      contentType: 'application/json',
+      content: { payload: 'x'.repeat(32) },
+    });
+    expect(captured.status).toBe('complete');
+    const artifactId = captured.reference!.artifactId;
+    const part = hub.getArtifactChunk(artifactId, 0, 16);
+    expect(part?.content).toBe(Buffer.from(JSON.stringify({ payload: 'x'.repeat(32) })).subarray(0, 16).toString('base64'));
+    expect(part?.nextOffset).toBe(16);
+    expect(hub.getArtifactChunk(artifactId, 16, 1024)?.nextOffset).toBeNull();
+    expect(() => hub.getArtifactChunk(artifactId, 0, 1024 * 1024 + 1)).toThrow(RangeError);
+    span.finish('completed');
+    trace.finish('completed');
+    hub.close();
+  });
+
+  it('retains pinned traces while cleaning expired unpinned trace data', () => {
+    directory = mkdtempSync(path.join(tmpdir(), 'thoughts-observability-'));
+    const hub = new ObservabilityHub(path.join(directory, 'observability.sqlite'));
+    const startedAt = new Date(Date.now() - 90_000).toISOString();
+    const pinned = hub.startTrace({
+      sessionId: 'pinned', userText: 'keep', model: 'test-model', startedAt,
+    });
+    pinned.finish('completed');
+    hub.setTracePinned(pinned.traceId, true);
+    const expired = hub.startTrace({
+      sessionId: 'expired', userText: 'remove', model: 'test-model', startedAt,
+    });
+    expired.finish('completed');
+
+    expect(hub.cleanupExpired(60_000).traces).toBe(1);
+    expect(hub.getTrace(pinned.traceId)?.pinned).toBe(true);
+    expect(hub.getTrace(expired.traceId)).toBeNull();
+    hub.close();
+  });
 });

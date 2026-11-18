@@ -62,11 +62,17 @@ class ModularBrain:
         self.last_run_id: str | None = None
         self.last_meta: dict = {}
 
-    def stream(self, text: str, system: str | None = None, *, model: str | None = None) -> Iterator[str]:
+    def stream(self, text: str, system: str | None = None, *, model: str | None = None,
+               traceparent: str | None = None, trace_started_at: str | None = None) -> Iterator[str]:
         """透传 model 参数给底层 Brain（游戏模式模型升档用）。"""
         chunks: list[str] = []
         try:
-            for chunk in self._legacy.stream(text, system, model=model):
+            options = {"model": model}
+            if traceparent is not None:
+                options["traceparent"] = traceparent
+            if trace_started_at is not None:
+                options["trace_started_at"] = trace_started_at
+            for chunk in self._legacy.stream(text, system, **options):
                 chunks.append(chunk)
                 yield chunk
         finally:

@@ -15,11 +15,15 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from guanjia.speech_shape import SHAPED_PREFIX, SpeechShaper
 from guanjia.textseg import SentenceSplitter, speakable
+
+if TYPE_CHECKING:
+    from guanjia.observability import Trace
 
 log = logging.getLogger("guanjia.turns")
 
@@ -98,6 +102,7 @@ class Heard:
     text: str
     uid: str | None = None
     speaker: str = ""
+    trace: Trace | None = None
 
 
 @dataclass

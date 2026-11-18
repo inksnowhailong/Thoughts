@@ -77,8 +77,13 @@ class Brain:
         self.last_run_id: str | None = None  # 最近一轮的 runId，供调试事件关联耗时
         self.last_meta: dict = {}  # 最近一轮流里带的元信息：chunks / model / finish_reason / usage（有才有），统一事件日志用
 
-    def _headers(self, model_override: str | None = None) -> dict[str, str]:
+    def _headers(self, model_override: str | None = None, traceparent: str | None = None,
+                 trace_started_at: str | None = None) -> dict[str, str]:
         h = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        if traceparent:
+            h["traceparent"] = traceparent
+        if trace_started_at:
+            h["x-observability-started-at"] = trace_started_at
         effective = model_override or self.model
         if effective:
             h["x-openclaw-model"] = effective
@@ -105,7 +110,8 @@ class Brain:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
-    def stream(self, text: str, system: str | None = None, *, model: str | None = None) -> Iterator[str]:
+    def stream(self, text: str, system: str | None = None, *, model: str | None = None,
+               traceparent: str | None = None, trace_started_at: str | None = None) -> Iterator[str]:
         """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（服务端已结束这一轮）。
 
         model 参数：单次请求的兼容模型覆盖头——
@@ -113,7 +119,8 @@ class Brain:
         """
         self.last_run_id = None
         meta = self.last_meta = {}  # 每轮换一个新字典，上一轮留给事件日志读的那份不会被改
-        with self._client.stream("POST", self.url, headers=self._headers(model), json=self._body(text, system, stream=True)) as r:
+        with self._client.stream("POST", self.url, headers=self._headers(model, traceparent, trace_started_at),
+                                 json=self._body(text, system, stream=True)) as r:
             self._resp = r
             try:
                 r.raise_for_status()

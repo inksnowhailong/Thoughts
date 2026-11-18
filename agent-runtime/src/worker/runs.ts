@@ -34,6 +34,7 @@ import { REPO_ROOT } from '../tools/paths.js';
 import { toLangChainTools, type ToolDeps } from '../tools/registry.js';
 import { getWorkerChatModel } from './model.js';
 import { buildWorkerGraph, sanitizeIdentifier, type FinalOutcome, type PendingApproval, type WorkerGraphCtx } from './graph.js';
+import { type ObservabilityHub, type SpanRecorder, type TraceRecorder } from '../observability/runtime.js';
 
 export type RunStatus = 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled';
 
@@ -65,6 +66,7 @@ export interface WorkerRuntimeOptions {
       content: Record<string, unknown>;
     }): Promise<unknown>;
   };
+  observability?: ObservabilityHub;
 }
 
 /** 带 HTTP 状态码的错误（routes 层映射响应码）。 */
@@ -96,6 +98,8 @@ interface RunRecord {
   cancelRequested: boolean;
   cancelReason: string;
   ctxInfo: RunCtxInfo;
+  observation: TraceRecorder | null;
+  activeSpan: SpanRecorder | null;
 }
 
 // ---------- worker prompt 编译（compileRole('worker') 要求 GOAL/MATERIALS/ACCEPTANCE 全给） ----------
@@ -145,19 +149,39 @@ export class WorkerRunManager {
 
   // ---------- 生命周期 ----------
 
-  createRun(body: unknown): { run_id: string } {
+  createRun(body: unknown, traceContext?: { traceparent?: string; startedAt?: string }): { run_id: string } {
     const raw = { ...(body as Record<string, unknown>) };
     if (typeof raw.run_id !== 'string' || raw.run_id.length === 0) raw.run_id = randomUUID();
     const request = workerRunRequestSchema.parse(raw);
     const spec = taskSpecSchema.parse(request.task_spec);
     if (this.runs.has(request.run_id)) return { run_id: request.run_id }; // 幂等：重复创建不重复执行
     const sessionId = `task/${spec.task_id}/r${spec.revision}`;
+    const parent = traceContext?.traceparent?.match(
+      /^00-([a-f0-9]{32})-([a-f0-9]{16})-[a-f0-9]{2}$/i,
+    );
+    const observation = this.opts.observability?.startTrace({
+      sessionId,
+      userText: spec.goal,
+      model: 'worker',
+      ...(parent ? { traceId: parent[1], parentSpanId: parent[2] } : {}),
+      ...(traceContext?.startedAt && Number.isFinite(Date.parse(traceContext.startedAt))
+        ? { startedAt: traceContext.startedAt } : {}),
+    }) ?? null;
     const rec: RunRecord = {
       runId: request.run_id,
       status: 'running',
       events: [],
       cancelRequested: false,
       cancelReason: '',
+      observation,
+      activeSpan: observation?.startSpan('worker-runtime', 'WORKER TASK', {
+        runId: request.run_id,
+        taskId: spec.task_id,
+        revision: spec.revision,
+        goal: spec.goal,
+        constraints: spec.constraints,
+        successCriteria: spec.success_criteria,
+      }) ?? null,
       ctxInfo: {
         spec,
         allowed: [...request.allowed_capabilities],
@@ -282,6 +306,8 @@ export class WorkerRunManager {
       isCancelled: () => rec.cancelRequested,
       cancelReason: () => rec.cancelReason,
       registerApproval,
+      observability: rec.observation ?? undefined,
+      parentSpanId: rec.activeSpan?.id,
     };
   }
 
@@ -306,6 +332,7 @@ export class WorkerRunManager {
     } catch (e) {
       const message = sanitizeIdentifier(`worker run 执行异常：${e instanceof Error ? e.message : String(e)}`);
       rec.status = 'failed';
+      this.finishObservation(rec, 'failed', { error: message }, message);
       if (!this.hasOutcome(rec)) {
         emit({ type: 'outcome', status: 'failed', summary: message, result: null });
       }
@@ -315,6 +342,12 @@ export class WorkerRunManager {
   private async loadSharedMemory(rec: RunRecord, request: WorkerRunRequest): Promise<WorkerRunRequest> {
     if (!this.opts.memoryEngine) return request;
     const spec = rec.ctxInfo.spec;
+    const memoryParentId = rec.activeSpan?.id;
+    const writeSpan = rec.observation?.startSpan('memory-engine', 'WORKER MEMORY WRITE', {
+      sessionId: rec.ctxInfo.sessionId,
+      taskId: spec.task_id,
+      goal: spec.goal,
+    }, memoryParentId);
     try {
       await this.opts.memoryEngine.writeRaw({
         eventType: 'task',
@@ -328,9 +361,17 @@ export class WorkerRunManager {
           successCriteria: spec.success_criteria,
         },
       });
+      writeSpan?.finish('completed', { written: true });
     } catch (error) {
+      writeSpan?.finish('failed', { written: false }, error instanceof Error ? error.message : String(error));
       console.warn('[memory-engine] raw Worker task write failed:', error);
     }
+    const recallSpan = rec.observation?.startSpan('memory-engine', 'WORKER MEMORY RECALL', {
+      query: [spec.goal, ...spec.constraints].join('\n'),
+      sessionId: rec.ctxInfo.sessionId,
+      agentId: 'worker',
+      scene: 'task',
+    }, memoryParentId);
     try {
       const recalled = await this.opts.memoryEngine.recallForAgent(
         [spec.goal, ...spec.constraints].join('\n'),
@@ -342,14 +383,20 @@ export class WorkerRunManager {
         .map((line) => line.replace(/^\s*-\s*/, '').trim())
         .filter(Boolean);
       const merged = [...new Set([...summaries, ...request.memory_packet.summaries])].slice(0, 8);
+      recallSpan?.finish('completed', { recalledText: recalled, summaries });
       return { ...request, memory_packet: { summaries: merged } };
     } catch (error) {
+      recallSpan?.finish('failed', { fallback: true }, error instanceof Error ? error.message : String(error));
       console.warn('[memory-engine] Worker recall failed; using provided memory packet:', error);
       return request;
     }
   }
 
   private async resumeGraph(rec: RunRecord, req: ResumeRequest): Promise<void> {
+    rec.activeSpan = rec.observation?.startSpan('worker-runtime', 'WORKER RESUME', {
+      runId: rec.runId,
+      decision: req.decision,
+    }) ?? null;
     const emit = (event: WorkerRunEvent) => this.appendEvent(rec, event);
     try {
       const ctx = this.buildCtx(rec, emit);
@@ -362,6 +409,7 @@ export class WorkerRunManager {
     } catch (e) {
       const message = sanitizeIdentifier(`worker run 恢复异常：${e instanceof Error ? e.message : String(e)}`);
       rec.status = 'failed';
+      this.finishObservation(rec, 'failed', { error: message }, message);
       if (!this.hasOutcome(rec)) {
         emit({ type: 'outcome', status: 'failed', summary: message, result: null });
       }
@@ -372,6 +420,8 @@ export class WorkerRunManager {
   private consumeGraphResult(rec: RunRecord, result: unknown): void {
     if (isInterrupted(result)) {
       rec.status = 'awaiting_approval';
+      rec.activeSpan?.finish('waiting', { status: 'awaiting_approval' });
+      rec.activeSpan = null;
       this.appendEvent(rec, {
         type: 'progress',
         percent: null,
@@ -383,10 +433,13 @@ export class WorkerRunManager {
     const final = (result as { finalOutcome?: FinalOutcome | null }).finalOutcome;
     if (final && isTerminal(final.status)) {
       rec.status = final.status;
+      this.finishObservation(rec, final.status === 'completed' ? 'completed' : 'failed', final,
+        final.status === 'completed' ? null : final.summary);
       return;
     }
     if (!this.hasOutcome(rec)) {
       rec.status = 'failed';
+      this.finishObservation(rec, 'failed', { error: 'worker run 未产生终态结果' }, 'worker run 未产生终态结果');
       this.appendEvent(rec, {
         type: 'outcome',
         status: 'failed',
@@ -424,10 +477,31 @@ export class WorkerRunManager {
       events: [],
       cancelRequested: false,
       cancelReason: '',
+      observation: this.opts.observability?.startTrace({
+        sessionId,
+        userText: spec.goal,
+        model: 'worker',
+      }) ?? null,
+      activeSpan: null,
       ctxInfo: { spec, allowed, sessionId, taskSpecWire: specWire as Record<string, unknown> },
     };
+    rec.activeSpan = rec.observation?.startSpan('worker-runtime', 'WORKER RESUME', {
+      runId,
+      recovered: true,
+    }) ?? null;
     this.runs.set(runId, rec);
     return rec;
+  }
+
+  private finishObservation(
+    rec: RunRecord,
+    status: 'completed' | 'failed',
+    output: unknown,
+    error: string | null,
+  ): void {
+    rec.activeSpan?.finish(status, output, error);
+    rec.activeSpan = null;
+    rec.observation?.finish(status, output, error);
   }
 
   private hasOutcome(rec: RunRecord): boolean {

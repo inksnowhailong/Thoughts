@@ -135,6 +135,18 @@ function toOpenAIUsage(u: {
   return { prompt_tokens: u.input_tokens, completion_tokens: u.output_tokens, total_tokens: u.total_tokens };
 }
 
+function modelParameters(model: BaseChatModel): Record<string, unknown> {
+  const record = model as BaseChatModel & Record<string, unknown>;
+  const parameters: Record<string, unknown> = {};
+  for (const key of ['temperature', 'topP', 'maxTokens', 'max_tokens', 'streaming', 'maxRetries']) {
+    const value = record[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      parameters[key] = value;
+    }
+  }
+  return parameters;
+}
+
 // ---- 进程级默认依赖（测试/启动时全部可用 opts 覆盖）----
 
 let cachedStore: ConversationStore | null = null;
@@ -197,7 +209,10 @@ export async function* handleVoiceTurn(
         content: { role: 'user', text: userText },
       }, agentSpan?.id);
       const written = await recordConversation(opts.memoryEngine, sessionKey, userText);
-      writeSpan?.finish(written ? 'completed' : 'failed', { written });
+      writeSpan?.finish(written !== null ? 'completed' : 'failed', {
+        written: written !== null,
+        result: written,
+      });
 
       const recallSpan = opts.observability?.startSpan('memory-engine', 'RECALL MEMORIES', {
         query: userText,
@@ -261,19 +276,22 @@ export async function* handleVoiceTurn(
   }
 }
 
-async function recordConversation(engine: MemoryEngineAccess, sessionId: string, text: string): Promise<boolean> {
+async function recordConversation(
+  engine: MemoryEngineAccess,
+  sessionId: string,
+  text: string,
+): Promise<unknown | null> {
   try {
-    await engine.writeRaw({
+    return await engine.writeRaw({
       eventType: 'conversation',
       source: 'main-agent',
       sessionId,
       occurredAt: new Date().toISOString(),
       content: { role: 'user', text },
     });
-    return true;
   } catch (error) {
     console.warn('[memory-engine] raw conversation write failed:', error);
-    return false;
+    return null;
   }
 }
 
@@ -308,8 +326,10 @@ async function* runModelLoop(sessionKey: string, deps: LoopDeps): AsyncGenerator
   let rounds = 0;
   while (true) {
     const messages: BaseMessage[] = [new SystemMessage(system), ...store.getSession(sessionKey).messages];
-    const modelSpan = deps.observability?.startSpan('model-provider', 'MODEL INVOCATION', {
-      model: model.constructor.name,
+    const request = {
+      provider: model.constructor.name,
+      model: (model as BaseChatModel & { model?: string }).model ?? model.constructor.name,
+      parameters: modelParameters(model),
       messages: messages.map((message) => ({
         type: message.type,
         content: message.content,
@@ -318,18 +338,63 @@ async function* runModelLoop(sessionKey: string, deps: LoopDeps): AsyncGenerator
         ...('tool_calls' in message ? { toolCalls: message.tool_calls } : {}),
         ...('tool_call_id' in message ? { toolCallId: message.tool_call_id } : {}),
       })),
+      toolDefinitions: tools.map((tool) => ({ name: tool.name, description: tool.description ?? '' })),
+      toolChoice: 'auto',
+      capture: { logicalRequest: 'complete', providerPayload: 'not_available', transportPayload: 'not_available' },
+    };
+    const modelStartedAt = Date.now();
+    const modelSpan = deps.observability?.startSpan('model-provider', 'MODEL INVOCATION', {
+      provider: request.provider,
+      model: request.model,
+      parameters: request.parameters,
+      requestCapture: 'artifact',
+      responseCapture: 'artifact',
+      providerPayloadCapture: 'not_available',
+      transportPayloadCapture: 'not_available',
     }, deps.parentSpanId);
+    const requestArtifact = modelSpan ? await deps.observability?.captureArtifact({
+      spanId: modelSpan.id,
+      type: 'model_request',
+      contentType: 'application/json',
+      content: request,
+    }) : undefined;
     let agg: AIMessageChunk | undefined;
+    let firstTokenAt: number | null = null;
+    let streamChunkCount = 0;
     try {
       for await (const c of await bound.stream(messages as never)) {
         const chunk = c as AIMessageChunk;
         agg = agg ? agg.concat(chunk) : chunk;
+        streamChunkCount += 1;
+        if (firstTokenAt === null && chunk.content) firstTokenAt = Date.now();
         const text = typeof chunk.content === 'string' ? chunk.content : '';
         if (text) yield { type: 'delta', text };
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      modelSpan?.finish('failed', null, message);
+      const partialOutput = {
+        content: typeof agg?.content === 'string' ? agg.content : agg?.content ?? null,
+        toolCalls: agg?.tool_calls ?? [],
+        usage: agg?.usage_metadata ?? null,
+        responseMetadata: agg?.response_metadata ?? {},
+      };
+      const responseArtifact = modelSpan ? await deps.observability?.captureArtifact({
+        spanId: modelSpan.id,
+        type: 'model_response',
+        contentType: 'application/json',
+        content: partialOutput,
+        completeness: 'partial',
+      }) : undefined;
+      modelSpan?.finish('failed', {
+        requestArtifact: requestArtifact?.reference ?? null,
+        responseArtifact: responseArtifact?.reference ?? null,
+        captureStatus: {
+          request: requestArtifact?.status ?? 'not_available',
+          response: responseArtifact?.status ?? 'not_available',
+        },
+        streamChunkCount,
+        firstTokenMs: firstTokenAt === null ? null : firstTokenAt - modelStartedAt,
+      }, message);
       throw error;
     }
     const ai = new AIMessage({
@@ -339,11 +404,32 @@ async function* runModelLoop(sessionKey: string, deps: LoopDeps): AsyncGenerator
     store.appendMessage(sessionKey, ai);
     const usage = agg?.usage_metadata;
     const toolCalls = ai.tool_calls ?? [];
-    modelSpan?.finish('completed', {
+    const response = {
       content: ai.content,
       toolCalls,
+      finishReason: agg?.response_metadata?.finish_reason ?? null,
       usage: usage ?? null,
       responseMetadata: agg?.response_metadata ?? {},
+      streamChunkCount,
+    };
+    const responseArtifact = modelSpan ? await deps.observability?.captureArtifact({
+      spanId: modelSpan.id,
+      type: 'model_response',
+      contentType: 'application/json',
+      content: response,
+    }) : undefined;
+    modelSpan?.finish('completed', {
+      provider: request.provider,
+      model: request.model,
+      finishReason: response.finishReason,
+      usage: response.usage,
+      requestArtifact: requestArtifact?.reference ?? null,
+      responseArtifact: responseArtifact?.reference ?? null,
+      captureStatus: {
+        request: requestArtifact?.status ?? 'not_available',
+        response: responseArtifact?.status ?? 'not_available',
+      },
+      firstTokenMs: firstTokenAt === null ? null : firstTokenAt - modelStartedAt,
     });
     if (toolCalls.length === 0 || rounds >= MAX_TOOL_ROUNDS) {
       if (usage) yield { type: 'usage', usage: toOpenAIUsage(usage) };

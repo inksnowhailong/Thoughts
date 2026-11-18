@@ -121,6 +121,88 @@ describe('Mission Control 记忆浏览', () => {
   });
 });
 
+describe('Mission Control 观测接入', () => {
+  it('内部生产者事件可重复补发且 Trace 可回放', async () => {
+    const observability = new ObservabilityHub(':memory:');
+    const a = buildApp({ token: TOKEN, observability });
+    const traceId = 'c'.repeat(32);
+    const events = [
+      {
+        eventId: 'python-event-1',
+        producerId: 'python:test',
+        producerSequence: 1,
+        eventType: 'trace.started',
+        timestamp: new Date().toISOString(),
+        traceId,
+        nodeId: 'voice-runtime',
+        payload: { sessionId: 'voice-session', input: { userText: '开灯' } },
+      },
+      {
+        eventId: 'python-event-2',
+        producerId: 'python:test',
+        producerSequence: 2,
+        eventType: 'span.started',
+        timestamp: new Date().toISOString(),
+        traceId,
+        spanId: 'a'.repeat(16),
+        nodeId: 'asr',
+        payload: { name: '语音识别', input: { text: '开灯' } },
+      },
+      {
+        eventId: 'python-event-3',
+        producerId: 'python:test',
+        producerSequence: 3,
+        eventType: 'span.completed',
+        timestamp: new Date().toISOString(),
+        traceId,
+        spanId: 'a'.repeat(16),
+        nodeId: 'asr',
+        payload: { name: '语音识别', status: 'completed', output: { text: '开灯' }, durationMs: 42 },
+      },
+    ];
+    try {
+      for (const event of events) {
+        const response = await a.inject({
+          method: 'POST',
+          url: '/internal/observability/events',
+          headers: auth,
+          payload: { events: [event] },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().accepted).toBe(1);
+      }
+      const duplicate = await a.inject({
+        method: 'POST',
+        url: '/internal/observability/events',
+        headers: auth,
+        payload: { events: [events[1]] },
+      });
+      expect(duplicate.statusCode).toBe(200);
+      expect(observability.retentionStats().eventCount).toBe(3);
+
+      const trace = await a.inject({
+        method: 'GET',
+        url: `/api/observability/traces/${traceId}`,
+        headers: auth,
+      });
+      expect(trace.json().spans).toMatchObject([
+        { nodeId: 'asr', status: 'completed', output: { text: '开灯' } },
+      ]);
+      const replay = await a.inject({
+        method: 'GET',
+        url: `/api/observability/traces/${traceId}/replay`,
+        headers: auth,
+      });
+      expect(replay.json().events.map((event: { eventType: string }) => event.eventType)).toEqual([
+        'trace.started', 'span.started', 'span.completed',
+      ]);
+    } finally {
+      await a.close();
+      observability.close();
+    }
+  });
+});
+
 describe('POST /v1/chat/completions 非流式', () => {
   it('为真实对话保存输入、模型调用、响应和 Trace 事件', async () => {
     const observability = new ObservabilityHub(':memory:');
@@ -150,9 +232,24 @@ describe('POST /v1/chat/completions 非流式', () => {
       const modelSpan = trace?.spans.find((span) => span.nodeId === 'model-provider');
       expect(modelSpan?.input).toMatchObject({
         model: 'ScriptedChatModel',
-        messages: expect.arrayContaining([expect.objectContaining({ content: 'hello trace' })]),
+        requestCapture: 'artifact',
+        providerPayloadCapture: 'not_available',
       });
-      expect(modelSpan?.output).toMatchObject({ content: 'hello back' });
+      expect(modelSpan?.output).toMatchObject({
+        responseArtifact: expect.objectContaining({ artifactId: expect.any(String) }),
+        captureStatus: { request: 'complete', response: 'complete' },
+      });
+      expect(modelSpan?.artifacts?.map((artifact) => artifact.type)).toEqual([
+        'model_request',
+        'model_response',
+      ]);
+      const requestArtifact = observability.getArtifactChunk(
+        modelSpan!.artifacts![0].artifactId,
+      );
+      expect(JSON.parse(Buffer.from(requestArtifact!.content, 'base64').toString('utf8')))
+        .toMatchObject({
+          messages: expect.arrayContaining([expect.objectContaining({ content: 'hello trace' })]),
+        });
       expect(observability.eventsSince(0).events.map((event) => event.eventType)).toContain('trace.completed');
     } finally {
       await a.close();
