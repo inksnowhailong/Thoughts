@@ -3,93 +3,123 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>思绪 / 运行控制台</title>
+<title>思绪 / 实时观测面板</title>
 <style>
-:root{color-scheme:dark;--bg:#08090b;--panel:#101114;--line:rgba(255,255,255,.19);--faint:rgba(255,255,255,.08);--text:#f4f4f4;--dim:#85888d;--red:#ff4d4d;--gold:#d9b45b}
+:root{color-scheme:dark;--bg:#08090b;--panel:#101114;--line:rgba(255,255,255,.19);--faint:rgba(255,255,255,.08);--text:#f4f4f4;--dim:#85888d;--red:#ff4d4d;--gold:#d9b45b;--green:#9fd89f}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:11px/1.45 "Segoe UI",sans-serif;letter-spacing:.025em}
-button,input,select{font:inherit;color:inherit;background:#0b0c0e;border:1px solid var(--line);border-radius:2px;padding:5px 7px}
+body{margin:0;background:var(--bg);color:var(--text);font:12px/1.5 "Segoe UI",sans-serif;letter-spacing:.02em}
+button,input,select{font:inherit;color:inherit;background:#0b0c0e;border:1px solid var(--line);border-radius:3px;padding:5px 8px}
 button{cursor:pointer}button:hover,button:focus-visible{border-color:#fff;outline:none}
 button:disabled{opacity:.35;cursor:not-allowed}
-header{height:48px;display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--line);background:#0b0c0e}
-.brand{font-size:12px;letter-spacing:.16em;font-weight:600}.sub{color:var(--dim);letter-spacing:.12em}
-.status{display:flex;align-items:center;gap:7px;color:var(--dim)}.lamp{width:6px;height:6px;border:1px solid currentColor;border-radius:50%}.lamp.on{background:#fff;box-shadow:0 0 8px #fff}
+header{height:48px;display:flex;align-items:center;gap:16px;padding:0 16px;border-bottom:1px solid var(--line);background:#0b0c0e}
+.brand{font-size:13px;letter-spacing:.14em;font-weight:600}.sub{color:var(--dim);letter-spacing:.1em}
+.status{display:flex;align-items:center;gap:7px;color:var(--dim)}.lamp{width:7px;height:7px;border:1px solid currentColor;border-radius:50%}.lamp.on{background:#fff;box-shadow:0 0 8px #fff}
 .grow{flex:1}
-nav{display:flex;gap:4px}nav button{border:0;background:transparent;color:var(--dim);letter-spacing:.12em;padding:8px 10px}
+nav{display:flex;gap:4px}nav button{border:0;background:transparent;color:var(--dim);letter-spacing:.1em;padding:8px 10px}
 nav button.selected{color:#fff;border-bottom:1px solid #fff}
-main{height:calc(100vh - 48px);min-height:540px;display:grid;grid-template-columns:220px minmax(360px,1fr) 320px;grid-template-rows:minmax(0,1fr) 185px;gap:1px;background:var(--line)}
+main{height:calc(100vh - 48px);min-height:560px;display:grid;grid-template-columns:280px minmax(380px,1fr) 340px;grid-template-rows:minmax(0,1fr) 195px;gap:1px;background:var(--line)}
 aside,.center,.timeline{background:var(--bg);min-width:0;min-height:0}
 aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-direction:column;overflow:hidden}
-.panel-title{font-size:9px;color:var(--dim);letter-spacing:.16em;text-transform:uppercase;margin:0 0 10px}
+.panel-title{font-size:10px;color:var(--dim);letter-spacing:.14em;margin:0 0 10px;font-weight:600}
 .row{display:flex;align-items:center;gap:8px}.muted{color:var(--dim)}.mono,pre,.id{font-family:Consolas,"Cascadia Mono",monospace}
 .trace-list,.memory-list,.event-list{display:flex;flex-direction:column;gap:2px}
-.entry{width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--faint);padding:8px 4px}
-.entry.selected{border-left:1px solid #fff;padding-left:8px;background:rgba(255,255,255,.04)}
-.entry strong{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.entry small{color:var(--dim);display:block;margin-top:3px}
-.event-list{margin-top:16px}.event{border-left:1px solid var(--line);padding:3px 6px;color:var(--dim);overflow-wrap:anywhere}
+.entry{width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--faint);padding:9px 4px}
+.entry.selected{border-left:2px solid var(--gold);padding-left:8px;background:rgba(255,255,255,.04)}
+.entry strong{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.entry .reply{color:#bdbdbd;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
+.entry small{color:var(--dim);display:block;margin-top:3px;font-size:10px}
+.chip{display:inline-block;border:1px solid var(--line);border-radius:9px;padding:0 7px;font-size:10px;margin-right:4px}
+.chip.running{color:var(--gold);border-color:var(--gold)}
+.chip.completed{color:var(--green);border-color:#3f6b3f}
+.chip.failed{color:var(--red);border-color:var(--red)}
+.chip.waiting{color:var(--gold);border-color:var(--gold)}
+.event-list{margin-top:14px}.event{border-left:1px solid var(--line);padding:3px 7px;color:var(--dim);overflow-wrap:anywhere;font-size:11px}
 .event.failed{border-color:var(--red);color:#e4a4a4}
-.center-head{display:flex;align-items:center;gap:12px;min-height:42px;padding:0 12px;border-bottom:1px solid var(--faint)}
-.center-head strong{font-size:9px;letter-spacing:.16em}.center-head span{color:var(--dim)}
-#topology{display:block;width:100%;height:100%;min-height:280px}
-.edge{stroke:rgba(255,255,255,.2);stroke-width:1;fill:none}.edge.active{stroke:#fff;stroke-width:1.6;filter:drop-shadow(0 0 3px #fff)}
-.edge.in-trace{stroke:rgba(255,255,255,.7);stroke-width:1.3}
-.node{cursor:pointer;outline:none}.node .shape{fill:#090a0c;stroke:rgba(255,255,255,.55);stroke-width:1.2}
-.node text{fill:#d7d7d7;font:9px Consolas,monospace;text-anchor:middle;letter-spacing:.08em}
-.node .subtext{fill:#777;font:8px Consolas,monospace}
-.node.active .shape{stroke:#fff;filter:drop-shadow(0 0 6px #fff);animation:pulse 1.2s ease-in-out infinite}
-.node.in-trace .shape{stroke:#fff;opacity:1}
-.node.selected .shape{stroke:#fff;stroke-width:2}
-.node.unknown .shape{stroke-dasharray:3 3;opacity:.7}
+.event.key{border-color:rgba(217,180,91,.55);color:#cfc3a0}
+.center-head{display:flex;align-items:center;gap:12px;min-height:40px;padding:0 14px;border-bottom:1px solid var(--faint)}
+.center-head strong{font-size:10px;letter-spacing:.14em}.center-head span{color:var(--dim)}
+#topology{display:block;width:100%;flex:1;min-height:240px}
+.zone{fill:rgba(255,255,255,.022);stroke:var(--faint)}
+.zone-label{fill:var(--dim);font:10px "Segoe UI";letter-spacing:.2em}
+.edge{stroke:rgba(255,255,255,.16);stroke-width:1;fill:none}
+.edge.main{stroke:rgba(255,255,255,.3);stroke-width:1.3}
+.edge.active{stroke:#fff;stroke-width:1.8;filter:drop-shadow(0 0 3px #fff)}
+.edge.in-trace{stroke:rgba(217,180,91,.85);stroke-width:1.4}
+.node{cursor:pointer;outline:none}
+.node .shape{fill:#0a0b0d;stroke:rgba(255,255,255,.55);stroke-width:1.2}
+.node text{fill:#dcdcdc;font:11px "Segoe UI";text-anchor:middle;letter-spacing:.06em}
+.node .subtext{fill:#7c7f84;font:9px "Segoe UI";text-anchor:middle}
+.node .dot{fill:#555}
+.node .dot.ok{fill:var(--green)}.node .dot.off{fill:var(--red)}
+.node.active .shape{stroke:#fff;stroke-width:2;filter:drop-shadow(0 0 6px #fff);animation:pulse 1.2s ease-in-out infinite}
+.node.in-trace .shape{stroke:var(--gold)}
+.node.selected .shape{stroke:#fff;stroke-width:2.2}
+.node.unknown .shape{stroke-dasharray:3 3;opacity:.75}
 .node.error .shape{stroke:var(--red)}
-.node .core{fill:#fff;opacity:.75}
-@keyframes pulse{50%{filter:drop-shadow(0 0 1px #fff);opacity:.65}}
-.topology-note{position:absolute;bottom:10px;left:12px;color:var(--dim);font:9px Consolas,monospace}
+@keyframes pulse{50%{filter:drop-shadow(0 0 1px #fff);opacity:.7}}
+.dialogue-flow{display:flex;gap:6px;align-items:stretch;padding:9px 14px 11px;border-top:1px solid var(--faint);overflow-x:auto;min-height:104px;flex:none}
+.flow-card{min-width:170px;max-width:250px;background:#0b0c0e;border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer;display:flex;flex-direction:column;gap:3px;flex:none}
+.flow-card:hover{border-color:#fff}
+.flow-card.empty{opacity:.55;cursor:default}
+.flow-card.selected{border-color:var(--gold)}
+.flow-title{font-size:9px;color:var(--gold);letter-spacing:.14em}
+.flow-main{font-size:13px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-line;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.flow-sub{font-size:10px;color:var(--dim)}
+.flow-arrow{align-self:center;color:var(--dim);font-size:14px;flex:none}
 .inspector{grid-column:3;grid-row:1;overflow:auto;padding:12px}
-.inspector h2{font-size:12px;font-weight:500;margin:0 0 10px;overflow-wrap:anywhere}
-.kv{display:grid;grid-template-columns:88px 1fr;gap:5px 8px;margin:9px 0}.kv span:nth-child(odd){color:var(--dim)}
-.raw-head{display:flex;align-items:center;gap:7px;margin:14px 0 5px;color:var(--dim);font-size:9px;letter-spacing:.12em}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#0b0c0e;border:1px solid var(--faint);padding:8px;margin:0;max-height:230px;overflow:auto;font-size:10px;line-height:1.5}
-.timeline{grid-column:1/4;grid-row:2;padding:10px 12px;overflow:auto}
-.timeline-head{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}.timeline-head .panel-title{margin:0}
+.inspector h2{font-size:13px;font-weight:500;margin:0 0 10px;overflow-wrap:anywhere}
+.card{border:1px solid var(--faint);border-radius:4px;padding:10px 11px;margin-bottom:10px;background:#0d0e10}
+.card-title{font-size:10px;color:var(--gold);letter-spacing:.14em;margin:0 0 8px;font-weight:600}
+.card .dialogue{font-size:14px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.card.error-card{border-color:var(--red)}
+.card.error-card .card-title{color:var(--red)}
+.kv{display:grid;grid-template-columns:92px 1fr;gap:5px 8px;margin:0}.kv span:nth-child(odd){color:var(--dim)}
+.raw summary{cursor:pointer;color:var(--dim);font-size:10px;letter-spacing:.08em;margin:10px 0 4px;list-style:none}
+.raw summary:hover{color:#fff}
+.raw pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#0b0c0e;border:1px solid var(--faint);padding:8px;margin:0;max-height:220px;overflow:auto;font-size:10px;line-height:1.5}
+.span-row{width:100%;text-align:left;background:transparent;border:1px solid var(--faint);border-radius:3px;padding:6px 8px;margin-top:5px;display:block}
+.span-row:hover{border-color:#fff}
+.span-row .t{color:#d8d8d8}.span-row .m{color:var(--dim);font-size:10px;margin-left:8px}
+.empty-hint{color:var(--dim);font-size:11px;line-height:1.7;border:1px dashed var(--line);border-radius:4px;padding:10px}
+.timeline{grid-column:1/4;grid-row:2;padding:10px 14px;overflow:auto}
+.timeline-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}.timeline-head .panel-title{margin:0}
 .replay-controls{display:flex;align-items:center;gap:4px}.replay-controls input[type=range]{width:110px;padding:0}
 .artifact-tools{display:flex;gap:5px;margin:6px 0}.artifact-tools input{min-width:0;flex:1}
-.artifact-view{max-height:300px;overflow:auto}.dynamic-edge{stroke-dasharray:3 3}
+.artifact-view{max-height:300px;overflow:auto}
 #bars{display:flex;flex-direction:column;gap:4px}
-.bar-row{display:grid;grid-template-columns:140px 1fr 54px;gap:8px;align-items:center;min-height:18px}
+.bar-row{display:grid;grid-template-columns:150px 1fr 60px;gap:8px;align-items:center;min-height:18px}
 .bar-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c5c5c5}
 .bar-track{height:8px;position:relative;background:var(--faint)}
 .bar{position:absolute;top:1px;height:6px;min-width:2px;background:#d8d8d8}
-.bar.failed{background:var(--red)}.bar.running{background:#fff;box-shadow:0 0 5px #fff}.bar.waiting{background:var(--gold)}
-.bar-duration{text-align:right;color:var(--dim);font:9px Consolas,monospace}
+.bar.failed{background:var(--red)}.bar.running{background:var(--gold);box-shadow:0 0 5px var(--gold)}.bar.waiting{background:var(--gold)}
+.bar-duration{text-align:right;color:var(--dim);font:10px Consolas,monospace}
 .empty{color:var(--dim);padding:10px 4px}
 .memory-tools{display:flex;gap:5px;margin-bottom:8px}.memory-tools input{min-width:0;width:100%}
-.detail-content{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
 .error{color:#ff8585;white-space:pre-wrap}
-.badge{font:9px Consolas,monospace;color:var(--dim);border:1px solid var(--line);padding:2px 5px}
+.badge{font:10px Consolas,monospace;color:var(--dim);border:1px solid var(--line);padding:2px 6px}
 .screen{display:none}.screen.active{display:block}
-@media(max-width:980px){main{grid-template-columns:190px minmax(300px,1fr);grid-template-rows:minmax(340px,1fr) 190px 250px}aside{grid-column:1;grid-row:1}.center{grid-column:2;grid-row:1}.inspector{grid-column:1/3;grid-row:3}.timeline{grid-column:1/3;grid-row:2}}
-@media(max-width:650px){header{gap:9px;padding:0 9px}.sub{display:none}nav button{padding:7px 5px}main{height:auto;min-height:calc(100vh - 48px);grid-template-columns:1fr;grid-template-rows:220px 360px 190px 330px}.center{grid-column:1;grid-row:2}.inspector{grid-column:1;grid-row:4}.timeline{grid-column:1;grid-row:3}aside{grid-column:1;grid-row:1}.bar-row{grid-template-columns:110px 1fr 45px}}
+@media(max-width:1020px){main{grid-template-columns:230px minmax(300px,1fr);grid-template-rows:minmax(340px,1fr) 195px 260px}aside{grid-column:1;grid-row:1}.center{grid-column:2;grid-row:1}.inspector{grid-column:1/3;grid-row:3}.timeline{grid-column:1/3;grid-row:2}}
+@media(max-width:680px){header{gap:9px;padding:0 9px}.sub{display:none}nav button{padding:7px 5px}main{height:auto;min-height:calc(100vh - 48px);grid-template-columns:1fr;grid-template-rows:230px 380px 200px 340px}.center{grid-column:1;grid-row:2}.inspector{grid-column:1;grid-row:4}.timeline{grid-column:1;grid-row:3}aside{grid-column:1;grid-row:1}.bar-row{grid-template-columns:110px 1fr 45px}}
 main.memory-view{grid-template-rows:minmax(0,1fr) 0}
-@media(max-width:980px){main.memory-view{grid-template-rows:minmax(340px,1fr) 0 250px}}
-@media(max-width:650px){main.memory-view{grid-template-rows:220px 360px 0 330px}}
+@media(max-width:1020px){main.memory-view{grid-template-rows:minmax(340px,1fr) 0 260px}}
+@media(max-width:680px){main.memory-view{grid-template-rows:230px 380px 0 340px}}
 main.memory-view .timeline{display:none}
 .memory-canvas{display:none;flex:1;padding:20px;overflow:auto;min-height:0}
-.memory-canvas h2{font-size:10px;font-weight:500;letter-spacing:.14em;color:var(--dim)}
+.memory-canvas h2{font-size:11px;font-weight:500;letter-spacing:.12em;color:var(--dim)}
 .memory-canvas pre{max-height:none;min-height:120px}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
 <header>
-  <span class="brand">思绪</span><span class="sub">运行控制台 / 实时观测</span>
+  <span class="brand">思绪</span><span class="sub">实时观测面板</span>
   <span class="status"><i id="connectionLamp" class="lamp"></i><span id="connection">正在连接观测服务</span></span>
   <span class="status" id="guanjiaStatus">管家未接入</span>
   <span class="grow"></span>
-  <span class="muted">追踪</span><span id="traceId" class="id">—</span>
-  <nav aria-label="控制台视图">
+  <span class="muted">当前追踪</span><span id="traceId" class="id">—</span>
+  <nav aria-label="面板视图">
     <button class="selected" data-tab="live">实时</button>
-    <button data-tab="traces">历史</button>
+    <button data-tab="traces">对话历史</button>
     <button data-tab="memory">记忆</button>
     <button data-tab="nodes">系统</button>
   </nav>
@@ -97,9 +127,9 @@ main.memory-view .timeline{display:none}
 <main>
   <aside>
     <section id="traceScreen" class="screen active">
-      <h2 class="panel-title">执行记录</h2>
-      <div id="traceList" class="trace-list"></div>
-      <div id="tracePaging" class="row" style="justify-content:space-between;margin-top:8px">
+      <h2 class="panel-title">对话记录（最新在前）</h2>
+      <div id="traceList" class="trace-list"><span class="empty">还没有对话记录。对管家说一句话（先喊唤醒词，再说话），这里就会出现完整的一轮对话。</span></div>
+      <div id="tracePaging" class="row" style="justify-content:space-between;margin-top:8px;display:none">
         <button id="traceNewer" type="button">更新</button><span id="tracePage" class="muted">最近记录</span><button id="traceOlder" type="button">更早</button>
       </div>
     </section>
@@ -127,54 +157,24 @@ main.memory-view .timeline{display:none}
     </section>
     <section id="eventScreen">
       <h2 class="panel-title">运行事件</h2>
-      <div id="eventList" class="event-list"><span class="empty">等待真实运行事件</span></div>
+      <label class="row" style="font-size:10px;color:var(--dim)"><input id="showHeartbeats" type="checkbox" style="width:auto"> 显示节点心跳</label>
+      <div id="eventList" class="event-list"><span class="empty">等待真实运行事件。心跳默认隐藏，只显示对话相关的关键事件。</span></div>
     </section>
   </aside>
   <section class="center">
-    <div class="center-head"><strong id="viewTitle">实时拓扑</strong><span id="viewSub">仅显示实际观测到的执行</span><span class="grow"></span><span id="watermark" class="mono">事件序号 —</span></div>
-    <svg id="topology" viewBox="0 0 800 440" role="img" aria-label="运行拓扑">
-      <path class="edge" data-edge="gateway-main" data-source="agent-runtime" data-target="main-agent" d="M170 220 H320"/>
-      <path class="edge" data-edge="main-memory" data-source="main-agent" data-target="memory-engine" d="M430 205 C500 160 520 132 590 132"/>
-      <path class="edge" data-edge="main-model" data-source="main-agent" data-target="model-provider" d="M430 220 H590"/>
-      <path class="edge" data-edge="main-tools" data-source="main-agent" data-target="tool-router" d="M430 235 C500 280 520 310 590 310"/>
-      <g class="node" data-node="agent-runtime" tabindex="0" role="button" aria-label="智能体运行时">
-        <rect class="shape" x="95" y="188" width="75" height="64"/>
-        <circle class="core" cx="132.5" cy="216" r="3"/>
-        <text x="132.5" y="232">运行时</text><text class="subtext" x="132.5" y="245">本机接口</text>
-      </g>
-      <g class="node" data-node="main-agent" tabindex="0" role="button" aria-label="主智能体">
-        <circle class="shape" cx="375" cy="220" r="52"/><circle class="shape" cx="375" cy="220" r="45"/>
-        <circle class="core" cx="375" cy="214" r="3"/>
-        <text x="375" y="232">主智能体</text><text class="subtext" x="375" y="246">对话处理</text>
-      </g>
-      <g class="node unknown" data-node="memory-engine" tabindex="0" role="button" aria-label="记忆引擎">
-        <circle class="shape" cx="635" cy="132" r="34"/><circle class="shape" cx="635" cy="132" r="25"/>
-        <circle class="core" cx="635" cy="126" r="3"/>
-        <text x="635" y="145">记忆引擎</text><text class="subtext" x="635" y="158">本地存储</text>
-      </g>
-      <g class="node unknown" data-node="model-provider" tabindex="0" role="button" aria-label="模型服务">
-        <path class="shape" d="M635 176 L671 212 L635 248 L599 212 Z"/>
-        <circle class="core" cx="635" cy="207" r="3"/>
-        <text x="635" y="222">模型调用</text><text class="subtext" x="635" y="235">外部服务</text>
-      </g>
-      <g class="node unknown" data-node="tool-router" tabindex="0" role="button" aria-label="工具路由">
-        <path class="shape" d="M608 284 L662 284 L679 310 L662 336 L608 336 L591 310 Z"/>
-        <circle class="core" cx="635" cy="305" r="3"/>
-        <text x="635" y="319">工具路由</text><text class="subtext" x="635" y="331">能力调用</text>
-      </g>
-    </svg>
+    <div class="center-head"><strong id="viewTitle">实时拓扑</strong><span id="viewSub">仅显示真实运行状态</span><span class="grow"></span><span id="topologyNote">当前没有执行中的对话</span><span id="watermark" class="mono">事件序号 —</span></div>
+    <svg id="topology" viewBox="0 0 920 440" role="img" aria-label="运行拓扑"></svg>
+    <div id="dialogueFlow" class="dialogue-flow"><span class="empty">选择左侧一条对话记录，这里会展示：说了什么 → 识别与说话人 → 管家的回复 → 播报情况。</span></div>
     <div id="memoryCanvas" class="memory-canvas">
       <h2>记忆数据 / 来源：管家主记忆库</h2>
       <div id="memorySummary" class="muted">正在读取记忆索引</div>
       <h2 id="memoryPreviewTitle">选择一条记忆查看内容</h2>
       <pre id="memoryPreview">记忆详情将在此显示</pre>
     </div>
-    <span class="topology-note" id="topologyNote">当前没有执行中的追踪</span>
   </section>
   <aside class="inspector">
-    <h2 id="inspectorTitle">详情 / 选择一条追踪或节点</h2>
-    <div id="inspectorMeta" class="kv"></div>
-    <div id="inspectorRaw"></div>
+    <h2 id="inspectorTitle">详情</h2>
+    <div id="inspectorBody"><div class="empty-hint">点击左侧对话记录、拓扑里的节点或时间轴上的步骤，这里会显示对应的字段化详情与原始 JSON。</div></div>
   </aside>
   <section class="timeline">
     <div class="timeline-head">
@@ -189,9 +189,9 @@ main.memory-view .timeline{display:none}
           <option value="0.5">0.5 倍</option><option value="1" selected>1 倍</option><option value="2">2 倍</option>
         </select>
       </div>
-      <span class="badge">历史回放仅重现事件</span>
+      <span class="badge">回放按真实事件逐步重现</span>
     </div>
-    <div id="bars"><span class="empty">选择一条追踪，查看实际执行步骤</span></div>
+    <div id="bars"><span class="empty">选择一条对话记录，查看这一轮里每个环节实际花了多久。</span></div>
   </section>
 </main>
 <script>
@@ -211,6 +211,7 @@ main.memory-view .timeline{display:none}
     replay: { events: [], index: -1, timer: null },
     memory: { items: [], total: 0, offset: 0, limit: 30, selectedId: null },
     activeNodes: new Map(),
+    showHeartbeats: false,
   };
   const memorySourceLabel = (source) => ({
     user: '用户提供',
@@ -241,20 +242,20 @@ main.memory-view .timeline{display:none}
     retracted: '已撤回',
   })[status] ?? status ?? '未知';
   const nodeLabel = (id) => ({
-    'voice-runtime': '语音运行时',
+    'voice-runtime': '语音进程',
     'audio-capture': '音频采集',
-    vad: '语音活动检测',
-    asr: '语音识别',
+    'vad': '语音活动检测',
+    'asr': '语音识别',
     'speaker-recognition': '说话人识别',
     'agent-runtime': '智能体运行时',
     'main-agent': '主智能体',
-    'worker-runtime': '工作节点',
+    'worker-runtime': '任务工作台',
     'memory-engine': '记忆引擎',
     'model-provider': '模型服务',
     'tool-router': '工具路由',
-    tts: '语音合成',
+    'tts': '语音合成',
     'audio-playback': '音频播放',
-  })[id] ?? '其他节点';
+  })[id] ?? (id || '未知节点');
   const nodeTypeLabel = (type) => ({
     processor: '处理模块',
     agent: '智能体',
@@ -268,11 +269,11 @@ main.memory-view .timeline{display:none}
     'MODEL INVOCATION': '模型调用',
     'WRITE RAW CONVERSATION': '写入原始对话',
     'RECALL MEMORIES': '检索记忆',
-  })[name] ?? (name.startsWith('TOOL ') ? `调用工具：${name.slice(5)}` : name);
+  })[name] ?? (name && name.startsWith('TOOL ') ? `调用工具：${name.slice(5)}` : (name || '步骤'));
   const eventLabel = (type) => ({
-    'trace.started': '追踪开始',
-    'trace.completed': '追踪完成',
-    'trace.failed': '追踪失败',
+    'trace.started': '对话开始',
+    'trace.completed': '对话完成',
+    'trace.failed': '对话失败',
     'span.started': '步骤开始',
     'span.completed': '步骤完成',
     'span.failed': '步骤失败',
@@ -282,6 +283,40 @@ main.memory-view .timeline{display:none}
     'node.health_changed': '节点状态变化',
     'artifact.created': '原始数据已保存',
   })[type] ?? type;
+  const FIELD_LABELS = {
+    userText: '用户说的话',
+    sessionId: '会话',
+    model: '模型',
+    streamText: '识别中间文本',
+    durationSeconds: '时长',
+    sampleRate: '采样率',
+    sampleCount: '采样点数',
+    speechDetected: '检测到说话',
+    text: '文本',
+    backend: '识别引擎',
+    confidence: '置信度',
+    fallback: '备选结果',
+    durationMs: '耗时',
+    speaker: '说话人',
+    logicalInput: '发给模型的文本',
+    providerPayload: '原始请求载荷',
+    reply: '管家的回复',
+    spoken: '已播报的句子',
+    unspoken: '未播报的句子',
+    aborted: '被打断',
+    error: '错误',
+    content: '模型回复内容',
+    usage: '本次用量',
+    interrupted: '是否被打断',
+    prompt: '提示词',
+    response: '模型返回',
+  };
+  const FIELD_FORMAT = {
+    confidence: (value) => `${Math.round(value * 100)}%`,
+    durationSeconds: (value) => `${Number(value).toFixed(2)} 秒`,
+    durationMs: (value) => `${value} 毫秒`,
+    sampleRate: (value) => `${value} Hz`,
+  };
   const byId = (id) => document.getElementById(id);
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -310,16 +345,26 @@ main.memory-view .timeline{display:none}
   const pretty = (value) => value === null || value === undefined
     ? '无数据'
     : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  const time = (value) => value ? new Date(value).toLocaleTimeString() : '—';
-  const duration = (value) => value === null || value === undefined ? '—' : `${value} 毫秒`;
+  const time = (value) => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+  const duration = (value) => value === null || value === undefined ? '—'
+    : value >= 1000 ? `${(value / 1000).toFixed(2)} 秒` : `${value} 毫秒`;
+  const fmtField = (key, value) => {
+    if (value === null || value === undefined || value === '') return '—';
+    if (FIELD_FORMAT[key]) return FIELD_FORMAT[key](value);
+    if (typeof value === 'boolean') return value ? '是' : '否';
+    if (Array.isArray(value)) return value.map((item) => typeof item === 'string' ? item : JSON.stringify(item)).join(' / ');
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  };
+  const truncate = (text, limit = 90) => {
+    const value = String(text ?? '');
+    return value.length > limit ? `${value.slice(0, limit)}…` : value;
+  };
   const showError = (error) => {
-    byId('connection').textContent = '连接异常';
-    byId('connectionLamp').classList.remove('on');
-    byId('inspectorTitle').textContent = '观测服务异常';
     const message = error instanceof Error ? error.message : String(error);
-    byId('inspectorRaw').replaceChildren(make('pre', 'error', message.includes('memory_engine_not_configured')
-      ? '记忆引擎尚未启用，无法浏览记忆。'
-      : message));
+    byId('inspectorTitle').textContent = '观测服务异常';
+    byId('inspectorBody').replaceChildren(make('pre', 'error',
+      message.includes('memory_engine_not_configured') ? '记忆引擎尚未启用，无法浏览记忆。' : message));
   };
 
   function setTab(tab) {
@@ -333,14 +378,19 @@ main.memory-view .timeline{display:none}
     byId('tracePaging').style.display = tab === 'traces' ? '' : 'none';
     byId('eventScreen').style.display = tab === 'live' ? '' : 'none';
     byId('memoryCanvas').style.display = tab === 'memory' ? 'block' : 'none';
+    byId('dialogueFlow').style.display = tab === 'memory' ? 'none' : '';
     document.querySelector('main').classList.toggle('memory-view', tab === 'memory');
-    byId('viewTitle').textContent = ({ live: '实时拓扑', traces: '执行追踪', memory: '记忆浏览', nodes: '系统状态' })[tab];
-    byId('viewSub').textContent = tab === 'memory' ? '只读 / 数据来自管家主记忆库' : '仅显示实际运行状态';
+    byId('viewTitle').textContent = ({ live: '实时拓扑', traces: '对话历史', memory: '记忆浏览', nodes: '系统状态' })[tab];
+    byId('viewSub').textContent = ({ live: '节点发亮 = 正在执行这一步', traces: '选择一条查看完整链路', memory: '只读 / 数据来自管家主记忆库', nodes: '节点与数据保留' })[tab];
     byId('topology').style.display = tab === 'memory' ? 'none' : '';
-    byId('topologyNote').style.display = tab === 'memory' ? 'none' : '';
     if (tab === 'memory') loadMemories();
     if (tab === 'nodes') { renderNodes(); loadRetention(); }
     if (tab === 'traces') loadHistory();
+    renderTraceList();
+  }
+
+  function chip(status) {
+    return make('span', `chip ${status}`, statusLabel(status));
   }
 
   function renderTraceList() {
@@ -349,12 +399,19 @@ main.memory-view .timeline{display:none}
     for (const trace of state.traces) {
       const button = make('button', `entry${trace.traceId === state.selectedTrace?.traceId ? ' selected' : ''}`);
       button.type = 'button';
-      button.append(make('strong', '', String(trace.input?.userText ?? trace.traceId)));
-      button.append(make('small', '', `${time(trace.startedAt)} · ${statusLabel(trace.status)} · ${duration(trace.durationMs)}`));
+      button.append(make('strong', '', truncate(trace.input?.userText ?? trace.traceId, 60)));
+      const reply = trace.output?.reply;
+      if (reply) button.append(make('span', 'reply', `↳ ${truncate(reply, 70)}`));
+      const meta = make('small', '');
+      meta.append(chip(trace.status));
+      meta.append(document.createTextNode(`${time(trace.startedAt)} · ${duration(trace.durationMs)}`));
+      button.append(meta);
       button.addEventListener('click', () => selectTrace(trace.traceId));
       list.append(button);
     }
-    if (state.traces.length === 0) list.append(make('span', 'empty', '还没有实际执行记录'));
+    if (state.traces.length === 0) {
+      list.append(make('span', 'empty', '还没有对话记录。对管家说一句话（先喊唤醒词，再说话），这里就会出现完整的一轮对话。'));
+    }
     const first = state.traces.length ? state.historyOffset + 1 : 0;
     byId('tracePage').textContent = state.tab === 'traces'
       ? `第 ${first}–${state.historyOffset + state.traces.length} 条`
@@ -380,7 +437,8 @@ main.memory-view .timeline{display:none}
       button.type = 'button';
       button.append(make('strong', '', nodeLabel(node.id)));
       const instances = node.instances.length ? ` · 实例 ${node.instances.length}` : '';
-      button.append(make('small', '', `${nodeTypeLabel(node.type)} · 健康：${statusLabel(node.health)} · 执行：${statusLabel(node.execution)}${instances} · ${node.observed ? '已有记录' : '暂无步骤记录'}`));
+      button.append(make('small', '', `${nodeTypeLabel(node.type)} · 健康：${statusLabel(node.health)} · 执行：${statusLabel(node.execution)}${instances}`));
+      button.append(make('small', '', node.observed ? '已有真实执行记录' : '还没有执行记录'));
       button.addEventListener('click', () => selectNode(node.id));
       list.append(button);
     }
@@ -394,66 +452,151 @@ main.memory-view .timeline{display:none}
     } catch (error) { showError(error); }
   }
 
-  function renderDynamicTopology() {
-    if (!state.snapshot) return;
+  /* ---------- 拓扑：分区布局 + 真实调用链 ---------- */
+
+  const NODE_LAYOUT = {
+    'voice-runtime': { x: 93, y: 62, shape: 'process', sub: '承载语音链路' },
+    'audio-capture': { x: 93, y: 138, shape: 'io', sub: '麦克风收音' },
+    'vad': { x: 93, y: 208, shape: 'io', sub: '有人在说话' },
+    'asr': { x: 93, y: 278, shape: 'io', sub: '语音转文字' },
+    'speaker-recognition': { x: 93, y: 348, shape: 'io', sub: '声纹认人' },
+    'agent-runtime': { x: 350, y: 62, shape: 'process', sub: '对话总入口' },
+    'main-agent': { x: 350, y: 222, shape: 'agent', sub: '理解与决策' },
+    'worker-runtime': { x: 350, y: 378, shape: 'process', sub: '后台任务' },
+    'memory-engine': { x: 628, y: 82, shape: 'memory', sub: '长期记忆' },
+    'model-provider': { x: 628, y: 194, shape: 'model', sub: '大模型' },
+    'tool-router': { x: 628, y: 306, shape: 'tool', sub: '能力工具' },
+    'tts': { x: 845, y: 140, shape: 'io', sub: '文字转语音' },
+    'audio-playback': { x: 845, y: 262, shape: 'io', sub: '念给你听' },
+  };
+  const TOPOLOGY_EDGES = [
+    ['voice-runtime', 'agent-runtime', ''],
+    ['audio-capture', 'vad', 'main'],
+    ['vad', 'asr', 'main'],
+    ['vad', 'speaker-recognition', 'main'],
+    ['asr', 'main-agent', 'main'],
+    ['speaker-recognition', 'main-agent', 'main'],
+    ['agent-runtime', 'main-agent', 'main'],
+    ['main-agent', 'memory-engine', ''],
+    ['main-agent', 'model-provider', 'main'],
+    ['main-agent', 'tool-router', ''],
+    ['main-agent', 'worker-runtime', ''],
+    ['main-agent', 'tts', 'main'],
+    ['tts', 'audio-playback', 'main'],
+  ];
+  const ZONES = [
+    ['输入端 —— 听见你', 10, 26, 166, 396],
+    ['运行时 —— 想清楚', 226, 26, 248, 396],
+    ['支撑 —— 记忆 / 模型 / 工具', 508, 26, 244, 396],
+    ['输出端 —— 说给你', 786, 26, 126, 396],
+  ];
+
+  function shapeElement(shape, x, y) {
+    const ns = 'http://www.w3.org/2000/svg';
+    if (shape === 'agent') {
+      const c1 = document.createElementNS(ns, 'circle');
+      c1.setAttribute('class', 'shape'); c1.setAttribute('cx', x); c1.setAttribute('cy', y); c1.setAttribute('r', 46);
+      const c2 = document.createElementNS(ns, 'circle');
+      c2.setAttribute('class', 'shape'); c2.setAttribute('cx', x); c2.setAttribute('cy', y); c2.setAttribute('r', 38);
+      return [c1, c2];
+    }
+    if (shape === 'memory') {
+      const outer = document.createElementNS(ns, 'rect');
+      outer.setAttribute('class', 'shape'); outer.setAttribute('x', x - 40); outer.setAttribute('y', y - 25);
+      outer.setAttribute('width', 80); outer.setAttribute('height', 50); outer.setAttribute('rx', 6);
+      const inner = document.createElementNS(ns, 'rect');
+      inner.setAttribute('class', 'shape'); inner.setAttribute('x', x - 33); inner.setAttribute('y', y - 18);
+      inner.setAttribute('width', 66); inner.setAttribute('height', 36); inner.setAttribute('rx', 4);
+      return [outer, inner];
+    }
+    const el = document.createElementNS(ns, 'path');
+    el.setAttribute('class', 'shape');
+    let d;
+    if (shape === 'process') d = `M${x - 44} ${y - 21} h88 a4 4 0 0 1 4 4 v34 a4 4 0 0 1 -4 4 h-88 a4 4 0 0 1 -4 -4 v-34 a4 4 0 0 1 4 -4 z`;
+    else if (shape === 'io') d = `M${x - 44} ${y} a18 18 0 0 1 18 -18 h52 a18 18 0 0 1 18 18 a18 18 0 0 1 -18 18 h-52 a18 18 0 0 1 -18 -18 z`;
+    else if (shape === 'model') d = `M${x} ${y - 27} L${x + 30} ${y} L${x} ${y + 27} L${x - 30} ${y} z`;
+    else d = `M${x - 32} ${y - 19} h64 l16 19 l-16 19 h-64 l-16 -19 z`;
+    el.setAttribute('d', d);
+    return [el];
+  }
+
+  function buildTopology() {
     const svg = byId('topology');
-    svg.querySelectorAll('.dynamic-node,.dynamic-edge').forEach((item) => item.remove());
-    const positions = new Map([
-      ['agent-runtime', [132, 220]], ['main-agent', [375, 220]],
-      ['memory-engine', [635, 132]], ['model-provider', [635, 212]],
-      ['tool-router', [635, 310]],
-    ]);
-    const zoneX = { INPUT: 55, RUNTIME: 350, MEMORY: 750, PROVIDERS: 750, OUTPUT: 750 };
-    const zoneCounts = new Map();
-    for (const node of state.snapshot.nodes) {
-      const existing = svg.querySelector(`[data-node="${CSS.escape(node.id)}"]`);
-      if (existing) {
-        existing.classList.toggle('unknown', !node.observed);
-        existing.classList.toggle('error', node.health === 'offline' || node.execution === 'error');
-        continue;
-      }
-      const count = zoneCounts.get(node.zone) ?? 0;
-      zoneCounts.set(node.zone, count + 1);
-      const x = zoneX[node.zone] ?? 730;
-      const y = 62 + (count % 7) * 47;
-      positions.set(node.id, [x, y]);
-      const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      group.setAttribute('class', `node dynamic-node${node.observed ? '' : ' unknown'}${node.health === 'offline' ? ' error' : ''}`);
-      group.dataset.node = node.id;
+    const ns = 'http://www.w3.org/2000/svg';
+    svg.replaceChildren();
+    for (const zone of ZONES) {
+      const rect = document.createElementNS(ns, 'rect');
+      rect.setAttribute('class', 'zone');
+      rect.setAttribute('x', zone[1]); rect.setAttribute('y', zone[2]);
+      rect.setAttribute('width', zone[3]); rect.setAttribute('height', zone[4]);
+      rect.setAttribute('rx', 6);
+      svg.append(rect);
+      const label = document.createElementNS(ns, 'text');
+      label.setAttribute('class', 'zone-label');
+      label.setAttribute('x', zone[1] + 8); label.setAttribute('y', zone[2] + 16);
+      label.textContent = zone[0];
+      svg.append(label);
+    }
+    for (const [source, target, kind] of TOPOLOGY_EDGES) {
+      const from = NODE_LAYOUT[source];
+      const to = NODE_LAYOUT[target];
+      if (!from || !to) continue;
+      const path = document.createElementNS(ns, 'path');
+      path.setAttribute('class', `edge${kind ? ` ${kind}` : ''}`);
+      path.dataset.edge = `${source}-${target}`;
+      path.dataset.source = source;
+      path.dataset.target = target;
+      let d;
+      if (from.x === to.x) d = `M${from.x} ${from.y + (from.shape === 'agent' ? 46 : 20)} V${to.y - (to.shape === 'agent' ? 46 : 20)}`;
+      else if (from.y === to.y) d = `M${from.x + (from.shape === 'agent' ? 46 : 44)} ${from.y} H${to.x - (to.shape === 'agent' ? 46 : 44)}`;
+      else d = `M${from.x} ${from.y} C${(from.x + to.x) / 2} ${from.y} ${(from.x + to.x) / 2} ${to.y} ${to.x} ${to.y}`;
+      path.setAttribute('d', d);
+      svg.append(path);
+    }
+    for (const [id, layout] of Object.entries(NODE_LAYOUT)) {
+      const group = document.createElementNS(ns, 'g');
+      group.setAttribute('class', 'node');
+      group.dataset.node = id;
       group.setAttribute('tabindex', '0');
       group.setAttribute('role', 'button');
-      group.setAttribute('aria-label', nodeLabel(node.id));
-      const shape = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      shape.setAttribute('class', 'shape');
-      shape.setAttribute('x', String(x - 31));
-      shape.setAttribute('y', String(y - 16));
-      shape.setAttribute('width', '62');
-      shape.setAttribute('height', '32');
-      const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      title.setAttribute('x', String(x));
-      title.setAttribute('y', String(y + 3));
-      title.textContent = nodeLabel(node.id);
-      group.append(shape, title);
-      group.addEventListener('click', () => selectNode(node.id));
+      group.setAttribute('aria-label', `${nodeLabel(id)}（${layout.sub}）`);
+      for (const shape of shapeElement(layout.shape, layout.x, layout.y)) group.append(shape);
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('class', 'dot');
+      dot.setAttribute('cx', layout.x + (layout.shape === 'agent' ? 34 : 38));
+      dot.setAttribute('cy', layout.y - (layout.shape === 'agent' ? 34 : 20));
+      dot.setAttribute('r', 3.5);
+      group.append(dot);
+      const title = document.createElementNS(ns, 'text');
+      title.setAttribute('x', layout.x); title.setAttribute('y', layout.y + 3);
+      title.textContent = nodeLabel(id);
+      group.append(title);
+      const sub = document.createElementNS(ns, 'text');
+      sub.setAttribute('class', 'subtext');
+      sub.setAttribute('x', layout.x); sub.setAttribute('y', layout.y + (layout.shape === 'agent' ? 62 : 33));
+      sub.textContent = layout.sub;
+      group.append(sub);
+      group.addEventListener('click', () => selectNode(id));
       group.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); }
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(id); }
       });
       svg.append(group);
     }
-    const connections = state.snapshot.connections ?? [];
-    for (const connection of connections) {
-      const edgeId = `${connection.source}-${connection.target}`;
-      if (svg.querySelector(`[data-edge="${CSS.escape(edgeId)}"]`)) continue;
-      if (!positions.has(connection.source) || !positions.has(connection.target)) continue;
-      const [x1, y1] = positions.get(connection.source);
-      const [x2, y2] = positions.get(connection.target);
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('class', 'edge dynamic-edge');
-      path.dataset.edge = edgeId;
-      path.dataset.source = connection.source;
-      path.dataset.target = connection.target;
-      path.setAttribute('d', `M${x1} ${y1} L${x2} ${y2}`);
-      svg.insertBefore(path, svg.firstChild);
+  }
+
+  function renderTopologyState() {
+    if (!state.snapshot) return;
+    const svg = byId('topology');
+    for (const node of state.snapshot.nodes) {
+      const group = svg.querySelector(`[data-node="${CSS.escape(node.id)}"]`);
+      if (!group) continue;
+      group.classList.toggle('unknown', !node.observed);
+      group.classList.toggle('error', node.health === 'offline' || node.execution === 'error');
+      const dot = group.querySelector('.dot');
+      if (dot) {
+        dot.classList.toggle('ok', node.health === 'online');
+        dot.classList.toggle('off', node.health === 'offline');
+      }
     }
     renderTracePath();
     renderTopologyActivity();
@@ -462,18 +605,20 @@ main.memory-view .timeline{display:none}
   function renderEvent(event) {
     if (state.eventOffsets.has(event.hubOffset)) return;
     state.eventOffsets.add(event.hubOffset);
-    const list = byId('eventList');
-    if (list.firstElementChild?.classList.contains('empty')) list.replaceChildren();
-    const row = make('div', `event${event.eventType.endsWith('.failed') ? ' failed' : ''}`);
-    row.textContent = `${time(event.timestamp)}  ${eventLabel(event.eventType)}  ${nodeLabel(event.nodeId)}`;
-    list.prepend(row);
-    while (list.children.length > 35) list.lastElementChild.remove();
     state.events.unshift(event);
     if (state.events.length > 200) state.events.pop();
+    if (event.eventType === 'node.heartbeat' && !state.showHeartbeats) return;
+    const list = byId('eventList');
+    if (list.firstElementChild?.classList.contains('empty')) list.replaceChildren();
+    const key = ['trace.started', 'trace.completed', 'trace.failed', 'span.failed'].includes(event.eventType);
+    const row = make('div', `event${event.eventType.endsWith('.failed') ? ' failed' : ''}${key ? ' key' : ''}`);
+    row.textContent = `${time(event.timestamp)}  ${eventLabel(event.eventType)}  ${nodeLabel(event.nodeId)}`;
+    list.prepend(row);
+    while (list.children.length > 40) list.lastElementChild.remove();
   }
 
   function renderTopologyActivity() {
-    document.querySelectorAll('.edge').forEach((edge) => {
+    document.querySelectorAll('#topology .edge').forEach((edge) => {
       const source = edge.dataset.source;
       const target = edge.dataset.target;
       edge.classList.toggle('active', Boolean(
@@ -492,20 +637,21 @@ main.memory-view .timeline{display:none}
     }
     const active = [...state.activeNodes.keys()];
     byId('topologyNote').textContent = active.length
-      ? `执行中：${active.map(nodeLabel).join(' / ')}`
-      : '当前没有执行中的追踪';
+      ? `正在执行：${active.map(nodeLabel).join(' → ')}`
+      : '当前没有执行中的对话';
     renderTracePath();
     renderTopologyActivity();
   }
 
   function renderTracePath() {
+    const svg = byId('topology');
     const touched = new Set(state.selectedTrace?.spans.map((span) => span.nodeId) ?? []);
-    document.querySelectorAll('.node').forEach((node) => {
+    svg.querySelectorAll('.node').forEach((node) => {
       const id = node.dataset.node;
       node.classList.toggle('active', Boolean(id && state.activeNodes.get(id)));
       node.classList.toggle('in-trace', Boolean(id && touched.has(id)));
     });
-    document.querySelectorAll('.edge').forEach((edge) => {
+    svg.querySelectorAll('.edge').forEach((edge) => {
       edge.classList.toggle('in-trace', Boolean(touched.has(edge.dataset.source) || touched.has(edge.dataset.target)));
     });
   }
@@ -518,69 +664,192 @@ main.memory-view .timeline{display:none}
     byId('guanjiaStatus').textContent = status;
   }
 
-  function renderInspector(title, values, rawSections = []) {
+  /* ---------- 详情：字段化卡片，原始 JSON 折叠 ---------- */
+
+  function renderInspectorCards(title, cards) {
     byId('inspectorTitle').textContent = title;
-    const meta = byId('inspectorMeta');
-    meta.replaceChildren();
-    for (const [key, value] of values) {
-      meta.append(make('span', '', key), make('span', 'mono', value ?? '—'));
+    byId('inspectorBody').replaceChildren(...cards);
+  }
+
+  function cardSection(title, className = '') {
+    const section = make('section', `card${className ? ` ${className}` : ''}`);
+    section.append(make('h3', 'card-title', title));
+    return section;
+  }
+
+  function fieldCard(title, fields, rawEntries = [], className = '') {
+    const section = cardSection(title, className);
+    const kv = make('div', 'kv');
+    for (const [key, value] of fields) kv.append(make('span', '', key), make('span', 'mono', value ?? '—'));
+    section.append(kv);
+    for (const [label, value] of rawEntries) section.append(rawBlock(label, value));
+    return section;
+  }
+
+  function rawBlock(label, value) {
+    const details = make('details', 'raw');
+    details.append(make('summary', '', `${label}（原始 JSON）`));
+    details.append(make('pre', '', pretty(value)));
+    return details;
+  }
+
+  function emptyHintCard(text) {
+    const section = cardSection('还没有数据');
+    section.append(make('div', 'empty-hint', text));
+    return section;
+  }
+
+  function spanFields(span) {
+    const rows = [];
+    const used = new Set();
+    for (const source of [span.input, span.output]) {
+      for (const [key, value] of Object.entries(source ?? {})) {
+        if (!used.has(key)) { used.add(key); rows.push([FIELD_LABELS[key] ?? key, fmtField(key, value)]); }
+      }
     }
-    const raw = byId('inspectorRaw');
-    raw.replaceChildren();
-    for (const [label, value] of rawSections) {
-      const head = make('div', 'raw-head', label);
-      const copy = make('button', '', '复制');
-      copy.type = 'button';
-      const text = pretty(value);
-      copy.addEventListener('click', () => navigator.clipboard.writeText(text).catch(showError));
-      head.append(copy);
-      raw.append(head, make('pre', '', text));
+    return rows;
+  }
+
+  /* ---------- 对话流：这一轮说了什么 → 回了什么 ---------- */
+
+  function lastSpan(trace, nodeId) {
+    const spans = (trace?.spans ?? []).filter((span) => span.nodeId === nodeId);
+    return spans.length ? spans[spans.length - 1] : null;
+  }
+
+  function renderDialogueFlow(trace) {
+    const flow = byId('dialogueFlow');
+    flow.replaceChildren();
+    if (!trace) {
+      flow.append(make('span', 'empty', '选择左侧一条对话记录，这里会展示：说了什么 → 识别与说话人 → 管家的回复 → 播报情况。'));
+      return;
     }
+    const asr = lastSpan(trace, 'asr');
+    const speaker = lastSpan(trace, 'speaker-recognition');
+    const main = lastSpan(trace, 'main-agent');
+    const tts = lastSpan(trace, 'tts');
+    const playback = lastSpan(trace, 'audio-playback');
+    const running = trace.status === 'running';
+    const reply = main?.output?.reply ?? trace.output?.reply ?? '';
+    const speakerText = speaker?.output?.speaker || '未识别';
+    const cards = [
+      {
+        title: '你说的',
+        text: trace.input?.userText ?? '（无文本）',
+        sub: `${time(trace.startedAt)}${trace.input?.model ? ` · ${trace.input.model}` : ''}`,
+        span: null,
+      },
+      {
+        title: '识别与说话人',
+        text: [
+          asr ? `识别结果：${asr.output?.text ?? '（无文本）'}` : (running ? '识别中…' : '这一轮没有语音识别记录'),
+          asr?.output?.backend ? `引擎：${asr.output.backend}` : '',
+          asr?.output?.confidence != null ? `置信度 ${Math.round(asr.output.confidence * 100)}%` : '',
+          `说话人：${speakerText}`,
+        ].filter(Boolean).join('\n'),
+        span: asr ?? speaker ?? null,
+      },
+      {
+        title: '管家的回复',
+        text: reply || (running ? '思考中…' : (main?.error ? `出错了：${truncate(main.error, 60)}` : '这一轮没有生成回复')),
+        sub: [main ? `状态：${statusLabel(main.status)}` : (running ? '' : '没有主智能体步骤记录'),
+          main ? `耗时：${duration(main.durationMs)}` : ''].filter(Boolean).join(' · '),
+        span: main,
+        pulse: Boolean(running && !reply && !main?.error),
+      },
+      {
+        title: '语音播报',
+        text: playback
+          ? (playback.output?.interrupted ? '被打断，没播完' : '已播报完成')
+          : (tts ? (tts.output?.text ? `播报内容：${truncate(tts.output.text, 40)}` : '已合成语音') : (running ? '等待播报…' : '这一轮没有语音播报记录')),
+        sub: [
+          tts?.output?.durationMs != null ? `合成耗时 ${duration(tts.output.durationMs)}` : '',
+          playback ? `播放耗时 ${duration(playback.durationMs)}` : '',
+        ].filter(Boolean).join(' · '),
+        span: playback ?? tts ?? null,
+      },
+    ];
+    cards.forEach((item, index) => {
+      if (index > 0) flow.append(make('span', 'flow-arrow', '→'));
+      const card = make('div', `flow-card${item.span ? '' : ' empty'}`);
+      card.append(make('div', 'flow-title', item.title));
+      card.append(make('div', 'flow-main', item.text));
+      card.append(make('div', 'flow-sub', item.sub));
+      if (item.span) {
+        card.addEventListener('click', () => selectSpan(item.span));
+        card.classList.toggle('selected', state.selectedSpan === item.span.spanId);
+      }
+      flow.append(card);
+    });
   }
 
   async function selectNode(nodeId) {
     state.selectedNode = nodeId;
     state.selectedSpan = null;
-    document.querySelectorAll('.node').forEach((node) => node.classList.toggle('selected', node.dataset.node === nodeId));
-    const node = state.snapshot?.nodes.find((item) => item.id === nodeId);
-    let detail = node;
+    byId('topology').querySelectorAll('.node').forEach((node) => node.classList.toggle('selected', node.dataset.node === nodeId));
+    let detail = null;
     try { detail = await request(`/api/observability/nodes/${encodeURIComponent(nodeId)}`); }
-    catch (error) { showError(error); }
+    catch (error) { showError(error); return; }
     if (state.selectedNode !== nodeId) return;
-    const spans = state.selectedTrace?.spans.filter((span) => span.nodeId === nodeId) ?? [];
-    renderInspector(nodeLabel(nodeId), [
+    const cards = [fieldCard(nodeLabel(nodeId), [
       ['节点标识', nodeId],
-      ['节点类型', detail ? nodeTypeLabel(detail.type) : undefined],
-      ['健康状态', detail ? statusLabel(detail.health) : undefined],
-      ['执行状态', detail ? statusLabel(detail.execution) : undefined],
-      ['已观测', detail?.observed ? '是' : '暂无步骤记录'],
+      ['节点类型', detail ? nodeTypeLabel(detail.type) : '—'],
+      ['健康状态', detail ? statusLabel(detail.health) : '—'],
+      ['执行状态', detail ? statusLabel(detail.execution) : '—'],
       ['运行实例', String(detail?.instances?.length ?? 0)],
-      ['追踪步骤数', String(spans.length)],
-    ], [
-      ['实例列表', detail?.instances],
-      ['最近执行步骤', detail?.recentSpans],
-      ...spans.map((span) => [spanLabel(span.name), { status: statusLabel(span.status), durationMs: span.durationMs, input: span.input, output: span.output }]),
-    ]);
+    ])];
+    const traceSpans = state.selectedTrace?.spans.filter((span) => span.nodeId === nodeId) ?? [];
+    const recent = detail?.recentSpans ?? [];
+    if (recent.length === 0 && traceSpans.length === 0) {
+      cards.push(emptyHintCard(
+        `${nodeLabel(nodeId)} 还没有任何真实执行记录。对管家说一句话（先喊唤醒词，再提问），等这轮对话结束后这里就会出现实际数据。`,
+      ));
+    } else {
+      const section = cardSection(`执行步骤（最近 ${recent.length} 条）`);
+      for (const span of recent.slice(0, 12)) {
+        const row = make('button', 'span-row');
+        row.type = 'button';
+        row.append(make('span', 't', spanLabel(span.name)));
+        row.append(make('span', 'm', `${statusLabel(span.status)} · ${duration(span.durationMs)} · ${time(span.startedAt)}`));
+        row.addEventListener('click', () => {
+          const inTrace = state.selectedTrace?.spans.find((item) => item.spanId === span.spanId);
+          selectSpan(inTrace ?? span);
+        });
+        section.append(row);
+      }
+      cards.push(section);
+    }
+    renderInspectorCards(`节点 / ${nodeLabel(nodeId)}`, cards);
   }
 
   function selectSpan(span) {
     state.selectedSpan = span.spanId;
     state.selectedNode = span.nodeId;
-    document.querySelectorAll('.node').forEach((node) => node.classList.toggle('selected', node.dataset.node === span.nodeId));
-    const trace = state.selectedTrace;
+    byId('topology').querySelectorAll('.node').forEach((node) => node.classList.toggle('selected', node.dataset.node === span.nodeId));
     renderTracePath();
-    renderInspector(spanLabel(span.name), [
-      ['追踪 ID', span.traceId],
-      ['步骤 ID', span.spanId],
-      ['父步骤 ID', span.parentSpanId],
+    renderDialogueFlow(state.selectedTrace);
+    const cards = [fieldCard(spanLabel(span.name), [
       ['执行节点', nodeLabel(span.nodeId)],
       ['执行状态', statusLabel(span.status)],
       ['开始时间', time(span.startedAt)],
       ['结束时间', time(span.endedAt)],
       ['耗时', duration(span.durationMs)],
-    ], [['完整输入', span.input], ['完整输出', span.output], ['错误信息', span.error]]);
-    renderArtifacts(span);
-    if (trace) byId('traceId').textContent = trace.traceId;
+    ])];
+    const fields = spanFields(span);
+    if (fields.length) cards.push(fieldCard('这一步做了什么', fields));
+    if (span.error) {
+      const errorCard = cardSection('出错了', 'error-card');
+      errorCard.append(make('pre', 'error', span.error));
+      cards.push(errorCard);
+    }
+    cards.push(fieldCard('步骤标识', [
+      ['追踪 ID', span.traceId],
+      ['步骤 ID', span.spanId],
+      ['父步骤 ID', span.parentSpanId ?? '—'],
+    ]));
+    renderArtifacts(span, cards);
+    renderInspectorCards(`步骤 / ${spanLabel(span.name)}`, cards);
+    if (state.selectedTrace) byId('traceId').textContent = state.selectedTrace.traceId;
   }
 
   async function selectTrace(traceId) {
@@ -595,19 +864,35 @@ main.memory-view .timeline{display:none}
       }
       renderTracePath();
       renderTraceList();
+      renderDialogueFlow(state.selectedTrace);
       renderTimeline();
       renderReplayControls();
       const trace = state.selectedTrace;
       byId('traceId').textContent = trace.traceId;
-      renderInspector('追踪 / ' + statusLabel(trace.status), [
+      const cards = [];
+      const reply = trace.output?.reply;
+      cards.push(fieldCard('这一轮对话', [
+        ['用户说了', truncate(trace.input?.userText ?? '（无文本）', 120)],
+        ['管家回复', reply ? truncate(reply, 160) : (trace.status === 'running' ? '思考中…' : '—')],
+        ['说话人', (lastSpan(trace, 'speaker-recognition')?.output?.speaker) ?? '—'],
+        ['模型', trace.input?.model ?? '—'],
+      ]));
+      cards.push(fieldCard('追踪信息', [
         ['追踪 ID', trace.traceId],
         ['会话', trace.sessionId],
+        ['状态', statusLabel(trace.status)],
         ['开始时间', time(trace.startedAt)],
         ['结束时间', time(trace.endedAt)],
         ['总耗时', duration(trace.durationMs)],
         ['步骤数', String(trace.spans.length)],
         ['保留状态', trace.pinned ? '已固定' : '自动清理'],
-      ], [['完整输入', trace.input], ['完整输出', trace.output], ['错误信息', trace.error]]);
+      ], [['完整输入', trace.input], ['完整输出', trace.output], ['错误信息', trace.error]]));
+      if (trace.error) {
+        const errorCard = cardSection('这一轮出错了', 'error-card');
+        errorCard.append(make('pre', 'error', trace.error));
+        cards.push(errorCard);
+      }
+      renderInspectorCards(`对话 / ${statusLabel(trace.status)}`, cards);
     } catch (error) { showError(error); }
   }
 
@@ -663,12 +948,6 @@ main.memory-view .timeline{display:none}
       byId('topologyNote').textContent = `回放 ${state.replay.index + 1}/${state.replay.events.length} · ${time(event.timestamp)} · ${eventLabel(event.eventType)}`;
       const span = state.selectedTrace?.spans.find((item) => item.spanId === event.spanId);
       if (span) selectSpan(span);
-      else renderInspector('回放事件 / ' + eventLabel(event.eventType), [
-        ['事件类型', eventLabel(event.eventType)],
-        ['发生时间', time(event.timestamp)],
-        ['节点', nodeLabel(event.nodeId)],
-        ['事件序号', String(event.hubOffset)],
-      ], [['完整事件', event]]);
     }
     renderTracePath();
     renderTopologyActivity();
@@ -699,12 +978,10 @@ main.memory-view .timeline{display:none}
     renderReplayFrame();
   }
 
-  function renderArtifacts(span) {
+  function renderArtifacts(span, cards) {
     const refs = span.artifacts ?? [];
     if (!refs.length) return;
-    const raw = byId('inspectorRaw');
-    const section = make('section', 'artifact-section');
-    section.append(make('div', 'raw-head', '原始数据 / Artifact'));
+    const section = cardSection(`原始数据 / ${refs.length} 份`);
     for (const artifact of refs) {
       const header = make('div', 'raw-head', `${artifact.type} · ${artifact.byteLength} 字节 · ${artifact.completeness === 'complete' ? '完整' : '部分'}`);
       const load = make('button', '', '加载');
@@ -759,16 +1036,16 @@ main.memory-view .timeline{display:none}
       tools.append(search, result);
       section.append(header, tools, output);
     }
-    raw.append(section);
+    cards.push(section);
   }
 
   function renderTimeline() {
     const target = byId('bars');
     target.replaceChildren();
     const trace = state.selectedTrace;
-    byId('timelineTrace').textContent = trace ? `${trace.traceId} / ${statusLabel(trace.status)}` : '';
+    byId('timelineTrace').textContent = trace ? `${statusLabel(trace.status)} · ${duration(trace.durationMs)}` : '';
     if (!trace || trace.spans.length === 0) {
-      target.append(make('span', 'empty', '这条追踪没有步骤记录'));
+      target.append(make('span', 'empty', '这条对话没有步骤记录。等一轮真实对话结束后，这里会显示每个环节的耗时。'));
       return;
     }
     const start = Date.parse(trace.startedAt);
@@ -796,15 +1073,19 @@ main.memory-view .timeline{display:none}
     renderGuanjiaStatus(state.snapshot.nodes ?? []);
     if (state.tab !== 'traces') state.traces = state.snapshot.recentTraces;
     byId('watermark').textContent = `事件序号 ${state.snapshot.watermark}`;
-    for (const event of state.snapshot.recentEvents) renderEvent(event);
+    for (const event of [...state.snapshot.recentEvents].reverse()) renderEvent(event);
     if (state.tab === 'traces') await loadHistory();
-    else renderTraceList();
+    renderTraceList();
     renderNodes();
-    renderDynamicTopology();
-    if (state.selectedTrace && state.traces.some((trace) => trace.traceId === state.selectedTrace.traceId)) {
-      await selectTrace(state.selectedTrace.traceId);
-    } else if (state.traces.length > 0) {
-      await selectTrace(state.traces[0].traceId);
+    renderTopologyState();
+    if (state.tab === 'live') {
+      if (state.selectedTrace && state.traces.some((trace) => trace.traceId === state.selectedTrace.traceId)) {
+        await selectTrace(state.selectedTrace.traceId);
+      } else if (state.traces.length > 0) {
+        await selectTrace(state.traces[0].traceId);
+      } else {
+        renderDialogueFlow(null);
+      }
     }
   }
 
@@ -833,12 +1114,11 @@ main.memory-view .timeline{display:none}
       }
       if (event.eventType === 'trace.completed' || event.eventType === 'trace.failed') {
         loadSnapshot().catch(showError);
-      } else if (state.selectedTrace?.traceId === event.traceId) {
+      } else if (state.selectedTrace?.traceId === event.traceId && !event.eventType.startsWith('node.')) {
         selectTrace(event.traceId);
       } else if (event.eventType === 'trace.started') {
         loadSnapshot().catch(showError);
       }
-      if (event.eventType.startsWith('node.')) loadSnapshot().catch(showError);
     };
     for (const type of [
       'trace.started', 'trace.completed', 'trace.failed',
@@ -870,13 +1150,17 @@ main.memory-view .timeline{display:none}
     } catch (error) { showError(error); }
   }
 
+  function memoryBrief(memory) {
+    return truncate(String(memory.content ?? memory.briefContent ?? ''), 60);
+  }
+
   function renderMemories() {
     const list = byId('memoryList');
     list.replaceChildren();
     for (const memory of state.memory.items) {
       const button = make('button', `entry${memory.id === state.memory.selectedId ? ' selected' : ''}`);
       button.type = 'button';
-      button.append(make('strong', '', memory.briefContent));
+      button.append(make('strong', '', memoryBrief(memory)));
       button.append(make('small', '', `${memory.memoryType} · ${memorySourceLabel(memory.source)} · 重要度 ${memory.importance}`));
       button.addEventListener('click', () => selectMemory(memory.id));
       list.append(button);
@@ -894,31 +1178,38 @@ main.memory-view .timeline{display:none}
       state.memory.selectedId = memoryId;
       renderMemories();
       const memory = await request(`/api/observability/memories/${encodeURIComponent(memoryId)}`);
-      byId('memoryPreviewTitle').textContent = memory.briefContent;
+      byId('memoryPreviewTitle').textContent = truncate(String(memory.content ?? ''), 80);
       byId('memoryPreview').textContent = memory.content;
-      renderInspector('记忆 / ' + memory.memoryType, [
-        ['记忆 ID', memory.id],
-        ['类型', memory.memoryType],
-        ['来源', memorySourceLabel(memory.source)],
-        ['保留策略', memoryRetentionLabel(memory.retention)],
-        ['置信度', String(memory.confidence)],
-        ['重要度', String(memory.importance)],
-        ['创建时间', time(memory.createdAt)],
-        ['更新时间', time(memory.updatedAt)],
-        ['最近使用', time(memory.lastUsedAt)],
-        ['使用次数', String(memory.useCount)],
-      ], [['完整内容', memory.content], ['涉及人员', memory.people],
-        ['证据来源', memory.evidence], ['关联媒体', memory.media]]);
+      renderInspectorCards(`记忆 / ${memory.memoryType}`, [
+        fieldCard('记忆内容', [
+          ['内容摘要', truncate(String(memory.content ?? ''), 120)],
+          ['类型', memory.memoryType],
+          ['来源', memorySourceLabel(memory.source)],
+          ['保留策略', memoryRetentionLabel(memory.retention)],
+          ['置信度', String(memory.confidence)],
+          ['重要度', String(memory.importance)],
+        ], [['完整内容', memory.content], ['涉及人员', memory.people],
+          ['证据来源', memory.evidence], ['关联媒体', memory.media]]),
+        fieldCard('使用情况', [
+          ['创建时间', time(memory.createdAt)],
+          ['更新时间', time(memory.updatedAt)],
+          ['最近使用', time(memory.lastUsedAt)],
+          ['使用次数', String(memory.useCount)],
+        ]),
+      ]);
     } catch (error) { showError(error); }
   }
 
   document.querySelectorAll('nav button').forEach((button) => button.addEventListener('click', () => setTab(button.dataset.tab)));
-  document.querySelectorAll('.node').forEach((node) => {
-    const activate = () => selectNode(node.dataset.node);
-    node.addEventListener('click', activate);
-    node.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
-    });
+  byId('showHeartbeats').addEventListener('change', (event) => {
+    state.showHeartbeats = event.target.checked;
+    const list = byId('eventList');
+    list.replaceChildren();
+    if (!state.showHeartbeats) list.append(make('span', 'empty', '心跳已隐藏，只显示对话相关的关键事件。'));
+    for (const event of [...state.events].reverse()) {
+      state.eventOffsets.delete(event.hubOffset);
+      renderEvent(event);
+    }
   });
   byId('memorySearch').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -957,19 +1248,20 @@ main.memory-view .timeline{display:none}
       await send(`/api/observability/traces/${encodeURIComponent(trace.traceId)}/pin`, 'POST', {
         pinned: !trace.pinned,
       });
-      byId('cleanupRetention').addEventListener('click', async () => {
-        if (!window.confirm('清理超过 30 天且未固定的追踪、事件与原始数据？')) return;
-        try {
-          const result = await send('/api/observability/retention/cleanup', 'POST');
-          byId('retentionSummary').textContent =
-            `已清理追踪 ${result.stats.traces} 条、事件 ${result.stats.events} 条、原始数据 ${result.stats.artifacts} 份`;
-          await loadRetention();
-        } catch (error) { showError(error); }
-      });
       await selectTrace(trace.traceId);
     } catch (error) { showError(error); }
   });
+  byId('cleanupRetention').addEventListener('click', async () => {
+    if (!window.confirm('清理超过 30 天且未固定的追踪、事件与原始数据？')) return;
+    try {
+      const result = await send('/api/observability/retention/cleanup', 'POST');
+      byId('retentionSummary').textContent =
+        `已清理追踪 ${result.stats.traces} 条、事件 ${result.stats.events} 条、原始数据 ${result.stats.artifacts} 份`;
+      await loadRetention();
+    } catch (error) { showError(error); }
+  });
 
+  buildTopology();
   loadSnapshot().then(() => connectEvents(state.snapshot.watermark)).catch(showError);
 })();
 </script>

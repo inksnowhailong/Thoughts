@@ -971,7 +971,7 @@ class VoiceDaemon:
             if monitor is not None:
                 monitor.note_activity()
             self.hub.update(uid, verdict="accept", reason=d.reason, sent=d.text)
-            self._accept_utterance(d.text, uid, speaker)
+            self._accept_utterance(d.text, uid, speaker, observation)
         elif d.verdict == "wake_only":
             self.hub.update(uid, verdict="wake_only", reason=d.reason)
             self._wake_ack(uid)
