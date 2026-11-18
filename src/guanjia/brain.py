@@ -1,15 +1,11 @@
-"""大脑客户端：把识别出的文字交给大脑服务（OpenAI 兼容的 /v1/chat/completions），流式收回回复文本。
+"""大脑客户端：通过 OpenAI 兼容接口流式调用当前 agent-runtime。
 
-- 大脑地址：默认 agent-runtime http://127.0.0.1:18800/v1/chat/completions（Phase 5 全量切换）；
-  GUANJIA_BRAIN_URL 环境变量可覆盖（回滚指回 http://127.0.0.1:18789/v1/chat/completions 即回 OpenClaw 网关）；
-- token：指 18800 时读 agent-runtime/config/runtime.json（与 agent-runtime 同 token），
-  指网关时从 ~/.openclaw/openclaw.json 读（gateway.auth.token）；GUANJIA_GATEWAY_TOKEN 均可覆盖；
-- 语音（P2 起）：带 x-openclaw-session-key: agent:main:main 进主线会话，不带 user、不带 system、默认不换模型
-  （走网关默认 DeepSeek-V4-Flash）；每句话前加「[语音 时间]」标记，AGENTS.md 据此只在语音轮简短作答。
-  标记放在用户消息里而不是 system：system 每轮变化会打掉网关的提示缓存，首字更慢；
-- stream(text) 是同步生成器，逐段 yield 回复文本。语音侧不得提前关闭它：网关把客户端断开当作取消本轮
-  （连同这一轮里等着的审批），所以打断只停播放，流要读到 [DONE]；读超时同样会断开，故设得很长；
-- user 会话方式（backoffice 用）保留兼容。
+默认地址是本机 18800；GUANJIA_BRAIN_URL 可覆盖。默认令牌来自
+agent-runtime/config/runtime.json；GUANJIA_GATEWAY_TOKEN 可显式覆盖。
+`x-openclaw-*` 请求头名是运行时保留的兼容协议字段，不表示 OpenClaw 网关正在运行。
+
+语音打断只停止播放，必须继续读取到 [DONE]，避免把客户端断开当成本轮取消；
+user 会话参数也为旧调用方保留兼容。
 """
 
 from __future__ import annotations
@@ -24,11 +20,11 @@ import httpx
 
 from guanjia.prompts import render_voice_tag
 
-# 大脑地址（Phase 5 全量切换）：默认 agent-runtime；回滚 = GUANJIA_BRAIN_URL 指回 18789 网关
+# 默认使用当前 agent-runtime。
 DEFAULT_URL = "http://127.0.0.1:18800/v1/chat/completions"
 RUNTIME_URL = os.environ.get("GUANJIA_BRAIN_URL", DEFAULT_URL)
-MAIN_SESSION_KEY = "agent:main:main"  # 主线会话：主人的语音 + 微信共用
-# 语音入口指定的网关模型（x-openclaw-model 头）；空串 = 不加头，走网关默认模型（DeepSeek-V4-Flash）
+MAIN_SESSION_KEY = "agent:main:main"  # 语音主线的稳定会话键
+# 运行时接受的兼容模型覆盖头；空串时使用服务端默认模型。
 VOICE_MODEL = os.environ.get("GUANJIA_VOICE_MODEL", "")
 # 流式读超时：要远长于 L3 审批（120 秒）和慢工具。读超时会断开连接 = 取消本轮，宁可多等
 STREAM_READ_TIMEOUT_SEC = 900.0
@@ -49,7 +45,7 @@ def load_gateway_token() -> str:
     env = os.environ.get("GUANJIA_GATEWAY_TOKEN")
     if env:
         return env
-    # 指向 agent-runtime（Phase 5 默认）：token = runtime.json（与 TS 服务同值）
+    # 默认本机 agent-runtime 使用 runtime.json 中的共享 token。
     if ":18800" in RUNTIME_URL:
         runtime_json = Path(__file__).resolve().parents[2] / "agent-runtime" / "config" / "runtime.json"
         try:
@@ -65,20 +61,20 @@ def load_gateway_token() -> str:
 
 
 class Brain:
-    """大脑服务（OpenClaw 网关 / agent-runtime）的最小客户端。"""
+    """当前大脑运行时的最小客户端。"""
 
     def __init__(self, url: str = RUNTIME_URL, token: str | None = None, timeout: float = STREAM_READ_TIMEOUT_SEC,
                  model: str | None = None, user: str | None = None, session_key: str | None = None,
                  transport: httpx.BaseTransport | None = None) -> None:
         self.url = url
-        self.model = VOICE_MODEL if model is None else model  # x-openclaw-model 头；空串不加
-        self.user = user  # 旧方式：网关按 user 派生会话（只在没有 session_key 时发送）
+        self.model = VOICE_MODEL if model is None else model  # 兼容模型覆盖头；空串不加
+        self.user = user  # 旧方式：按 user 派生会话（只在没有 session_key 时发送）
         self.session_key = session_key  # 新方式：显式会话键，例如 agent:main:main
         self.token = token or load_gateway_token()
-        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False,  # 本机网关，不走系统代理
+        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False,  # 本机服务，不走系统代理
                                     transport=transport)
         self._resp: httpx.Response | None = None  # 进行中的流式响应（仅供旧代码 abort 用，语音侧不调用）
-        self.last_run_id: str | None = None  # 最近一轮的网关 runId（chatcmpl_…），调试面板据此查网关内部耗时
+        self.last_run_id: str | None = None  # 最近一轮的 runId，供调试事件关联耗时
         self.last_meta: dict = {}  # 最近一轮流里带的元信息：chunks / model / finish_reason / usage（有才有），统一事件日志用
 
     def _headers(self, model_override: str | None = None) -> dict[str, str]:
@@ -88,7 +84,7 @@ class Brain:
             h["x-openclaw-model"] = effective
         if self.session_key:
             h["x-openclaw-session-key"] = self.session_key
-            # 多 agent 架构：网关要求显式指定目标 agent，从会话键 agent:<id>:… 取第二段
+            # 多 agent 路由：从会话键 agent:<id>:… 取目标 agent。
             parts = self.session_key.split(":")
             if len(parts) >= 2 and parts[0] == "agent":
                 h["x-openclaw-agent-id"] = parts[1]
@@ -110,9 +106,9 @@ class Brain:
         return r.json()["choices"][0]["message"]["content"]
 
     def stream(self, text: str, system: str | None = None, *, model: str | None = None) -> Iterator[str]:
-        """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（网关已经结束这一轮）。
+        """流式：逐段 yield 回复文本；流里出现 error 对象时抛 RuntimeError（服务端已结束这一轮）。
 
-        model 参数：单次请求的模型覆盖（x-openclaw-model 头）——
+        model 参数：单次请求的兼容模型覆盖头——
         游戏模式中传 'glm-5.3'（完整版，比 flash 知识深度高一个量级）用于攻略分析。
         """
         self.last_run_id = None

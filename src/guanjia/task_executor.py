@@ -1,10 +1,11 @@
 """O5 独立任务 worker：显式领取、独立会话、协作式取消；不杀进程。
 
 Worker 后端（Wave1-C 反转，2026-11-05）：
-- GUANJIA_WORKER_BACKEND=openclaw（缺省）：Brain(session_key).ask() 走 OpenClaw 网关，行为不变；
-- GUANJIA_WORKER_BACKEND=ts：经 core/agent_runtime_adapter.AgentRuntimeAdapter 调
+- GUANJIA_WORKER_BACKEND=ts（缺省）：经 core/agent_runtime_adapter.AgentRuntimeAdapter 调
   TS agent-runtime /v1/worker/*（LangGraph Worker，审批 interrupt/恢复在 TS 侧完成），
-  拿到 outcome 后仍走本模块的 L1 验收（task_verify）与 complete/fail 落库。
+  拿到 outcome 后仍走本模块的 L1 验收（task_verify）与 complete/fail 落库；
+- GUANJIA_WORKER_BACKEND=openclaw：Brain(session_key).ask() 走 OpenClaw 网关（回滚逃生口，
+  网关 2026-11-09 已退役，仅显式设置环境变量时可用）。
 """
 
 from __future__ import annotations
@@ -55,8 +56,9 @@ class TaskWorkerExecutor:
         self._cancel: dict[str, threading.Event] = {}
         self._verify_tried: set[str] = set()  # L1 验收已重试过的任务（跨重试持久，防无限循环）
         self._lock = threading.RLock()
-        # Worker 后端开关（Wave1-C）：缺省 openclaw 行为不变；ts 用反转后的适配器
-        self._backend = os.environ.get("GUANJIA_WORKER_BACKEND", "openclaw").strip().lower()
+        # Worker 后端开关（Wave1-C）：OpenClaw 网关退役后缺省 ts（反转后的适配器）；
+        # GUANJIA_WORKER_BACKEND=openclaw 仅作回滚逃生口
+        self._backend = os.environ.get("GUANJIA_WORKER_BACKEND", "ts").strip().lower()
         if self._backend == "ts":
             if worker_adapter is not None:
                 self._adapter = worker_adapter

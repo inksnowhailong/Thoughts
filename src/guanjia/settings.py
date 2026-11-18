@@ -39,6 +39,7 @@ class Settings:
     follow_up_sec: float = 20.0  # 它回完最后一句后这么多秒内接着说，不用再喊
     spk_threshold: float = 0.45  # 声纹认人门槛：最高分的人 ≥ 它才标成这个人，否则「未知」；不拦截
     barge_rms_min: float = float(os.environ.get("GUANJIA_BARGE_RMS_MIN", "0.004"))  # 打断线下限（原始输入 RMS）
+    barge_trigger_ms: int = int(os.environ.get("GUANJIA_BARGE_MS", "450"))  # 打断累计时长：连续过线这么久才掐话（2026-11-06 由 180 调到 450：一个音节不该掐掉整句）
     min_chars: int = 2  # 去掉标点后少于这么多字的片段直接忽略（免喊窗口里"好/行/对/要/是/不/停"例外）
     earcon: bool = True  # 说完话立即放提示音
     ack_text: str = "在呢"  # 只喊唤醒词时的应答（TTS 不在时改放提示音）
@@ -50,10 +51,11 @@ _LIMITS = {
     "follow_up_sec": (0.0, 120.0),
     "spk_threshold": (0.0, 0.9),
     "barge_rms_min": (0.001, 0.05),
+    "barge_trigger_ms": (80, 1500),
     "min_chars": (1, 6),
     "speech_max_sentences": (0, 10),
 }
-_INT_KEYS = ("min_chars", "speech_max_sentences")
+_INT_KEYS = ("min_chars", "speech_max_sentences", "barge_trigger_ms")
 
 
 def from_dict(data: dict, base: Settings = Settings()) -> Settings:

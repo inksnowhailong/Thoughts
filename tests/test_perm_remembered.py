@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from guanjia.remembered_overrides import format_levels, list_remembered, load_levels, revoke, sync_defaults  # noqa: E402
 
-DEFAULTS = ROOT / "openclaw" / "plugins" / "guanjia-guard" / "defaults" / "levels.json"
+DEFAULTS = ROOT / "config" / "levels.json"
 failed = 0
 
 
@@ -29,9 +29,11 @@ def check(cond: bool, name: str) -> None:
 tmp = Path(tempfile.mkdtemp(prefix="gj-rem-"))
 live = tmp / "levels.json"
 try:
-    # 1. 排版与插件一致：仓库默认表读进来再写回，逐字节相同
+    # 1. 格式化保留数据并且结果稳定
     text = DEFAULTS.read_text(encoding="utf-8")
-    check(format_levels(json.loads(text)) == text, "format_levels matches plugin layout byte for byte")
+    formatted = format_levels(json.loads(text))
+    check(json.loads(formatted) == json.loads(text), "format_levels preserves defaults")
+    check(format_levels(json.loads(formatted)) == formatted, "format_levels is stable")
 
     # 2. 一张有三种 overrides 的线上表
     levels = json.loads(text)
@@ -80,7 +82,7 @@ try:
     check(synced["defaultLevel"] == "L1" and synced["rules"] == levels["rules"], "sync_defaults takes rules/tools from repo defaults")
     check([o["id"] for o in synced["overrides"]] == ["rem-aaaaaaaaaaaa", "manual-1"], "sync_defaults keeps overrides in order")
     fresh = tmp / "fresh.json"
-    check(sync_defaults(DEFAULTS, fresh) == 0 and fresh.read_text(encoding="utf-8") == text, "no live file -> exact copy of defaults")
+    check(sync_defaults(DEFAULTS, fresh) == 0 and load_levels(fresh) == json.loads(text), "no live file -> defaults copied")
     live.write_text("not json", encoding="utf-8")
     try:
         sync_defaults(DEFAULTS, live)

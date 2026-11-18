@@ -470,11 +470,29 @@ class VisionLoop:
             return None
         return [round(v, 4) for v in box]
 
+    def _manual_holds(self) -> tuple[bool, bool]:
+        """对话工具让路窗口（2026-11-06 事故修复）：读 position.json 的 manual_until/gaze_hold_until。
+
+        camera_look / camera_ptz 在子进程里转云台，本循环完全可能同时想转——
+        曾经把管家刚转到位的镜头一步步拖回护位（"自己不停往远离主人方向转"）。
+        返回 (steer_hold, gaze_hold)：steer=全部让路；gaze=只停护位，保留跟转。
+        """
+        try:
+            state = json.loads(self.position_path.read_text(encoding='utf-8'))
+        except Exception:
+            return False, False
+        now = time.time()
+        return (now < float(state.get('manual_until') or 0.0),
+                now < float(state.get('gaze_hold_until') or 0.0))
+
     def _steer(self, detected: bool, box: tuple[float, float, float, float] | None,
                night: bool, now_local: datetime) -> None:
         """本地转向控制：待命朝向保持 + 边缘跟转；转动期间停稳再拍（自转排除）。"""
         if self._ptz is None or time.monotonic() < self._settle_until:
             return
+        steer_hold, gaze_hold = self._manual_holds()
+        if steer_hold:
+            return  # 对话工具（看向我/转镜头）刚动过云台：让路，绝不抢转
         if self.mode == 'standby' and self._standby_target_pan is not None:
             # 待命超时回巡逻（人可能从别的门走了）
             timeout = self._proactive.num('bedroom_standby_timeout_min', 120) * 60
@@ -498,7 +516,8 @@ class VisionLoop:
                 current_tilt = float(position.get('tilt') or 0.0)
                 off_target = (abs(current_pan - home_pan) > 0.08
                               or abs(current_tilt - home_tilt) > 0.08)
-                if off_target and time.monotonic() > self._track_cooldown_until:
+                if (off_target and time.monotonic() > self._track_cooldown_until
+                        and not gaze_hold):
                     self._move_toward(home_pan, current_pan, home_tilt, current_tilt)
             return  # 夜间不转；无人/无框不跟
         center_x = (box[0] + box[2]) / 2.0
@@ -584,6 +603,8 @@ class VisionLoop:
         """
         if self._ptz is None or self._person_present:
             return
+        if self._manual_holds()[0]:
+            return  # 对话转向让路窗口内不重锚：重锚跳变会立刻再触发一轮护位长征
         threshold = max(1, int(self._proactive.num('reanchor_move_threshold', 15)))
         due = (self._moves_since_anchor >= threshold
                or time.monotonic() >= self._reanchor_at)

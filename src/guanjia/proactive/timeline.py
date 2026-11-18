@@ -20,12 +20,8 @@ from pathlib import Path
 
 import httpx
 
-from guanjia.brain import load_gateway_token
 from guanjia.proactive.config import ProactiveConfig
-from guanjia.proactive.habits import HabitStore
-
-_WARM_SESSION = 'agent:main:proactive-warm'
-_GATEWAY_URL = 'http://127.0.0.1:18789/v1/chat/completions'
+from guanjia.proactive.habits import MEMORY_DIR, HabitStore
 
 _WARM_PROMPT = (
     '你是家庭管家。根据这个作息习惯：{fact}，'
@@ -45,11 +41,14 @@ class Timeline:
         box_path: Path | None = None,
     ) -> None:
         self._config = config or ProactiveConfig()
-        self._habits = habits or HabitStore(
-            Path(str(self._config.path)).parent.parent / 'habits.sqlite')
+        self._habits = habits or HabitStore(MEMORY_DIR / 'habits.sqlite')
         self._box_path = box_path or (
             Path(str(self._config.path)).parent / 'timeline-presets.json')
-        self._token = load_gateway_token()
+        # 直调智谱（经保险丝）：预热句生成不再走 OpenClaw 网关会话（网关已退役 2026-11-09）
+        from guanjia.config_hub import ConfigHub
+        hub = ConfigHub()
+        self._zhipu_key = hub.key('zhipu')
+        self._model_url = str(hub.get('models.brain.fuse', 'http://127.0.0.1:18793')).rstrip('/') + '/api/paas/v4/chat/completions'
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._warmed_keys: set[str] = set()
@@ -166,26 +165,37 @@ class Timeline:
             pass
 
     def _ask_gateway(self, prompt: str) -> str | None:
-        """预热生成：轻思考 low + 采样多样性（口语自然句），非确定性输出。"""
+        """预热生成：直调智谱（经保险丝），低温采样保持口语多样性。
+
+        原来走网关会话（agent:main:proactive-warm）；OpenClaw 网关退役后直调小 prompt。
+        流式读回避免保险丝 25 秒首字窗误杀（与 trigger._ask_gateway 同款写法）。
+        """
         body = {
-            'model': 'openclaw',
+            'model': 'glm-5.3-flash',
             'messages': [{'role': 'user', 'content': prompt}],
-            'stream': False,
-            'thinking': {'type': 'enabled'},   # flash 强制项
-            'reasoning_effort': 'low',         # 预设句生成不需深思考
-            'do_sample': True,                 # 采样多样性，每次预设不千篇一律
+            'stream': True,      # 流式避免保险丝 25 秒首字窗误杀
+            'temperature': 0.9,  # 采样多样性，每次预设不千篇一律
         }
         headers = {
-            'Authorization': f'Bearer {self._token}',
+            'Authorization': f'Bearer {self._zhipu_key}',
             'Content-Type': 'application/json',
-            'x-openclaw-session-key': _WARM_SESSION,
-            'x-openclaw-agent-id': 'main',  # 多 agent 架构：网关要求显式指定，缺头会被 400 拒掉
+            'Accept': 'text/event-stream',
         }
+        parts: list[str] = []
         try:
-            with httpx.Client(timeout=30.0, trust_env=False) as client:
-                response = client.post(_GATEWAY_URL, headers=headers, json=body)
-                response.raise_for_status()
-                return str(response.json()['choices'][0]['message']['content'])
+            with httpx.Client(timeout=25.0, trust_env=False) as client:
+                with client.stream('POST', self._model_url, headers=headers, json=body) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.startswith('data:'):
+                            continue
+                        data = line[5:].strip()
+                        if data == '[DONE]':
+                            break
+                        chunk = json.loads(data)
+                        for choice in chunk.get('choices') or []:
+                            parts.append((choice.get('delta') or {}).get('content') or '')
+            return ''.join(parts).strip() or None
         except Exception:
             return None
 

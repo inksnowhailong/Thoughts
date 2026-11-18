@@ -1,8 +1,7 @@
 """Modular main-session bridge used during hard cutover.
 
-This class keeps the mature low-latency OpenClaw streaming client but records
-each completed voice turn through the production `core` runtime instead of the
-old shadow-only path.
+This class keeps the mature low-latency streaming client and records each
+completed voice turn through the production `core` runtime commit ledger.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # 语音守护进程看门狗（GuanjiaVoice 计划任务 → run-voice.vbs → 本脚本；全程隐藏窗口，跑在主人桌面会话里）
 #
-#   等依赖：网关 127.0.0.1:18789 能连上、TTS /health 返回 200（最多等 DepsTimeoutSec 秒，超时也照样起，托盘会显示出错）
+#   等依赖：大脑链路 18800(agent-runtime)/18793(智谱熔断) 能连上、TTS /health 返回 200（最多等 DepsTimeoutSec 秒，超时也照样起，托盘会显示出错）
 #   拉起 python -m guanjia.voice，按退出码决定：
 #     0    = 托盘「退出语音」→ 看门狗也退出，不再拉起
 #     3    = 托盘「重启语音」→ 立即重启
@@ -15,7 +15,8 @@ param(
     [string]$LogPath = 'F:\coding\guanjia-v2-development\tmp\voice-supervisor.log',
     [string]$MutexName = 'Local\GuanjiaVoiceSupervisor',
     [int]$DepsTimeoutSec = 180,
-    [int]$GatewayPort = 18789,
+    [int]$GatewayPort = 18800,  # agent-runtime（OpenClaw 网关 18789 已退役）
+    [int]$ZhipuGatePort = 18793,  # 智谱熔断代理：talk_direct 主链直调的 LLM 端点
     [string]$TtsHealthUrl = 'http://127.0.0.1:18791/health',
     [string]$TtsKickCmd = 'schtasks.exe /Run /TN GuanjiaTTS-WSL',  # 等 TTS 超时时主动拉起一次开机自启任务（只一次；不改任务定义）
     [int]$AsrPort = 18798,  # FireRedASR2 GPU 识别服务（WSL）：可选依赖，不等它，没起来只拉一次开机自启任务；语音走 SenseVoice 回退
@@ -122,6 +123,7 @@ function Ensure-Service([int]$Port, [string]$Vbs, [string]$Name) {
 }
 $BridgeVbs = Join-Path $Repo 'scripts\run-bridge.vbs'
 $AgentRuntimeVbs = Join-Path $Repo 'scripts\run-agent-runtime.vbs'
+$ZhipuGateVbs = Join-Path $Repo 'scripts\run-zhipu-gate.vbs'
 
 function Test-Http([string]$Url) {
     try {
@@ -170,12 +172,13 @@ function Wait-Deps {
     $t0 = Get-Date
     while ($true) {
         $gw = Test-Port $GatewayPort
+        $fuse = Test-Port $ZhipuGatePort
         $tts = Test-Http $TtsHealthUrl
-        if ($gw -and $tts) { Write-Log 'deps ready (gateway, tts)'; return }
+        if ($gw -and $fuse -and $tts) { Write-Log 'deps ready (brain, fuse, tts)'; return }
         $waited = [int]((Get-Date) - $t0).TotalSeconds
         if ($waited -ge $DepsTimeoutSec) {
             if (-not $tts) { Invoke-TtsKick }
-            Write-Log ('deps not ready after {0}s (gateway={1} tts={2}), starting anyway' -f $waited, $gw, $tts)
+            Write-Log ('deps not ready after {0}s (brain={1} fuse={2} tts={3}), starting anyway' -f $waited, $gw, $fuse, $tts)
             return
         }
         if (-not (Test-ParentAlive)) { Write-Log 'parent gone while waiting deps, exit'; exit 0 }
@@ -212,6 +215,7 @@ function Save-Stderr([int]$Code, [switch]$Pre) {
 
 $backoff = $BackoffStartSec
 while ($true) {
+    Ensure-Service $ZhipuGatePort $ZhipuGateVbs 'zhipu-gate'
     Ensure-Service 18801 $BridgeVbs 'bridge'
     Ensure-Service 18800 $AgentRuntimeVbs 'agent-runtime'
     Save-Stderr 0 -Pre  # 上一个看门狗被杀时没来得及存档的 stderr
@@ -230,6 +234,7 @@ while ($true) {
     Write-Log "voice started pid=$($p.Id)"
     while (-not $p.WaitForExit(2000)) {
         if (-not (Test-ParentAlive)) { Write-Log 'parent gone (task ended), exit; job closes and takes python with it'; exit 0 }
+        Ensure-Service $ZhipuGatePort $ZhipuGateVbs 'zhipu-gate'
         Ensure-Service 18801 $BridgeVbs 'bridge'
         Ensure-Service 18800 $AgentRuntimeVbs 'agent-runtime'
     }

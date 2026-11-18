@@ -18,6 +18,7 @@ SETTING_PARAMS = (
     ("min_chars", "最少字数", "asr", "字", "更短的片段当碎音忽略（免喊窗口里「好/行/对/要/是/不/停」例外）"),
     ("spk_threshold", "认人门槛", "speaker", "", "声纹库里最高分的人，分数 ≥ 门槛才标成这个人（「我」显示为「主人」），否则标「未知」；不拦截任何声音"),
     ("barge_rms_min", "打断线下限", "barge", "RMS", "它说话时你开口的音量超过这个就停"),
+    ("barge_trigger_ms", "打断累计时长", "barge", "毫秒", "它说话时你连续开口超过这么久才打断；越短越灵敏（2026-11-06 由 180 调到 450，短音/杂音不再掐话）"),
     ("earcon", "提示音", "play", "", "说完话立刻放提示音"),
     ("speech_max_sentences", "最多念几句", "tts", "句", "语音轮只念前几句，多的省略（面板仍看得到全文）；0 = 不限；一句超过 30 字会在逗号处切短"),
 )
@@ -32,7 +33,6 @@ CONST_PARAMS = (
     ("MIN_UTT_SEC", "最短有效话段", "vad", "秒", "voice.py MIN_UTT_SEC，更短的段当碎音丢弃"),
     ("FIRST_SENT_MAX_CHARS", "首句字数硬上限", "tts", "字", "voice.py FIRST_SENT_MAX_CHARS"),
     ("FIRST_SENT_SOFT_MIN", "首句软下限", "tts", "字", "voice.py FIRST_SENT_SOFT_MIN，首句在断句处至少这么多字才送合成"),
-    ("BARGE_MS", "打断累计时长", "barge", "毫秒", "voice.py BARGE_MS"),
     ("BARGE_GUARD_MS", "打断保护期", "barge", "毫秒", "voice.py BARGE_GUARD_MS，每次开始说话后这段时间只学回声"),
 )
 

@@ -12,11 +12,15 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timezone
+import os
 import sqlite3
 from pathlib import Path
 from typing import Iterator
 
-_DB_DEFAULT = Path(r'F:\coding\guanjia-v2-development\data\habits.sqlite')
+# 记忆统一落在项目根 memory/（gitignore，不入库）；GUANJIA_ROOT 可整体搬迁。
+_REPO = Path(os.environ.get('GUANJIA_ROOT', str(Path(__file__).resolve().parents[3])))
+MEMORY_DIR = _REPO / 'memory'
+_DB_DEFAULT = MEMORY_DIR / 'habits.sqlite'
 
 
 def _connect(path: Path) -> sqlite3.Connection:

@@ -1,8 +1,8 @@
-"""能力分级表：levels.json 分级映射的 Python 侧真相。
+"""Python 审批桥的能力分级表。
 
 来源与一致性要求：
-- openclaw/plugins/guanjia-guard/defaults/levels.json 的 tools 表（迁移）；
-- agent-runtime/src/tools/capabilities.ts（TS Registry）必须与本表一致；
+- agent-runtime/src/tools/capabilities.ts（TS Registry）必须与本表的共享能力一致；
+- config/levels.json 仅供记忆授权的默认值初始化，不是运行时能力注册表；
 - 未登记的能力一律按角色矩阵拒绝（owner 矩阵只放行这里列出的键）。
 """
 
@@ -19,7 +19,7 @@ CAPABILITY_LEVELS: dict[str, str] = {
     'screen_understand': 'L0',
 }
 
-# 以下照搬 levels.json tools 表：新工具链后续接入时分级先到位，
+# 以下为后续工具接入预留分级：
 # exec 端点没有实现会单独报 tool_not_implemented，不会因此放开执行。
 CAPABILITY_LEVELS.update({
     'read': 'L0',

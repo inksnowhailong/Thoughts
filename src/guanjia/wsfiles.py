@@ -1,4 +1,4 @@
-"""OpenClaw 工作区文本文件的安全读写（面板提示词页、记忆页；P4 休眠提交复用）。
+"""语音工作区文本文件的安全读写（面板提示词页、记忆页和休眠提交共用）。
 
     读：返回规范成 LF 的文本 + sha（编辑器用）
     写：拿写锁 → 重读比对 base_sha（模型可能刚写过）→ 校验 → 备份旧版 → 原子替换（保持原换行风格）→ 审计
@@ -10,7 +10,7 @@
     面板保存时若 P4 正持锁，面板等 10 秒后得到 LockBusy（路由层回 423）。
 任何改工作区文本的我方代码都必须在这把锁里写（直接调 write() 就是自动拿锁）。
 
-历史版本放在仓库外的 data/ws-history/<路径把 / 换成 __>/，每个文件留最近 20 份；不放进工作区，免得被 OpenClaw 当文件读。
+历史版本放在仓库外的 data/ws-history/<路径把 / 换成 __>/，每个文件留最近 20 份，避免和工作区内容混淆。
 """
 
 from __future__ import annotations
@@ -29,11 +29,10 @@ from guanjia.wslock import ws_lock
 log = logging.getLogger("guanjia.wsfiles")
 WORKSPACE = Path.home() / ".openclaw" / "workspace"
 HISTORY_DIR = Path(__file__).resolve().parents[2] / "data" / "ws-history"
-HARD_MAX_CHARS = 20000  # OpenClaw 单个启动文件超出会被截断
+HARD_MAX_CHARS = 20000  # 限制单文件大小，避免超长提示词和面板内容
 HISTORY_KEEP = 20
 # 只认登记过的相对路径和每日笔记；B3 的记忆页复用同一张表
 ALLOWED = ("SOUL.md", "IDENTITY.md", "AGENTS.md", "USER.md", "MEMORY.md", "memory/index.md", "memory/timeline.md",
-           "skills/guanjia-notes/SKILL.md", "skills/guanjia-lookup/SKILL.md", "skills/guanjia-launch/SKILL.md",
            "guanjia/family-facts.json")
 _DAILY = re.compile(r"^memory/\d{4}-\d{2}-\d{2}\.md$")
 _PERSON = re.compile(r"^memory/people/(主人|老婆)\.md$")

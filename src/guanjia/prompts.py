@@ -3,7 +3,7 @@
 kind：workspace（工作区整文件）/ block（AGENTS.md 里「管家规则」一段）/ template（我方代码渲染的模板）/
       readonly（只展示）/ setting（在参数里改）。
 
-运行时只认工作区文件，所以面板改的是线上工作区文件；仓库里的副本（openclaw/…）当「默认值」，
+运行时只认工作区文件，所以面板改的是当前工作区；仓库里的副本（openclaw/…）仅作恢复默认值，
 面板显示「与默认不同」并可「恢复默认」，不会自动回写仓库。
 """
 
@@ -26,17 +26,13 @@ OVERRIDE_DIR = REPO / "data" / "prompts"  # 覆盖版模板（不进仓库）；
 BLOCK_BEGIN, BLOCK_END = "<!-- guanjia-s2:begin -->", "<!-- guanjia-s2:end -->"
 _PH = re.compile(r"\{\{([^{}]*)\}\}")
 _WEEKDAY_CN = "一二三四五六日"
-# 语音轮标记的校验规则，必须不比分级插件宽。插件剥标记用的是
-#   openclaw/plugins/guanjia-guard/src/speak.ts：VOICE_TAG_RE = /^[\s\S]*\[语音[^\]]*\]\s*/
-# （取最后一个「[语音 …]」及其前面的全部内容）。我们要求：整个标记是一行、以「[语音 」开头、以「]」结尾、
-# 括号里不含 ] 和换行、最多 40 字，这样渲染结果一定被插件整段剥掉，AGENTS.md 的语音规则也认得。
+# 语音标记必须单行且长度受限，避免污染实际送给模型的用户文本。
 VOICE_TAG_RULE = re.compile(r"\[语音 [^\]\r\n]{1,40}\]\Z")
 PLACEHOLDERS = {"voice_tag": {"DATE": "日期，如 2026-10-11", "TIME": "时刻，如 18:05", "WEEKDAY": "周几（一～日）",
                               "SPEAKER": "声纹认出的说话人，前面自带一个空格，如「 主人」「 未知」；没有声纹结果时为空"}}
 SPEAKER_MAX_CHARS = 8  # 说话人名字最多取这么多字：标记整体不超过 40 字，库里名字再长也不会让标记不合格
 
-_BOOT_NOTE = "文档对启动文件注入时机有两种说法（每轮重建 / 新会话首轮）；上线后用「改一句规则→下一句是否遵守」实测，不遵守就开新会话"
-_SKILL_NOTE = "OpenClaw 默认监听 SKILL.md（skills.load.watch 未关），改完下一轮自动刷新；监听失效时开新会话"
+_BOOT_NOTE = "修改后用下一轮实际交互验证是否生效。"
 
 
 @dataclass(frozen=True)
@@ -52,27 +48,19 @@ class PromptEntry:
     note: str = ""
 
 
-def _skill(name: str, title: str) -> PromptEntry:
-    return PromptEntry(f"skill_{name}", title, "tools", "workspace", rel=f"skills/guanjia-{name}/SKILL.md",
-                       repo_default=f"openclaw/workspace/skills/guanjia-{name}/SKILL.md", note=_SKILL_NOTE)
-
-
 PROMPTS: tuple[PromptEntry, ...] = (
     PromptEntry("soul", "人设 SOUL.md", "gateway", "workspace", rel="SOUL.md", budget=1500,
-                note="目前还是 OpenClaw 英文默认模板，P4 再重写成散文人格。" + _BOOT_NOTE),
+                note=_BOOT_NOTE),
     PromptEntry("identity", "身份 IDENTITY.md", "gateway", "workspace", rel="IDENTITY.md", budget=1500, note=_BOOT_NOTE),
-    PromptEntry("rules", "管家规则（语音回答、确认、技能路由）", "gateway", "block", rel="AGENTS.md",
-                repo_default="openclaw/AGENTS-S2-section.md",
+    PromptEntry("rules", "语音主线规则", "gateway", "block", rel="AGENTS.md",
+                repo_default="openclaw/workspace/AGENTS.md",
                 note="只改 AGENTS.md 里两个标记之间的一段，其余部分不动。" + _BOOT_NOTE),
-    PromptEntry("agents_rest", "AGENTS.md 其余（OpenClaw 默认）", "gateway", "readonly", rel="AGENTS.md",
+    PromptEntry("agents_rest", "AGENTS.md 其余内容", "gateway", "readonly", rel="AGENTS.md",
                 note="只读展示；管家规则那一段在上一项单独编辑"),
     PromptEntry("voice_tag", "语音轮标记", "gateway", "template", repo_default="src/guanjia/prompts/voice_tag.txt",
-                note="每句语音前缀；分级插件和管家规则都认「[语音 …]」，只能改括号里的内容，渲染结果不合格会自动回退内置格式"),
-    PromptEntry("guard", "分级插件注入的确认提示", "gateway", "readonly", effect="需重启网关",
-                note="openclaw/plugins/guanjia-guard/src/guard.ts、habits.ts；改要重启网关并重新授权，本期只读"),
-    _skill("notes", "技能：记事与提醒"),
-    _skill("lookup", "技能：查询"),
-    _skill("launch", "技能：启动应用"),
+                note="语音轮前缀；只能改括号里的内容，格式不合格会回退内置格式"),
+    PromptEntry("guard", "能力分级实现（只读）", "tools", "readonly", effect="代码变更后重启对应服务",
+                note="当前实现位于 Python 审批桥与 TypeScript 能力注册表，不是提示词。"),
     PromptEntry("ack", "唤醒应答", "wake", "setting", effect="立即", note="设置项 ack_text，在参数表里改"),
 )
 _BY_ID = {e.id: e for e in PROMPTS}
@@ -166,25 +154,6 @@ def split_block(text: str) -> tuple[str, str, str]:
     return text[:a], text[a:b], text[b:]
 
 
-_FRONT = re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)", re.S)
-
-
-def _skill_name(text: str) -> str | None:
-    m = _FRONT.match(text)
-    n = re.search(r"^name:\s*(.+?)\s*$", m.group(1), re.M) if m else None
-    return n.group(1) if n else None
-
-
-def check_skill(old: str | None, new: str) -> None:
-    """SKILL.md 的 frontmatter 被改坏会让技能失效：开头必须是 --- 包起来的块、有 name:，且 name 不许变。"""
-    name = _skill_name(new)
-    if name is None:
-        raise ValueError("SKILL.md 开头必须是 --- 包起来的 frontmatter，并且要有 name: 一行")
-    old_name = _skill_name(old) if old is not None else None
-    if old_name is not None and old_name != name:
-        raise ValueError(f"不能改技能名 name（现在是 {old_name}）")
-
-
 def entries() -> list[dict]:
     return [asdict(e) for e in PROMPTS]
 
@@ -245,11 +214,11 @@ class PromptService:
             return {"text": text, "sha": r["sha"], "exists": r["exists"], "history": []}
         if e.id == "guard":
             parts = []
-            for name in ("guard.ts", "habits.ts"):
-                p = self.repo / "openclaw" / "plugins" / "guanjia-guard" / "src" / name
+            for rel in ("src/guanjia/bridge/capability_levels.py", "agent-runtime/src/tools/capabilities.ts"):
+                p = self.repo / rel
                 if p.exists():
-                    parts.append(f"//// {name}（前 4000 字）\n" + p.read_text(encoding="utf-8-sig")[:4000])
-            text = "\n\n".join(parts) or "（读不到插件源码）"
+                    parts.append(f"//// {rel}\n" + p.read_text(encoding="utf-8-sig")[:4000])
+            text = "\n\n".join(parts) or "（读不到能力分级实现）"
             return {"text": text, "sha": sha(text), "exists": bool(parts), "history": []}
         raise ValueError("这一项在参数表里改")
 
@@ -352,8 +321,7 @@ class PromptService:
 
     def _write(self, e: PromptEntry, text: str, base_sha: str) -> None:
         if e.kind == "workspace":
-            self.fs.write(e.rel, text, base_sha, timeout=self.lock_timeout,
-                          validate=check_skill if e.rel.endswith("SKILL.md") else None)
+            self.fs.write(e.rel, text, base_sha, timeout=self.lock_timeout)
         elif e.kind == "block":
             self._write_block(e, text, base_sha)
         else:

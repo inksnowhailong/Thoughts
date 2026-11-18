@@ -38,6 +38,11 @@ DEFAULT_ROOM_MEMORY = """# 房间空间方位与家庭视觉记忆
 - **老婆**：女士，常在右侧客厅沙发区域活动或休息。
 """
 
+# 对话转向让路窗口（2026-11-06 事故修复）：每次对话性转动后写入 position.json，
+# 视觉循环窗口内不护位/不跟转/不重锚，不再把管家刚转到位的镜头拖回沙发方向。
+MANUAL_STEER_HOLD_SEC = 90.0   # 全让路：盖过停稳+回复时间，连续转动会自动续期
+MANUAL_GAZE_HOLD_SEC = 600.0   # 仅停护位：对话明确指过方向，10 分钟内别拉回沙发护位
+
 DIRECTION_VECTORS: dict[str, tuple[float, float, str]] = {
     'left': (-0.6, 0.0, '左'),
     '左': (-0.6, 0.0, '左'),
@@ -212,6 +217,8 @@ def active_visual_search_loop(
     if initial_dir and initial_dir in DIRECTION_VECTORS:
         h, v, cn = DIRECTION_VECTORS[initial_dir]
         adapter.move(h, v, initial_dur, auto_stop=True)
+        adapter.mark_manual(steer_hold_sec=MANUAL_STEER_HOLD_SEC,
+                            gaze_hold_sec=MANUAL_GAZE_HOLD_SEC)
         steps_taken.append(f'先往{cn}转({initial_dur:.1f}s)')
 
     can_explore = bool(SEARCH_INTENT_RE.search(question))
@@ -271,6 +278,8 @@ def active_visual_search_loop(
             dur = 1.1
         h, v, cn = DIRECTION_VECTORS[next_dir]
         adapter.move(h, v, dur, auto_stop=True)
+        adapter.mark_manual(steer_hold_sec=MANUAL_STEER_HOLD_SEC,
+                            gaze_hold_sec=MANUAL_GAZE_HOLD_SEC)
         steps_taken.append(f'往{cn}转({dur:.1f}s)')
         history.append(f'第{step_idx}步看到[{seen_note}]->往{cn}转{dur:.1f}s')
 
@@ -423,6 +432,7 @@ def main() -> None:
                 except ValueError:
                     d = 0.8
                 adapter.move(h, v, d, auto_stop=True)
+                adapter.mark_manual(steer_hold_sec=MANUAL_STEER_HOLD_SEC)
             raw = capture_jpeg_bytes(cfg, driver)
             import time as _t
             # 隐私一致性（议会定稿采集源头原则）：photo 落盘也过降级——
@@ -465,6 +475,8 @@ def main() -> None:
             except ValueError:
                 dur = 0.55
             adapter.move(h, v, dur, auto_stop=True)
+            adapter.mark_manual(steer_hold_sec=MANUAL_STEER_HOLD_SEC,
+                                gaze_hold_sec=MANUAL_GAZE_HOLD_SEC)
             print(json.dumps({'ok': True, 'direction': cn, 'duration': dur, 'message': f'摄像头已往{cn}转了一下。'}, ensure_ascii=False))
             return
 

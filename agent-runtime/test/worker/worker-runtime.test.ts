@@ -204,6 +204,43 @@ function events(manager: WorkerRunManager, runId: string) {
 // ---------- 测试 ----------
 
 describe('Worker Runtime（LangGraph + 审批 interrupt + checkpoint）', () => {
+  it('使用共享记忆引擎记录任务并为 Worker 召回记忆', async () => {
+    const model = new ScriptedChatModel([{ content: '任务完成。' }]);
+    const writes: Array<Record<string, unknown>> = [];
+    const recalls: Array<{ query: string; sessionId: string; agentId?: string; scene?: string }> = [];
+    const manager = new WorkerRunManager({
+      bridgeUrl: bridge.url,
+      token: TOKEN,
+      model,
+      checkpointPath: path.join(tempDir, `checkpoints-${randomUUID()}.sqlite3`),
+      audit: false,
+      memoryEngine: {
+        async writeRaw(input) {
+          writes.push(input);
+          return {};
+        },
+        async recallForAgent(query, sessionId, agentId, scene) {
+          recalls.push({ query, sessionId, agentId, scene });
+          return '- 已知偏好';
+        },
+      },
+    });
+    try {
+      const { run_id: runId } = manager.createRun(makeBody());
+      await waitOutcome(manager, runId);
+      expect(writes).toHaveLength(1);
+      expect(writes[0].eventType).toBe('task');
+      expect(recalls).toEqual([{
+        query: SPEC_BASE.goal,
+        sessionId: 'task/task-e2e-1/r1',
+        agentId: 'worker',
+        scene: 'task',
+      }]);
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('场景1：纯对话任务（success_criteria 自评轮）→ outcome completed', async () => {
     const model = new ScriptedChatModel([
       { content: '收到，我马上处理。' },

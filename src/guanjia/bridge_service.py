@@ -99,8 +99,8 @@ class BridgeApp:
         self.ledger = CredentialLedger()
         self.policy = BridgePolicy(self.store, self.approvals, self.ledger, now_fn=now_fn)
         self.tool_overrides = dict(tool_overrides or {})
-        # Phase 4：记忆检索（数据在 data/memory/memory.sqlite3，导入走 staging/commit 链）
-        self.memory = MemoryService(self.data_dir.parent / "memory" / "memory.sqlite3")
+        # 记忆数据位于项目根 memory/memory.sqlite3，通过 MemoryService 检索。
+        self.memory = MemoryService(REPO_ROOT / "memory" / "memory.sqlite3")
 
     def now(self) -> datetime:
         return self._now()
@@ -218,7 +218,7 @@ class BridgeApp:
         )
         return 200, {"ok": True, "id": entry.id, "expiresAt": entry.as_latest()["expiresAt"]}
 
-    # ---------- /internal/memory/search（Phase 4） ----------
+    # ---------- /internal/memory/search ----------
     def memory_search(self, body: dict) -> tuple[int, dict]:
         text = body.get("query")
         if not isinstance(text, str):

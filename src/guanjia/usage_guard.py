@@ -4,7 +4,7 @@
 烧账户余额（余额现用于 TTS）。本防线累计每日真实消耗（从 gateway.run 的
 usage 事件），超过阈值告警——数据给主人看，防线由配置 limits.daily_token_alert 定。
 
-不自动关停主脑（那会瘫掉管家），告警 + 记账；超阈值倍数时停主动环（可自动恢复）。
+不自动关停主脑（那会瘫掉管家），告警 + 记账；超阈值倍数时当天暂停主动环（跨天自动恢复）。
 """
 
 from __future__ import annotations
@@ -67,6 +67,19 @@ class UsageGuard:
         with self._lock:
             self._roll_day()
             return dict(self._state)
+
+    def proactive_paused(self) -> bool:
+        """主动环今日是否被防线暂停（ProactiveTrigger 的 pause_gate 用）。
+
+        2026-11-06 修复：原先超双倍阈值时直接把 proactive.json 的
+        proactive_enabled 写成 false，但"自动恢复"只重置内存标志、从不回写
+        配置文件——10-26 一次 7.6M tokens 的暴走日之后主动环被永久停摆 12 天。
+        现在改为只暂停当天（内存态，_roll_day 跨天自动解除）；
+        配置文件里的 proactive_enabled 只反映主人的手工开关。
+        """
+        with self._lock:
+            self._roll_day()
+            return self._proactive_disabled
 
     # ---------- 内部 ----------
 
@@ -133,17 +146,10 @@ class UsageGuard:
                 f'日耗 {total} tokens 超过防线 {threshold}——若免费资源包已耗尽，'
                 '此刻开始烧账户余额；请到智谱控制台核对资源包余量')
         if total >= threshold * 2 and not self._proactive_disabled:
-            # 双倍阈值：停主动环（配置文件开关，热生效），被动对话不受影响
+            # 双倍阈值：当天暂停主动环（内存态，跨天自动恢复），被动对话不受影响。
+            # 不再写 proactive.json——那是主人的手工开关，防线无权永久改写（见 proactive_paused）
             self._proactive_disabled = True
-            try:
-                import json as _json
-                p = _REPO / 'data' / 'vision' / 'proactive.json'
-                data = _json.loads(p.read_text(encoding='utf-8-sig'))  # 兼容 BOM 头，否则静默关停失效
-                data['proactive_enabled'] = False
-                p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-                self._state['note'] = '主动环已自动关停（proactive_enabled=false），被动对话照常'
-            except Exception:
-                pass
+            self._state['note'] = '主动环今日已暂停（日耗超双倍防线），明天自动恢复；被动对话照常'
 
 
 __all__ = ['UsageGuard']

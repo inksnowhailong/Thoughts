@@ -42,7 +42,7 @@ log = logging.getLogger("guanjia.runtime")
 
 REPO = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO / "data"
-# 时间线文件：S2 若在 workspace/memory/ 下定了正式时间线，改这个常量（或设环境变量 GUANJIA_TIMELINE）即可切过去
+# 主动行为时间线；可用 GUANJIA_TIMELINE 指向其他文件。
 TIMELINE_PATH = Path(os.environ.get("GUANJIA_TIMELINE", DATA_DIR / "timeline.jsonl"))
 HEARTBEAT_PATH = DATA_DIR / "last-seen.txt"
 GAMES_PATH = REPO / "games.json"  # 进程白名单，仓库根目录，手工可编辑
@@ -176,7 +176,7 @@ class RuntimeMonitor:
         self.clock, self._procs, self._fullscreen, self._gpu, self._games = clock, procs, fullscreen, gpu, games
         self.timeline, self.heartbeat = timeline, heartbeat
         self.state = OFFLINE
-        self.quiet_until = 0.0  # 主动侧在此时间戳（epoch 秒）之前不开口；S3 通过 is_quiet() 查询
+        self.quiet_until = 0.0  # 主动侧在此时间戳（epoch 秒）之前不开口。
         self.manual = False  # 手动"我打游戏了"
         self.reason = ""  # 最近一次判为游戏的依据，便于日志排查
         self._fs_since: float | None = None  # 全屏 + 高 GPU 开始持续的时刻

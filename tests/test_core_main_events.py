@@ -119,7 +119,7 @@ def test_invalid_batch_never_leaks_partial_effects_and_repair_runs_once() -> Non
     assert len(attempts) == 1
 
 
-def test_duplicate_turn_replays_without_second_commit_and_shadow_has_no_effects() -> None:
+def test_duplicate_turn_replays_without_second_commit() -> None:
     commits = InMemoryCommitPort()
     source = '\n'.join(json.dumps(item) for item in (
         event('reply.delta', '0', {'text': 'queued'}),
@@ -130,11 +130,6 @@ def test_duplicate_turn_replays_without_second_commit_and_shadow_has_no_effects(
     runtime = MainAgentRuntime(commit=commits)
     assert runtime.process_jsonl(source).committed
     assert runtime.process_jsonl(source).replayed
-    assert len(commits.commits) == 1
-
-    shadow = MainAgentRuntime(commit=commits, shadow=True)
-    outcome = shadow.process_jsonl(source.replace('turn-1', 'turn-shadow'))
-    assert outcome.shadow and not outcome.committed
     assert len(commits.commits) == 1
 
 

@@ -1,8 +1,6 @@
-<!-- 管家 Main Agent 的 system prompt 模板（Phase 1 成品，随包分发）。
+<!-- 管家 Main Agent 的 system prompt 模板。
   编译：src/prompts/compiler.ts 按本文件里的 section:NAME 标记行分节，
   顺序取自 src/prompts/sections.ts 的 ROLE_SECTIONS.main；{{VAR}} 占位符必须全部提供。
-  内容按 .trae/documents/agents-md-decomposition.md 的 D1-D6 决议收敛：
-  游戏攻略（D2 砍掉，改为通用 screen_understand）、记事 timeline（D3 丢弃）不再出现；
   各节字符预算见 sections.ts 的 DEFAULT_BUDGETS；改动需通过 test/prompts/compiler.test.ts。 -->
 
 <!-- section:platform-min -->

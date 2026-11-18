@@ -1,6 +1,6 @@
 """bridge 的策略引擎：把 bridge HTTP 请求映射到 permission/ 的授权决定。
 
-组合方式（与 guard 插件 levels.json 的语义对齐）：
+组合方式（使用当前能力分级表）：
 - L3 → 直接拒绝；
 - 角色矩阵（RolePolicy）：owner 只放行 capability_levels.py 登记过的能力，未登记一律 deny；
 - L2 → 通过 CriticalActionPolicy（能力集合 = L2 全集）触发 CONFIRMATION_REQUIRED，

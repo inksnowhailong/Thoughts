@@ -1,13 +1,11 @@
-"""面板用的「已记住的放行」读写（参考实现，契约见 docs/contracts/remembered-overrides.md）。
+"""面板用的「已记住的放行」记录读写。
 
-主人口头说「以后都允许」时，分级插件 guanjia-guard 往线上分级表
-C:\\Users\\inksn\\.openclaw\\workspace\\guanjia\\levels.json 的 overrides 里追加一条 source 为 "remembered" 的放行规则。
-面板只做两件事：列出这些条目；按 id 撤销其中一条。
+默认记录文件位于用户工作区 `guanjia/levels.json`。此模块只列出和撤销
+其中 source 为 "remembered" 的条目；运行时能力分级由 permission 模块负责。
 
     读最新文件 → 只改 overrides（别的键原样保留）→ 写同目录临时文件 → os.replace 原子替换
     只删 source == "remembered" 的条目；主人手写的 overrides、rules、tools 一律不动
 
-插件每次工具调用都重新读这个文件，所以撤销立即生效，不用重启网关。
 """
 
 from __future__ import annotations
@@ -44,7 +42,7 @@ def _one_line(v) -> str:
 
 
 def format_levels(levels: dict) -> str:
-    """与插件 remember.ts 的 formatLevelsJson 同一排版：顶层每键一行，tools 每个工具一行，rules / overrides 每条一行。"""
+    """稳定格式化级别表：顶层每键一行，列表项各占一行。"""
     lines = []
     keys = list(levels)
     for i, k in enumerate(keys):
@@ -93,8 +91,8 @@ def revoke(override_id: str, path: Path = LEVELS_PATH) -> tuple[bool, str]:
 
 
 def sync_defaults(defaults: Path, path: Path = LEVELS_PATH) -> int:
-    """上线用：线上表换成仓库默认表，但保留线上已有的全部 overrides（已记住的和主人手写的）。
-    线上文件不存在时直接用默认表；存在但读不出来时抛 ValueError（让操作的人决定）。返回保留的条数。"""
+    """用给定默认表更新记录文件，同时保留现有 overrides；返回保留的条数。
+    目标文件存在但无法读取时抛 ValueError，不覆盖坏文件。"""
     new = load_levels(defaults)
     kept = load_levels(path).get("overrides") or [] if path.exists() else []
     new["overrides"] = list(kept)

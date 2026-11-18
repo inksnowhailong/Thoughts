@@ -1,4 +1,4 @@
-"""Phase 4：Memory Service（检索/钳制）+ bridge /internal/memory/search + 导入脚本链。"""
+"""Memory Service 检索、结果钳制与 bridge /internal/memory/search。"""
 
 from __future__ import annotations
 

@@ -177,6 +177,32 @@ class LocalCameraPtzAdapter:
                 state['tilt'] = float(tilt)
             self._save_position(state)
 
+    def mark_manual(self, *, steer_hold_sec: float = 90.0, gaze_hold_sec: float | None = None) -> None:
+        """Record that a conversational tool (camera-tool.py ptz/look/photo) just moved the gimbal.
+
+        2026-11-06 事故：camera_look 找到人后，VisionLoop 因 YOLO 未检出在场者，
+        护位逻辑一步步把镜头拖回沙发方向（"自己不停往远离主人方向转"）。
+        对话工具每次转动后写下让路窗口；VisionLoop 窗口内不护位、不跟转、不重锚。
+        写进 position.json 是因为对话工具与视觉循环是两个进程，文件是唯一共享状态。
+        """
+        now = time.time()
+        with self._lock:
+            state = self._load_position()
+            state['manual_until'] = max(float(state.get('manual_until') or 0.0), now + steer_hold_sec)
+            if gaze_hold_sec is not None:
+                state['gaze_hold_until'] = max(
+                    float(state.get('gaze_hold_until') or 0.0), now + gaze_hold_sec)
+            self._save_position(state)
+
+    def manual_holds(self) -> dict[str, bool]:
+        """Read the hold windows written by mark_manual: steer = 护位/跟转全停, gaze = 仅停护位。"""
+        state = self._load_position()
+        now = time.time()
+        return {
+            'steer_hold_active': now < float(state.get('manual_until') or 0.0),
+            'gaze_hold_active': now < float(state.get('gaze_hold_until') or 0.0),
+        }
+
     def _estimate_position(self, horizontal: float, vertical: float, duration: float) -> None:
         """Accumulate normalized [-1, 1] pan/tilt from a completed move."""
         with self._lock:

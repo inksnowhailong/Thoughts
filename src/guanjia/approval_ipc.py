@@ -1,9 +1,8 @@
 """语音侧审批 IPC：只收摘要和 decision，永不读取 pending 的原始工具参数。
 
-Phase 5 全量切换：缺省指向 bridge 审批口 http://127.0.0.1:18801，
-鉴权用 Bearer（agent-runtime/config/runtime.json 的 token，与 bridge 同值）。
-GUANJIA_APPROVAL_URL / GUANJIA_APPROVAL_CAP 可覆盖（OpenClaw 旧守卫回滚用：
-设 URL+CAP 后走旧 loopback 语义，不设且 runtime.json 缺失时才读 approval-ipc.json）。
+默认指向本机 bridge 审批口 http://127.0.0.1:18801，使用
+agent-runtime/config/runtime.json 中的 Bearer token。显式设置
+GUANJIA_APPROVAL_URL / GUANJIA_APPROVAL_CAP 可切换为兼容 IPC 服务。
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ def _runtime_token() -> str:
 
 
 class ApprovalIpc:
-    """审批口最小客户端（Phase 5 缺省 bridge；env 可回切旧守卫）。"""
+    """审批口最小客户端。"""
 
     def _config(self) -> dict | None:
         base = os.environ.get("GUANJIA_APPROVAL_URL", "").strip()

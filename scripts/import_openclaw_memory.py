@@ -190,7 +190,7 @@ def cmd_commit(run_id: str, approve_all: bool) -> int:
     else:
         decisions = json.loads(decisions_path.read_text(encoding="utf-8")).get("decisions", {})
 
-    service = MemoryService(ROOT / "data" / "memory" / "memory.sqlite3")
+    service = MemoryService(ROOT / "memory" / "memory.sqlite3")
     written = skipped = 0
     try:
         for candidate in candidates:
@@ -214,7 +214,7 @@ def cmd_commit(run_id: str, approve_all: bool) -> int:
             written += 1
     finally:
         service.close()
-    print(f"committed {written}, skipped {skipped} (of {len(candidates)}) → data/memory/memory.sqlite3")
+    print(f"committed {written}, skipped {skipped} (of {len(candidates)}) → memory/memory.sqlite3")
     return 0
 
 

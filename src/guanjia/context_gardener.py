@@ -1,4 +1,4 @@
-﻿"""Context gardener: compact the main session when the house is quiet and the view is stable.
+"""Context gardener: compact the main session when the house is quiet and the view is stable.
 
 Signals (both required):
   - conversation idle  : main-watermark last activity older than idle_sec
@@ -9,6 +9,10 @@ Cycle:
      into a dedicated gems memory file (interim high-value memory layer)
   2. reindex memory so gems become searchable
   3. compact the agent:main:main session via the official gateway RPC
+
+OpenClaw 网关退役（2026-11-09）：第 2 步（openclaw memory index）与第 3 步
+（openclaw sessions compact）已随网关下线删除；语音主链走 talk_direct 后不再写
+OpenClaw 主会话库，第 1 步自然进入低活动路径，视觉习惯提取（纯本地）照常运行。
 
 Fail-closed: any unreadable signal skips the cycle entirely.
 """
@@ -22,20 +26,15 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import subprocess
 import threading
 import time
-"# Windows 无系统时区库，直接用固定 UTC+8 偏移"
 
 import httpx
 
 from guanjia.brain import Brain
 from guanjia.sleep.watermark import read_main_watermark
 
-_TZ = tz_module(timedelta(hours=8), 'Asia/Shanghai')
-_NODE = r'C:\Users\inksn\AppData\Roaming\fnm\node-versions\v24.21.0\installation\node.exe'
-_OPENCLAW_CLI = (r'C:\Users\inksn\AppData\Roaming\fnm\node-versions\v24.21.0'
-                 r'\installation\node_modules\openclaw\dist\index.js')
+_TZ = tz_module(timedelta(hours=8), 'Asia/Shanghai')  # Windows 无系统时区库，直接用固定 UTC+8 偏移
 _AGENT_DB = Path.home() / '.openclaw' / 'agents' / 'main' / 'agent' / 'openclaw-agent.sqlite'
 _VISION_LATEST = Path(r'F:\coding\guanjia-v2-development\data\vision\latest.json')
 _WORKSPACE = Path.home() / '.openclaw' / 'workspace'
@@ -176,7 +175,6 @@ class ContextGardener:
                 if memories:
                     path = self._write_gems(memories)
                     report['gems_file'] = str(path)
-                    self._reindex_memory()
             pruned = self._prune_tool_results()
             if pruned:
                 report['tool_results_pruned'] = pruned
@@ -184,8 +182,6 @@ class ContextGardener:
             if habits:
                 report['vision_habits_learned'] = habits
             self._save_watermark()
-            compact = self._compact_main_session()
-            report['compact'] = compact
             self._note(report)
             return report
 
@@ -291,34 +287,6 @@ class ContextGardener:
             handle.write(block)
         return path
 
-    def _reindex_memory(self) -> None:
-        try:
-            subprocess.run([_NODE, _OPENCLAW_CLI, 'memory', 'index'],
-                           capture_output=True, encoding="utf-8", errors="replace", timeout=120, check=False)
-        except Exception:
-            pass
-
-    def _compact_main_session(self) -> dict[str, object]:
-        try:
-            completed = subprocess.run(
-                [_NODE, _OPENCLAW_CLI, 'sessions', 'compact', _MAIN_SESSION, '--json', '--timeout', '180000'],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=200, check=False,
-            )
-            stdout = (completed.stdout or '').strip()
-            match = re.search(r'\{.*\}', stdout, re.S)
-            payload: dict[str, object]
-            if match:
-                try:
-                    payload = json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    payload = {'raw': stdout[:400]}
-            else:
-                payload = {'raw': (stdout or (completed.stderr or '')[:400])}
-            payload['exit_code'] = completed.returncode
-            return payload
-        except Exception as exc:  # noqa: BLE001
-            return {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}
-
     def _learn_vision_habits(self) -> int:
         """园丁安静窗口的视觉习惯提取（E 组件三传感器之一，QC-10 席位代裁定稿）。
 
@@ -326,8 +294,8 @@ class ContextGardener:
         纯本地 sqlite 统计，零 token 成本。执行前提（时序落库）已在视觉地基批完成。
         """
         try:
-            from guanjia.proactive.habits import HabitStore, extract_vision_habits
-            store = HabitStore(_GARDEN_ROOT.parent / 'habits.sqlite')
+            from guanjia.proactive.habits import MEMORY_DIR, HabitStore, extract_vision_habits
+            store = HabitStore(MEMORY_DIR / 'habits.sqlite')
             return extract_vision_habits(_GARDEN_ROOT.parent / 'vision' / 'vision.sqlite', store)
         except Exception:
             return 0

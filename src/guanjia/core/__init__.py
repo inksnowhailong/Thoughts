@@ -1,6 +1,6 @@
 """Guanjia 的纯领域核心。"""
 
-from .agent_runtime import MainAgentRuntime, StagedEffect, TurnOutcome
+from .agent_runtime import CommitPort, MainAgentRuntime, StagedEffect, TurnOutcome
 from .contracts import (
     ArtifactRef,
     DeliveryRequirements,
@@ -16,37 +16,31 @@ from .contracts import (
     WorkerEvent,
 )
 from .main_event_parser import EVENT_SCHEMA_VERSION, EventValidationError, MainEvent, parse_jsonl
-from .main_program import CancellationToken, CompleteTurnGenerator, MainProgram, ShadowCommitForbiddenError, ShadowTurnCancelledError, ShadowTurnRequest
-from .shadow import ALLOWED_CORE_DIFFERENCE_FIELDS, CoreShadowCoordinator, CoreShadowMetrics
+from .main_program import CancellationToken, ProductionMainProgram, TurnCancelledError
 from .model_policy import ModelPolicy, ModelProfile
 
 __all__ = [
     'EVENT_SCHEMA_VERSION',
     'ArtifactRef',
+    'CancellationToken',
+    'CommitPort',
     'DeliveryRequirements',
     'Evidence',
     'EventValidationError',
-    'ALLOWED_CORE_DIFFERENCE_FIELDS',
-    'CancellationToken',
-    'CompleteTurnGenerator',
-    'CoreShadowCoordinator',
-    'CoreShadowMetrics',
     'MainAgentRuntime',
-    'MainProgram',
+    'MainEvent',
     'Materials',
     'MemoryPacket',
-    'ShadowCommitForbiddenError',
-    'ShadowTurnCancelledError',
-    'ShadowTurnRequest',
-    'MainEvent',
     'ModelPolicy',
     'ModelProfile',
     'PermissionScope',
+    'ProductionMainProgram',
     'ResourceRequest',
     'StagedEffect',
     'StructuredError',
     'TaskResult',
     'TaskSpec',
+    'TurnCancelledError',
     'TurnOutcome',
     'WorkerAdapter',
     'WorkerEvent',

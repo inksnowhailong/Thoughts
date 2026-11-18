@@ -29,7 +29,6 @@ from typing import Callable
 
 import httpx
 
-from guanjia.brain import load_gateway_token
 from guanjia.proactive.config import ProactiveConfig, is_night_hour
 from guanjia.proactive.context_builder import ContextBuilder
 from guanjia.proactive.identity import IdentityTracker
@@ -37,8 +36,7 @@ from guanjia.self_loop.contracts import SelfLoopCandidate
 from guanjia.self_loop.policy import ExpressionPolicy, ReviewPolicy
 from guanjia.self_loop.state import SelfLoopState
 
-_REVIEW_SESSION = 'agent:main:proactive-review'
-_GATEWAY_URL = 'http://127.0.0.1:18789/v1/chat/completions'
+# 评审/生成的模型调用自 10-27 起直调智谱熔断（见 _ask_gateway），不再涉及任何会话键。
 
 _REVIEW_PROMPT = (
     '你是家庭管家的主动开口评审。刚发生事件：{event}。当前在场：{presence}。'
@@ -172,12 +170,15 @@ class ProactiveTrigger:
         log_path: Path | None = None,
         timeline: object | None = None,
         habits: object | None = None,
+        pause_gate: Callable[[], bool] | None = None,
     ) -> None:
         self._config = config or ProactiveConfig()
+        # 防线暂停闸（2026-11-06）：UsageGuard 日耗超限当天返回 True——
+        # 与配置开关分离，防线只暂停当天，不再永久改写 proactive.json
+        self._pause_gate = pause_gate
         self._identity = identity or IdentityTracker(self._config)
         self._speak = speak or self._default_speak
         self._timeline = timeline
-        self._token = load_gateway_token()
         # 直调智谱（经保险丝）的端点与密钥——评审/生成不再走网关会话（加速 10-27）
         from guanjia.config_hub import ConfigHub
         hub = ConfigHub()
@@ -443,7 +444,15 @@ class ProactiveTrigger:
             self._config = ProactiveConfig(path=self._config.path)
         except Exception:
             pass
-        return bool(self._config.values.get('proactive_enabled', True))
+        if not bool(self._config.values.get('proactive_enabled', True)):
+            return False
+        if self._pause_gate is not None:
+            try:
+                if self._pause_gate():
+                    return False  # 防线当日暂停：跳过全链，明天自动恢复
+            except Exception:
+                pass  # 防线回调异常按未暂停处理，不能把主动环焊死
+        return True
 
     def _acquire_review_slot(self) -> bool:
         limit = int(self._config.num('review_max_per_hour', 10))

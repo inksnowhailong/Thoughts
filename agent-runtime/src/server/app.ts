@@ -15,12 +15,15 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { handleVoiceTurn, type VoiceTurnOptions } from '../main-agent/agent.js';
 import { compileRole } from '../prompts/compiler.js';
+import { MemoryEngine } from '../memory-engine/service.js';
+import { registerMemoryRoutes } from '../memory-engine/routes.js';
 import { registerWorkerRoutes } from '../worker/routes.js';
 
 export interface AppOptions {
   token: string;
   /** 透传给 handleVoiceTurn（测试注入假模型/临时会话目录等）。 */
   agentOpts?: VoiceTurnOptions;
+  memoryEngine?: MemoryEngine;
   logger?: boolean;
 }
 
@@ -43,7 +46,8 @@ export function buildApp(opts: AppOptions): FastifyInstance {
 
   // Wave1-C：Worker Runtime 路由（/v1/worker/*，Python Task Engine 经反转后的适配器调用）。
   // 鉴权复用全局 token；run 管理器的 checkpoint/bridge 地址走 runtime.json 默认值。
-  registerWorkerRoutes(app, { token: opts.token });
+  registerWorkerRoutes(app, { token: opts.token, memoryEngine: opts.memoryEngine });
+  registerMemoryRoutes(app, opts.memoryEngine);
 
   app.get('/internal/diag/prompt-report', async () => {
     const { sections } = compileRole('main', { CHANNEL: '', SPEAKER: '', CONTEXT: '', MEMORY: '' });
@@ -67,7 +71,10 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const modelName = typeof body.model === 'string' && body.model.length > 0 ? body.model : 'main';
     const created = Math.floor(Date.now() / 1000);
 
-    const turn = handleVoiceTurn(sessionKey, userText, speaker, opts.agentOpts);
+    const turn = handleVoiceTurn(sessionKey, userText, speaker, {
+      ...opts.agentOpts,
+      ...(opts.memoryEngine ? { memoryEngine: opts.memoryEngine } : {}),
+    });
 
     if (body.stream === true) {
       reply.hijack();

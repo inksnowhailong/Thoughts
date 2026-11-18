@@ -18,7 +18,7 @@ from guanjia.panel import PANEL_HTML, PanelBackend  # noqa: E402
 from guanjia.remembered_overrides import format_levels  # noqa: E402
 from guanjia.settings import SettingsStore  # noqa: E402
 
-DEFAULTS = ROOT / "openclaw" / "plugins" / "guanjia-guard" / "defaults" / "levels.json"
+DEFAULTS = ROOT / "config" / "levels.json"
 failed = 0
 
 

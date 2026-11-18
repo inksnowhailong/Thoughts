@@ -1,7 +1,7 @@
 [project]
 name = "guanjia"
 version = "0.1.0"
-description = "Home voice butler: always-on listening, barge-in, OpenClaw as the brain"
+description = "Home voice assistant with Python voice service and TypeScript agent runtime"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "sherpa-onnx>=1.13",

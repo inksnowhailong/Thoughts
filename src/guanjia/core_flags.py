@@ -18,15 +18,12 @@ class FlagDiagnostic:
 
 @dataclass(frozen=True)
 class CoreFlags:
-    """核心模块独立的、fail-closed 的功能开关。"""
+    """核心模块独立的、fail-closed 的功能开关。
 
-    input_shadow_v1: bool = False
-    core_shadow_v1: bool = False
+    影子观察开关（*_SHADOW_V1）已于 2026-11-05 随影子模式删除。
+    """
+
     core_task_v1: bool = False
-    output_shadow_v1: bool = False
-    permission_shadow_v1: bool = False
-    memory_shadow_v1: bool = False
-    self_loop_shadow_v1: bool = False
     diagnostics: tuple[FlagDiagnostic, ...] = ()
 
     @classmethod
@@ -34,13 +31,7 @@ class CoreFlags:
         """从环境变量映射读取开关；未知或非法值一律关闭。"""
         source = os.environ if mapping is None else mapping
         field_names = (
-            ('GUANJIA_INPUT_SHADOW_V1', 'input_shadow_v1'),
-            ('GUANJIA_CORE_SHADOW_V1', 'core_shadow_v1'),
             ('GUANJIA_CORE_TASK_V1', 'core_task_v1'),
-            ('GUANJIA_OUTPUT_SHADOW_V1', 'output_shadow_v1'),
-            ('GUANJIA_PERMISSION_SHADOW_V1', 'permission_shadow_v1'),
-            ('GUANJIA_MEMORY_SHADOW_V1', 'memory_shadow_v1'),
-            ('GUANJIA_SELF_LOOP_SHADOW_V1', 'self_loop_shadow_v1'),
         )
         true_values = frozenset(('1', 'true', 'yes', 'on'))
         false_values = frozenset(('0', 'false', 'no', 'off', ''))

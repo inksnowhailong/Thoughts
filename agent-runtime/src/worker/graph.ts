@@ -1,4 +1,4 @@
-﻿/**
+﻿﻿/**
  * 通用 Worker Graph（LangGraph StateGraph）—— Wave1-C。
  *
  * 图（重构计划 §4.2：plan → act → verify → outcome，审批走 interrupt）：

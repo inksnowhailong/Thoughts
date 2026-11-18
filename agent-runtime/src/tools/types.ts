@@ -4,7 +4,7 @@
  * 能力声明是唯一来源：注册表据此自动生成 LangChain tool schema、
  * 权限元数据与审计字段（对应重构计划 §4.3，消灭五处同步）。
  * 分级（riskLevel）必须与 Python 侧 src/guanjia/bridge/capability_levels.py
- * 及迁移来源 openclaw/plugins/guanjia-guard/defaults/levels.json 保持一致。
+ * 中的共享能力保持一致。
  */
 import type { z } from 'zod';
 

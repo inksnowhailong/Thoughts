@@ -37,8 +37,21 @@ export interface VoiceTurnOptions {
   store?: ConversationStore;
   bridgeUrl?: string;
   token?: string;
+  /** Optional Phase 1 Memory Engine; absent means the legacy Bridge memory path remains active. */
+  memoryEngine?: MemoryEngineAccess;
   /** 测试注入假工具（tool-mock）；缺省真实 registry（mainVisible 能力子集）。 */
   toolsFactory?: (deps: { bridgeUrl: string; token: string }) => RuntimeTool[];
+}
+
+export interface MemoryEngineAccess {
+  recallForAgent(query: string, sessionId: string): Promise<string>;
+  writeRaw(input: {
+    eventType: string;
+    source: string;
+    sessionId: string;
+    occurredAt: string;
+    content: Record<string, unknown>;
+  }): Promise<unknown>;
 }
 
 /** 工具最多执行轮数（防死循环）。 */
@@ -166,14 +179,17 @@ export async function* handleVoiceTurn(
   const model = opts.model ?? defaultModel();
   const tools = (opts.toolsFactory ?? ((d: { bridgeUrl: string; token: string }) =>
     toLangChainTools({ mainVisible: true }, d)))({ bridgeUrl, token });
-  // Phase 4：按需检索最小记忆包（≤3 条 × 500 字），检索失败/超时都不阻断语音轮
-  const memory = await fetchMemory(bridgeUrl, token, userText);
+  // 按需检索最小记忆包（≤3 条 × 500 字），检索失败/超时都不阻断语音轮。
+  if (opts.memoryEngine) await recordConversation(opts.memoryEngine, sessionKey, userText);
+  const memory = opts.memoryEngine
+    ? await fetchMemoryFromEngine(opts.memoryEngine, sessionKey, userText)
+    : await fetchMemory(bridgeUrl, token, userText);
 
   const system = compileRole('main', {
     CHANNEL: '语音',
     SPEAKER: speaker || '未知',
     CONTEXT: '', // 语音轮时间在用户消息的「[语音 …]」标记里，模板 voice-rules 已声明
-    MEMORY: memory, // Phase 4：bridge /internal/memory/search 最小包
+    MEMORY: memory, // bridge 返回的最小记忆包。
   }).system;
 
   const session = store.getSession(sessionKey);
@@ -199,6 +215,29 @@ export async function* handleVoiceTurn(
 
   store.appendMessage(sessionKey, new HumanMessage(userText));
   yield* runModelLoop(sessionKey, { model, store, system, tools });
+}
+
+async function recordConversation(engine: MemoryEngineAccess, sessionId: string, text: string): Promise<void> {
+  try {
+    await engine.writeRaw({
+      eventType: 'conversation',
+      source: 'main-agent',
+      sessionId,
+      occurredAt: new Date().toISOString(),
+      content: { role: 'user', text },
+    });
+  } catch (error) {
+    console.warn('[memory-engine] raw conversation write failed:', error);
+  }
+}
+
+async function fetchMemoryFromEngine(engine: MemoryEngineAccess, sessionId: string, query: string): Promise<string> {
+  try {
+    return await engine.recallForAgent(query, sessionId);
+  } catch (error) {
+    console.warn('[memory-engine] recall failed; continuing without injected memories:', error);
+    return '';
+  }
 }
 
 interface LoopDeps {

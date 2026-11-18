@@ -59,7 +59,7 @@ check(voice.speaker_label(None, None) == "" and voice.speaker_label("我", None)
 real_override = prompts.OVERRIDE_DIR
 tmp = Path(tempfile.mkdtemp(prefix="gj-spk-"))
 prompts.OVERRIDE_DIR = tmp / "overrides"  # 绝不读写真正的 data/prompts
-PLUGIN_RE = re.compile(r"^[\s\S]*\[语音[^\]]*\]\s*")  # openclaw/plugins/guanjia-guard/src/speak.ts 的 VOICE_TAG_RE
+PLUGIN_RE = re.compile(r"^[\s\S]*\[语音[^\]]*\]\s*")
 now = datetime(2026, 10, 12, 19, 30)
 try:
     check(prompts.render_voice_tag(now) == "[语音 2026-10-12 19:30 周一]", "no speaker: unchanged format")

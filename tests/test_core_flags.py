@@ -12,25 +12,8 @@ def check(condition: bool, description: str) -> None:
         raise AssertionError(description)
 
 
-FLAG_ENV_NAMES = (
-    'GUANJIA_INPUT_SHADOW_V1',
-    'GUANJIA_CORE_SHADOW_V1',
-    'GUANJIA_CORE_TASK_V1',
-    'GUANJIA_OUTPUT_SHADOW_V1',
-    'GUANJIA_PERMISSION_SHADOW_V1',
-    'GUANJIA_MEMORY_SHADOW_V1',
-    'GUANJIA_SELF_LOOP_SHADOW_V1',
-)
-
-FLAG_ATTR_NAMES = (
-    'input_shadow_v1',
-    'core_shadow_v1',
-    'core_task_v1',
-    'output_shadow_v1',
-    'permission_shadow_v1',
-    'memory_shadow_v1',
-    'self_loop_shadow_v1',
-)
+FLAG_ENV_NAMES = ('GUANJIA_CORE_TASK_V1',)
+FLAG_ATTR_NAMES = ('core_task_v1',)
 
 
 defaults = CoreFlags.from_env({})
@@ -55,13 +38,7 @@ for environment_name, attribute_name in zip(FLAG_ENV_NAMES, FLAG_ATTR_NAMES):
         )
 
 mapping = {
-    'GUANJIA_INPUT_SHADOW_V1': 'invalid-input',
-    'GUANJIA_CORE_SHADOW_V1': 'invalid-core',
     'GUANJIA_CORE_TASK_V1': 'invalid-task',
-    'GUANJIA_OUTPUT_SHADOW_V1': 'invalid-output',
-    'GUANJIA_PERMISSION_SHADOW_V1': 'invalid-permission',
-    'GUANJIA_MEMORY_SHADOW_V1': 'invalid-memory',
-    'GUANJIA_SELF_LOOP_SHADOW_V1': 'invalid-self-loop',
     'GUANJIA_UNKNOWN_V1': 'true',
 }
 before = mapping.copy()
@@ -79,25 +56,9 @@ check(
 )
 check(mapping == before, 'provided mapping is not modified')
 
-independent = CoreFlags.from_env(
-    {
-        'GUANJIA_INPUT_SHADOW_V1': 'true',
-        'GUANJIA_CORE_SHADOW_V1': 'true',
-        'GUANJIA_OUTPUT_SHADOW_V1': 'true',
-        'GUANJIA_PERMISSION_SHADOW_V1': 'true',
-        'GUANJIA_MEMORY_SHADOW_V1': 'true',
-        'GUANJIA_SELF_LOOP_SHADOW_V1': 'true',
-    },
-)
-check(
-    independent.core_task_v1 is False
-    and all(
-        getattr(independent, attribute) is True
-        for attribute in FLAG_ATTR_NAMES
-        if attribute != 'core_task_v1'
-    ),
-    'shadow flags do not enable the formal execution flag',
-)
+unknown = CoreFlags.from_env({'GUANJIA_UNKNOWN_V1': 'true'})
+check(unknown.core_task_v1 is False and unknown.diagnostics == (),
+      'unknown environment names are ignored')
 
 try:
     defaults.core_task_v1 = True

@@ -55,6 +55,16 @@ export interface WorkerRuntimeOptions {
   audit?: boolean;
   /** 测试注入 saver（注入者负责关闭）。 */
   saver?: SqliteSaver;
+  memoryEngine?: {
+    recallForAgent(query: string, sessionId: string, agentId?: string, scene?: string): Promise<string>;
+    writeRaw(input: {
+      eventType: string;
+      source: string;
+      sessionId: string;
+      occurredAt: string;
+      content: Record<string, unknown>;
+    }): Promise<unknown>;
+  };
 }
 
 /** 带 HTTP 状态码的错误（routes 层映射响应码）。 */
@@ -278,6 +288,7 @@ export class WorkerRunManager {
   private async executeRun(rec: RunRecord, request: WorkerRunRequest): Promise<void> {
     const emit = (event: WorkerRunEvent) => this.appendEvent(rec, event);
     try {
+      request = await this.loadSharedMemory(rec, request);
       const ctx = this.buildCtx(rec, emit);
       const graph = buildWorkerGraph(ctx).compile({ checkpointer: this.getSaver() });
       const input = {
@@ -298,6 +309,43 @@ export class WorkerRunManager {
       if (!this.hasOutcome(rec)) {
         emit({ type: 'outcome', status: 'failed', summary: message, result: null });
       }
+    }
+  }
+
+  private async loadSharedMemory(rec: RunRecord, request: WorkerRunRequest): Promise<WorkerRunRequest> {
+    if (!this.opts.memoryEngine) return request;
+    const spec = rec.ctxInfo.spec;
+    try {
+      await this.opts.memoryEngine.writeRaw({
+        eventType: 'task',
+        source: 'worker-agent',
+        sessionId: rec.ctxInfo.sessionId,
+        occurredAt: new Date().toISOString(),
+        content: {
+          taskId: spec.task_id,
+          goal: spec.goal,
+          constraints: spec.constraints,
+          successCriteria: spec.success_criteria,
+        },
+      });
+    } catch (error) {
+      console.warn('[memory-engine] raw Worker task write failed:', error);
+    }
+    try {
+      const recalled = await this.opts.memoryEngine.recallForAgent(
+        [spec.goal, ...spec.constraints].join('\n'),
+        rec.ctxInfo.sessionId,
+        'worker',
+        'task',
+      );
+      const summaries = recalled.split('\n')
+        .map((line) => line.replace(/^\s*-\s*/, '').trim())
+        .filter(Boolean);
+      const merged = [...new Set([...summaries, ...request.memory_packet.summaries])].slice(0, 8);
+      return { ...request, memory_packet: { summaries: merged } };
+    } catch (error) {
+      console.warn('[memory-engine] Worker recall failed; using provided memory packet:', error);
+      return request;
     }
   }
 

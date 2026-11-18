@@ -1,6 +1,6 @@
 """审批待办注册表：confirmation 与 worker 两类 pending 的最新一条查询与决定。
 
-与旧守卫 loopback 服务（openclaw/plugins/guanjia-guard/src/approval-ipc.ts）同形：
+与本机语音服务使用的审批 IPC 保持同一数据边界：
 - GET  /latest  → {"ok": true, "pending": {id, summary, status, expiresAt} | null}
 - POST /decide  {"id", "decision"} → {"ok": bool}，已决定/过期回 409
 内存注册表：进程重启 pending 作废，与审批 120 秒超时语义一致。

@@ -1,4 +1,4 @@
-"""P2.2 B2：提示词登记表、模板渲染、语音标记、AGENTS.md 管家规则段、SKILL.md 校验、参数表、面板路由。
+"""提示词登记表、模板渲染、语音标记、AGENTS.md 管家规则段、参数表与面板路由。
 全部用临时目录里的假工作区 / 假仓库 / 假覆盖目录，不碰线上工作区，也不碰 data/prompts。
 运行：cd /d F:\\coding\\guanjia && .venv\\Scripts\\python.exe tests\\test_p22_prompts.py
 """
@@ -121,16 +121,15 @@ try:
 
     # 6. 假仓库 + 假工作区 + 服务
     repo = tmp / "repo"
-    (repo / "openclaw" / "workspace" / "skills" / "guanjia-notes").mkdir(parents=True)
-    (repo / "openclaw" / "plugins" / "guanjia-guard" / "src").mkdir(parents=True)
-    (repo / "openclaw" / "AGENTS-S2-section.md").write_text(BEGIN + "\n仓库默认规则\n" + END + "\n", encoding="utf-8", newline="")
-    skill_default = "---\nname: guanjia-notes\ndescription: 记事\n---\n\n# 默认技能\n"
-    (repo / "openclaw" / "workspace" / "skills" / "guanjia-notes" / "SKILL.md").write_text(skill_default, encoding="utf-8", newline="")
-    (repo / "openclaw" / "plugins" / "guanjia-guard" / "src" / "guard.ts").write_text("// 确认提示 guard\n" * 500, encoding="utf-8")
+    (repo / "openclaw" / "workspace").mkdir(parents=True)
+    (repo / "src" / "guanjia" / "bridge").mkdir(parents=True)
+    (repo / "agent-runtime" / "src" / "tools").mkdir(parents=True)
+    (repo / "openclaw" / "workspace" / "AGENTS.md").write_text(BEGIN + "\n仓库默认规则\n" + END + "\n", encoding="utf-8", newline="")
+    (repo / "src" / "guanjia" / "bridge" / "capability_levels.py").write_text("# capability levels\n", encoding="utf-8")
+    (repo / "agent-runtime" / "src" / "tools" / "capabilities.ts").write_text("// capability registry\n", encoding="utf-8")
 
     ws, hist = tmp / "ws", tmp / "hist"
     (ws / "guanjia").mkdir(parents=True)
-    (ws / "skills" / "guanjia-notes").mkdir(parents=True)
     fs = WorkspaceFiles(ws, hist)
     svc = prompts.PromptService(fs, repo, now=lambda: datetime(2026, 10, 11, 18, 5), lock_timeout=0.4)
 
@@ -143,15 +142,13 @@ try:
     # 6a. 列表
     (ws / "AGENTS.md").write_bytes(agents_bytes(False))
     (ws / "SOUL.md").write_text("# soul\n", encoding="utf-8")
-    (ws / "skills" / "guanjia-notes" / "SKILL.md").write_text(skill_default, encoding="utf-8", newline="")
     code, lst = svc.list_all({})
     items = {i["id"]: i for i in lst["items"]}
-    check(code == 200 and {"soul", "identity", "rules", "agents_rest", "voice_tag", "guard", "skill_notes", "skill_lookup",
-                           "skill_launch", "ack"} <= set(items), "list has every registered prompt")
-    check(items["rules"]["differs_from_default"] is True and items["skill_notes"]["differs_from_default"] is False,
-          "differs_from_default: rules differ, identical skill does not")
+    check(code == 200 and {"soul", "identity", "rules", "agents_rest", "voice_tag", "guard", "ack"} == set(items),
+          "list has only current prompt entries")
+    check(items["rules"]["differs_from_default"] is True, "rules differ from the repository default")
     check(items["voice_tag"]["differs_from_default"] is False and items["voice_tag"]["effect"] == "下一轮", "template default badge")
-    check(items["agents_rest"]["editable"] is False and items["guard"]["effect"] == "需重启网关" and items["ack"]["editable"] is False,
+    check(items["agents_rest"]["editable"] is False and items["guard"]["effect"] == "代码变更后重启对应服务" and items["ack"]["editable"] is False,
           "readonly/setting entries not editable")
     check(items["identity"]["exists"] is False and items["soul"]["budget"] == 1500, "missing file reported; budget carried")
 
@@ -165,7 +162,8 @@ try:
     check(svc.post({"id": "ack", "text": "x", "base_sha": ""})[0] == 400, "setting entries are not saved here")
     check(svc.post({"id": "nope", "text": "x", "base_sha": ""})[0] == 400, "unknown id -> 400")
     code, r = get("guard")
-    check(code == 200 and "guard.ts" in r["text"] and len(r["text"]) < 4200, "guard: plugin source snippet, capped")
+    check(code == 200 and "capability_levels.py" in r["text"] and "capabilities.ts" in r["text"],
+          "guard: current policy source snippets")
 
     # 6c. block：写，段外字节不变（LF 与 CRLF 两种）
     for crlf in (False, True):
@@ -211,21 +209,7 @@ try:
     check("model appended" in (ws / "AGENTS.md").read_text(encoding="utf-8") and "keep me" in (ws / "AGENTS.md").read_text(encoding="utf-8"),
           "reset keeps everything outside the block")
 
-    # 6e. SKILL.md 校验
-    code, r = get("skill_notes")
-    base = r["sha"]
-    code, resp = svc.post({"id": "skill_notes", "text": skill_default.replace("name: guanjia-notes", "name: hacked"), "base_sha": base})
-    check(code == 400 and "name" in resp["reason"], "SKILL.md name change rejected")
-    code, resp = svc.post({"id": "skill_notes", "text": "# no frontmatter\n", "base_sha": base})
-    check(code == 400, "SKILL.md without frontmatter rejected")
-    code, resp = svc.post({"id": "skill_notes", "text": skill_default.replace("---\n\n#", "\n\n#"), "base_sha": base})
-    check(code == 400, "SKILL.md with unclosed frontmatter rejected")
-    code, resp = svc.post({"id": "skill_notes", "text": skill_default + "\n加一句\n", "base_sha": base})
-    check(code == 200 and resp["differs_from_default"] is True and "加一句" in resp["text"], "SKILL.md normal edit saved")
-    code, resp = svc.post({"id": "skill_notes", "action": "reset", "base_sha": resp["sha"]})
-    check(code == 200 and resp["differs_from_default"] is False, "SKILL.md reset to repo default")
-
-    # 6f. 整文件：新建、没有默认值的 reset、冲突
+    # 6e. 整文件：新建、没有默认值的 reset、冲突
     code, r = get("identity")
     check(code == 200 and r["exists"] is False and r["sha"] == "", "missing workspace file reads as empty")
     code, resp = svc.post({"id": "identity", "text": "# 身份\n", "base_sha": ""})
@@ -235,8 +219,8 @@ try:
     code, resp = svc.post({"id": "identity", "text": "x", "base_sha": "stale"})
     check(code == 409, "workspace file stale sha -> 409")
 
-    # 6f2. 空内容 / 纯空白：400 且文件字节不变
-    for pid, rel in (("soul", "SOUL.md"), ("rules", "AGENTS.md"), ("skill_notes", "skills/guanjia-notes/SKILL.md")):
+    # 6f. 空内容 / 纯空白：400 且文件字节不变
+    for pid, rel in (("soul", "SOUL.md"), ("rules", "AGENTS.md")):
         for blank in ("", "   ", "\n\t \r\n"):
             code, cur = get(pid)
             before = (ws / rel).read_bytes()
@@ -266,15 +250,15 @@ try:
 
     # 7. 参数表
     cur = from_dict({"spk_threshold": 0.6})
-    rows = {r["key"]: r for r in params.describe(cur, {"MIC_GAIN": (3.0, 3.0), "BARGE_MS": (200, 180)})}
+    rows = {r["key"]: r for r in params.describe(cur, {"MIC_GAIN": (3.0, 3.0), "BARGE_GUARD_MS": (350, 300)})}
     need = {"key", "label", "node", "unit", "default", "current", "overridden", "effect", "editable", "source"}
     check(all(need <= set(r) for r in rows.values()), "every param row has the full shape")
     check(rows["spk_threshold"]["overridden"] is True and rows["spk_threshold"]["current"] == 0.6
           and rows["spk_threshold"]["default"] == Settings().spk_threshold, "overridden flag set for non-default setting")
     check(rows["ack_text"]["overridden"] is False and rows["ack_text"]["effect"] == "立即" and rows["ack_text"]["editable"], "default setting not overridden")
     check({p[0] for p in params.SETTING_PARAMS} == set(Settings.__dataclass_fields__), "SETTING_PARAMS covers every Settings field")
-    check(rows["BARGE_MS"]["overridden"] and rows["MIC_GAIN"]["editable"] is False and rows["MIC_GAIN"]["effect"] == "需重启语音", "consts: readonly + restart badge")
-    check(set(rows) == {p[0] for p in params.SETTING_PARAMS} | {"MIC_GAIN", "BARGE_MS"}, "consts not provided are omitted")
+    check(rows["BARGE_GUARD_MS"]["overridden"] and rows["MIC_GAIN"]["editable"] is False and rows["MIC_GAIN"]["effect"] == "需重启语音", "consts: readonly + restart badge")
+    check(set(rows) == {p[0] for p in params.SETTING_PARAMS} | {"MIC_GAIN", "BARGE_GUARD_MS"}, "consts not provided are omitted")
 
     # 8. 面板路由
     panel = PanelBackend(EventHub(), SettingsStore(None), status=lambda: {}, control=lambda a: (True, a), inject=lambda t, d: {},

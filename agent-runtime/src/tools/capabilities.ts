@@ -1,9 +1,8 @@
 /**
  * 能力登记表：分级、可见性与执行器声明（Wave1-B 六件套 + screen_understand）。
  *
- * 分级真相来源：openclaw/plugins/guanjia-guard/defaults/levels.json（迁移）
- * 与 openclaw 工具插件描述（ps-tools.ts / speak.ts）；
- * 必须与 Python 侧 src/guanjia/bridge/capability_levels.py 一致。
+ * 运行时能力与分级以本注册表为准；共享能力必须与 Python 侧
+ * src/guanjia/bridge/capability_levels.py 一致。
  */
 import path from 'node:path';
 import { z } from 'zod';
@@ -14,7 +13,7 @@ const LAUNCH_APP_PS1 = path.join(TOOLS_DIR, 'launch-app.ps1');
 const SCREEN_CAPTURE_PY = path.join(TOOLS_DIR, 'screen-capture.py');
 const PY = resolvePython();
 
-/** 与旧 ps-tools.ts 的 APP_NAME_RE 一致：拒绝控制字符，最长 80 码点，不进 shell。 */
+/** 拒绝控制字符，最长 80 码点；名称不会拼入 shell 命令。 */
 const APP_NAME_SCHEMA = z
   .string()
   .min(1, { message: 'name 不能为空' })

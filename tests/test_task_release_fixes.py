@@ -1,6 +1,5 @@
-"""O5c：取消/审批回调和 P4 allowlist 迁移的最小闭环 fixture。"""
+"""任务取消与审批回调的最小闭环 fixture。"""
 
-import importlib.util
 import tempfile
 from pathlib import Path
 
@@ -29,16 +28,5 @@ with tempfile.TemporaryDirectory() as tmp:
     ipc.on_cancelled(task["id"], "用户取消")
     check(calls == [("approval", task["id"], "approve"), ("cancel", task["id"], "用户取消")],
           "approval and cancellation cross only controlled callbacks")
-
-spec = importlib.util.spec_from_file_location("p4", Path(__file__).parents[1] / "openclaw" / "p4_config_patch.py")
-p4 = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(p4)
-old = {"agents": {"entries": {"main": {"tools": {"allow": ["read", "custom_reviewed_tool"]}}}}}
-new = p4.apply_1b(old)
-allow = new["agents"]["entries"]["main"]["tools"]["allow"]
-check("custom_reviewed_tool" in allow and all(tool in allow for tool in p4.TASK_TOOLS),
-      "P4 migration preserves reviewed unknown tools and adds only task tools")
-check(old["agents"]["entries"]["main"]["tools"]["allow"] == ["read", "custom_reviewed_tool"],
-      "P4 migration does not mutate original config")
 
 print("ALL PASS test_task_release_fixes")

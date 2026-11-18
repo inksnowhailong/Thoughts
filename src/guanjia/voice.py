@@ -1,4 +1,4 @@
-﻿"""语音守护进程：常开监听 → 增益 → VAD → 流式 ASR → 整段精识别 → 碎音过滤 → 声纹 → 唤醒词 → 主线会话 → 按句 TTS → 播放；随时可打断。
+"""语音守护进程：常开监听 → 增益 → VAD → 流式 ASR → 整段精识别 → 碎音过滤 → 声纹 → 唤醒词 → 主线会话 → 按句 TTS → 播放；随时可打断。
 
 P2.1 起的调用链：
 
@@ -7,11 +7,11 @@ P2.1 起的调用链：
                                           │                          ├─ 只喊了唤醒词 ──> 应答「在呢」+ 打开免喊窗口
                                           │                          └─ 不理（记一条带原因的记录）
                                           └─ 打断检测 BargeDetector ──> stop_speaking()：换代 + 清播放队列
-  大脑线程：text_q ──> TurnRunner ──> 网关 /v1/chat/completions（x-openclaw-session-key: agent:main:main）
-                        流式文本 → 切句 → speakable 过滤 → TTS → play_q；打断后照样把网关流读完
+  大脑线程：text_q ──> TurnRunner ──> agent-runtime 对话接口
+                        流式文本 → 切句 → speakable 过滤 → TTS → play_q；打断后照样把响应流读完
   免喊窗口：它回完最后一句后 follow_up_sec 秒内、或一轮正在进行时，不用再喊唤醒词
   控制口 127.0.0.1:18795：/say /status /sleep-state（本机程序）+ /panel 和 /api/*（管家面板，要令牌）
-  调试面板：每个环节发结构化事件到 EventHub（events.py），面板用 SSE 实时显示；工具调用从分级插件审计文件跟随（audittail.py）
+  调试面板：每个环节发结构化事件到 EventHub（events.py），面板用 SSE 实时显示；工具调用从审批桥审计文件跟随（audittail.py）
   可调参数在 data\\voice-settings.json（settings.py），面板改了热生效
   托盘：在听 / 说话中 / 静音 / 游戏中 / 出错，左键切静音，右键打开面板、重启或退出
 
@@ -60,9 +60,6 @@ from guanjia.modular_brain import ModularBrain
 from guanjia.vision_loop import VisionLoop, vision_note
 from guanjia.context_gardener import ContextGardener
 from guanjia.control import CONTROL_PORT, start_control_server
-from guanjia.core.shadow import CoreShadowCoordinator
-from guanjia.core_flags import CoreFlags
-from guanjia.input.adapters.voice import AcceptedInputIssuer, VoiceShadowAdapter
 from guanjia.enroll_session import (MAX_ZERO_RATIO, MIN_EFFECTIVE_SEC, MIN_PEAK, MIN_SELF_SIM, MIN_TOTAL, EnrollSession)
 from guanjia.events import RECORDS_FILE, EventHub, HubLogHandler, NullHub
 from guanjia.panel import PANEL_URL, PanelBackend
@@ -168,20 +165,23 @@ def approval_decision(text: str) -> str | None:
         return "approve"
     return None
 
-# ---- 打断（只在我们出声时判定；不看声纹、不看 VAD，原因见 barge.py；下限在设置 barge_rms_min）----
-BARGE_MS = 180           # 累计过线时长达到此值即打断
+# ---- 打断（只在我们出声时判定；不看声纹、不看 VAD，原因见 barge.py）----
+# 累计时长/下限都是面板热调设置：barge_trigger_ms（2026-11-06 默认 450，原 180 太灵敏——
+# 一个音节/短杂音就能掐掉整句）、barge_rms_min；保护期与底噪倍数仍为常量
 BARGE_GUARD_MS = 300     # 每次开始出声后的保护期：只学回声底噪
 BARGE_TAIL_MS = 300      # 参考信号停了以后仍按"在播"算的尾巴
 BARGE_FLOOR_RATIO = 3.0  # 触发线 = 回声底噪 × 此倍数
 BARGE_LOG_EVERY_MS = 1000  # 出声期间每隔这么久打一行 DEBUG barge-mon，用来校准
 
 # ---- 提示音 / 健康检查 / 退出码 ----
-SAY_MAX_PENDING = 3      # /say 最多排队这么多段，多了回 busy（模型循环调用 speak、微信刷屏时不至于念上几分钟）
-HEALTH_EVERY_SEC = 10.0  # 网关、TTS 在线检查周期（托盘用）
+SAY_MAX_PENDING = 3      # /say 最多排队这么多段，多了回 busy，避免长时间积压
+HEALTH_EVERY_SEC = 10.0  # 大脑链路、TTS 在线检查周期（托盘用）
 SETTINGS_POLL_SEC = 2.0  # 手工改 voice-settings.json 的发现周期
 LAUNCH_SELFCHECK_SEC = 15.0  # launch_app 启动游戏后过这么久记一条输入流自检（只记不动作；2026-10-11 事故：拉起 WeGame 后音频输入悄悄断了）
 EXIT_DEADMAN_SEC = 8.0  # 退出清理（关音频流、停托盘…）超过这么久还没完成就强制退出：卡死的驱动会让 stream.stop() 永远不返回
-GATEWAY_PORT = 18789
+# 大脑链路（OpenClaw 网关已退役，2026-11-09）：agent-runtime 18800（主线兜底 + Worker 任务）
+# + 智谱熔断代理 18793（talk_direct 主链直调）。健康检查两个都要在线，面板才显示大脑正常。
+BRAIN_PORTS = (18800, 18793)
 EXIT_QUIT, EXIT_CRASH, EXIT_RESTART = 0, 1, 3  # 与 scripts/voice-supervisor.ps1 约定
 LOG_MAX_BYTES = 5_000_000  # voice.log 轮转大小（留 3 份）
 TASK_JOURNAL_PATH = Path(__file__).resolve().parents[2] / "data" / "tasks.jsonl"
@@ -335,6 +335,7 @@ class VoiceDaemon:
     _last_program_snapshot: dict | None = None
     program_quiet = None
     announcements = None
+    identity = None  # IdentityTracker | None：主动环身份感知；未启用（或半守护进程单测）时为 None
     task_manager = None
     tasks = None
     task_ipc = None
@@ -344,98 +345,12 @@ class VoiceDaemon:
     _last_spoken_reply = ""
     _last_spoken_at = 0.0
 
-    def _record_accepted_voice_shadow(self, record) -> None:
-        """Record an accepted voice segment off the production input path."""
-        elog.emit(
-            'input',
-            'input.voice_shadow.accepted',
-            'received accepted voice shadow input',
-            input_id=str(record.input_id),
-            correlation_id=str(record.correlation_id),
-        )
-        core_shadow = getattr(self, '_core_shadow', None)
-        if core_shadow is not None:
-            core_shadow.observe(record)
-
-    def _observe_accepted_voice(self, text: str, uid: str | None, speaker: str) -> None:
-        """Queue an accepted microphone utterance without affecting the live turn."""
-        issuer = getattr(self, '_voice_shadow_issuer', None)
-        adapter = getattr(self, '_voice_shadow_adapter', None)
-        if issuer is None or adapter is None:
-            return
-        try:
-            segment = issuer.issue(
-                str(uuid4()),
-                str(uuid4()),
-                text,
-                datetime.now(timezone.utc),
-                metadata={'utterance_id': uid or '', 'speaker': speaker},
-            )
-            if not adapter.observe(segment):
-                log.warning('voice shadow input dropped: %s', adapter.metrics())
-            elif getattr(self, '_core_shadow', None) is not None and not getattr(self, '_core_flags', CoreFlags()).input_shadow_v1:
-                self._core_shadow.observe(segment.as_shadow_record())
-        except Exception:  # noqa: BLE001
-            log.exception('voice shadow input failed; production voice path continues')
-
-
-
-    def _panel_shadow_projection(self) -> dict:
-        """Return only narrow read-only shadow metrics for Panel projection."""
-        flags = getattr(self, '_core_flags', None) or CoreFlags()
-        adapter = getattr(self, '_voice_shadow_adapter', None)
-        core_shadow = getattr(self, '_core_shadow', None)
-        input_metrics = adapter.metrics() if adapter is not None else None
-        core_metrics = core_shadow.metrics() if core_shadow is not None else None
-        return {
-            'flags': {
-                'input_shadow_v1': bool(flags.input_shadow_v1),
-                'core_shadow_v1': bool(flags.core_shadow_v1),
-            },
-            'input': {
-                'queue': 0 if input_metrics is None else int(getattr(input_metrics, 'queued', 0)),
-                'accepted': 0 if input_metrics is None else int(input_metrics.accepted),
-                'dropped': 0 if input_metrics is None else int(input_metrics.queue_full + input_metrics.dropped_on_close),
-                'failures': 0 if input_metrics is None else int(input_metrics.sink_failures),
-                'difference_fields': [],
-            },
-            'core': {
-                'queue': 0 if core_metrics is None else int(core_metrics.queue),
-                'accepted': 0 if core_metrics is None else int(core_metrics.accepted),
-                'dropped': 0 if core_metrics is None else int(core_metrics.dropped),
-                'failures': 0 if core_metrics is None else int(core_metrics.failures),
-                'difference_fields': [] if core_metrics is None else list(core_metrics.difference_fields),
-            },
-        }
-
     def __post_init__(self) -> None:
         self.sr = pick_stream_rate(self.in_dev, self.out_dev)  # 优先 16k，见 pick_stream_rate
         self.frame = self.sr // 100
         self.in_q: queue.Queue[Frames] = queue.Queue(maxsize=500)
         self.play_q: queue.Queue[tuple[int, np.ndarray]] = queue.Queue()  # (代次, PCM)，回调按代次丢弃旧音频
         self.text_q: queue.Queue[str | Heard | SayItem] = queue.Queue()  # 放行的话（Heard）或 /say 要念的话（SayItem）
-        self._core_flags = CoreFlags.from_env()
-        self._voice_shadow_issuer = None
-        self._voice_shadow_adapter = None
-        self._core_shadow = None
-        if self._core_flags.core_shadow_v1:
-            try:
-                self._core_shadow = CoreShadowCoordinator()
-            except Exception:  # noqa: BLE001
-                log.exception('core shadow setup failed; core shadow remains disabled')
-                self._core_shadow = None
-        if self._core_flags.input_shadow_v1:
-            try:
-                issuer = AcceptedInputIssuer()
-                self._voice_shadow_issuer = issuer
-                self._voice_shadow_adapter = VoiceShadowAdapter(
-                    self._record_accepted_voice_shadow,
-                    issuer=issuer,
-                )
-            except Exception:  # noqa: BLE001
-                log.exception('voice shadow setup failed; shadow input remains disabled')
-                self._voice_shadow_issuer = None
-                self._voice_shadow_adapter = None
         self._gen = 0  # 播放代次：打断后递增，旧代次的音频一律丢弃；只有 stop_speaking 写
         # 以下播放状态只由音频回调写，其他线程只读
         self._play_buf = np.zeros(0, dtype=np.float32)  # 正在播的那一句 PCM
@@ -462,7 +377,7 @@ class VoiceDaemon:
         self.last_error = ""  # 最近一轮的错误（网关 / TTS），托盘显示；下一轮成功出声后清空
         self.health = Health()  # 网关、TTS 是否在线（HealthMonitor 更新）
         self.runtime = RuntimeMonitor(self._on_runtime)
-        # 当前没有覆盖微信/其他入口的全主线实时水位，故即使开关打开也 fail-closed。
+        #         统计未覆盖服务的所有调用，故即使开关打开也 fail-closed。
         self._main_activity_at: float | None = None
         self.sleep_rehearsal = RehearsalScheduler(
             SleepRehearsal(), watermark=lambda: read_main_watermark().last_activity_at,
@@ -482,6 +397,7 @@ class VoiceDaemon:
         self.identity = None
         self.trigger = None
         self.timeline = None
+        self.usage_guard = UsageGuard()  # 日耗 token 防线（gateway.run 处累计）；提前建好给主动环当暂停闸
         if self.vision_loop is not None:
             try:
                 from guanjia.proactive import IdentityTracker, ProactiveTrigger, Timeline
@@ -491,6 +407,7 @@ class VoiceDaemon:
                     config=self.vision_loop._proactive,
                     identity=self.identity,
                     timeline=self.timeline,
+                    pause_gate=lambda: self.usage_guard.proactive_paused(),
                 )
                 self.vision_loop.on_edge = self._on_vision_edge
                 self.vision_loop.on_tick = self._on_vision_tick
@@ -535,19 +452,17 @@ class VoiceDaemon:
         self._earcon = earcon(self.sr)
         self._ack_text = ""  # _ack_pcm 是哪句应答合成的
         self.barge = BargeDetector(BargeConfig(guard_ms=BARGE_GUARD_MS, tail_ms=BARGE_TAIL_MS, rms_min=s.barge_rms_min,
-                                               floor_ratio=BARGE_FLOOR_RATIO, trigger_ms=BARGE_MS))
+                                               floor_ratio=BARGE_FLOOR_RATIO, trigger_ms=s.barge_trigger_ms))
         self._mon_ms, self._mon_peak = 0, 0.0  # barge-mon 日志计时与区间 RMS 峰值（只有前端线程读写）
-        self.usage_guard = UsageGuard()  # 日耗 token 防线（gateway.run 处累计）
         # 分级方案 P2：语音直调引擎（灰度开关 GUANJIA_TALK_DIRECT，voice.env 热改）
         self._talk_direct = None
         if os.environ.get('GUANJIA_TALK_DIRECT', '').lower() in ('1', 'true', 'yes', 'on'):
             from guanjia.talk_direct import TalkDirect, ToolBox
             self._talk_direct = TalkDirect(ToolBox(task_caller=self._task_ipc_call))
             log.info('talk_direct: 语音轮直调已启用（GUANJIA_TALK_DIRECT=1）')
-        self.monitor = HealthMonitor({"gateway": lambda: tcp_alive("127.0.0.1", GATEWAY_PORT), "tts": self.tts.alive},
+        self.monitor = HealthMonitor({"gateway": lambda: all(tcp_alive("127.0.0.1", p) for p in BRAIN_PORTS), "tts": self.tts.alive},
                                      on_change=self._on_health, interval=HEALTH_EVERY_SEC)
         self.panel = PanelBackend(self.hub, self.store, status=self.status, control=self._panel_control, inject=self.inject)
-        self.panel.attach_shadow_projection(self._panel_shadow_projection)
         self.panel.register_get("/api/speaker", self._speaker_info)
         self.panel.register_post("/api/speaker", self._speaker_action)
         ws_files = WorkspaceFiles()  # 提示词页和记忆页共用同一套锁 / 备份 / 审计
@@ -610,8 +525,8 @@ class VoiceDaemon:
 
         2026-10-27 分级方案 P2：GUANJIA_TALK_DIRECT=1 时语音轮直调智谱
         （底盘+滚动摘要+当轮图，工具自执行，3~4 秒开口），不再走网关会话；
-        开关关闭/缺省时走原网关路径（灰度，改 voice.env 即回滚）。
-        微信/面板不受影响，仍走网关。
+        开关关闭/缺省时走 ModularBrain（agent-runtime）路径（灰度，改 voice.env 即回滚）。
+        OpenClaw 网关已退役；当前主线使用 agent-runtime，面板经本机控制口。
         """
         if self._talk_direct is not None:
             return self._talk_direct.stream(text, speaker=self._turn_speaker)
@@ -910,8 +825,6 @@ class VoiceDaemon:
                 monitor.note_activity()
             self.hub.update(uid, verdict="accept", reason=d.reason, sent=d.text)
             self._accept_utterance(d.text, uid, speaker)
-            if source == "mic":
-                self._observe_accepted_voice(d.text, uid, speaker)
         elif d.verdict == "wake_only":
             self.hub.update(uid, verdict="wake_only", reason=d.reason)
             self._wake_ack(uid)
@@ -1451,9 +1364,6 @@ class VoiceDaemon:
             except queue.Empty:
                 break
         log.info("stop speaking (%s)", reason)
-        core_shadow = getattr(self, "_core_shadow", None)
-        if core_shadow is not None:
-            core_shadow.cancel_current(reason)
         if reason == "barge-in":
             self.hub.stage(self._turn_uid, "barge", "done", "被主人打断")
             if not self._turn_is_say:
@@ -1504,7 +1414,7 @@ class VoiceDaemon:
                 "VAD_THRESHOLD": same(vad["threshold"].default), "VAD_MIN_SILENCE": same(vad["min_silence"].default),
                 "VAD_MIN_SPEECH": same(vad["min_speech"].default), "MIN_UTT_SEC": same(MIN_UTT_SEC),
                 "FIRST_SENT_MAX_CHARS": same(FIRST_SENT_MAX_CHARS), "FIRST_SENT_SOFT_MIN": same(FIRST_SENT_SOFT_MIN),
-                "BARGE_MS": same(BARGE_MS), "BARGE_GUARD_MS": same(BARGE_GUARD_MS)}
+                "BARGE_GUARD_MS": same(BARGE_GUARD_MS)}
 
     def _speaker_info(self, query: dict) -> tuple[int, dict]:
         g = self.gate or self._spare_gate
@@ -1695,7 +1605,7 @@ class VoiceDaemon:
         if self._turn_is_say:
             return
         if not self.task_dispatch.record_start(self._turn_uid, task["id"]):
-            # 没有主线语音轮（微信/面板/外部会话派活）：直接领取执行，
+            # 没有主线语音轮（面板/外部会话派活）：直接领取执行，
             # 不能让任务挂在 queued 里永远没人管
             self.start_task_worker(task["id"])
             log.info("task dispatched directly (no voice turn): %s", task["id"])
@@ -1833,7 +1743,7 @@ class VoiceDaemon:
         self.wake = WakeMatcher(s.wake_words)
         if self.gate:
             self.gate.threshold = s.spk_threshold
-        self.barge.cfg = replace(self.barge.cfg, rms_min=s.barge_rms_min)
+        self.barge.cfg = replace(self.barge.cfg, rms_min=s.barge_rms_min, trigger_ms=s.barge_trigger_ms)
         if s.ack_text != self._ack_text and self.health.tts:
             self._prepare_ack()
         log.info("settings applied: %s", to_dict(s))
@@ -1952,7 +1862,8 @@ class VoiceDaemon:
                  "control=127.0.0.1:%d", self.sr, self.in_dev, self.out_dev, self.gate.names() if self.gate else "off",
                  self.gate.model.stem if self.gate else "-", self.gate.legacy if self.gate else "-",
                  self.gate.counts() if self.gate else "-", "identify-only", s.spk_threshold, "/".join(s.wake_words),
-                 s.wake_required, s.follow_up_sec, self.mic_gain, "on" if self.aec else "off", BARGE_MS, BARGE_GUARD_MS,
+                 s.wake_required, s.follow_up_sec, self.mic_gain, "on" if self.aec else "off",
+                 s.barge_trigger_ms, BARGE_GUARD_MS,
                  s.barge_rms_min, BARGE_FLOOR_RATIO, TTS_TIMEOUT_SEC, MAIN_SESSION_KEY, self.control_port)
         try:
             self.control = start_control_server(self, self.control_port, panel=self.panel)
@@ -2098,14 +2009,6 @@ class VoiceDaemon:
         if self.context_gardener is not None:
             self.context_gardener.stop()
         self.audit.stop()
-        adapter = getattr(self, '_voice_shadow_adapter', None)
-        if adapter is not None:
-            adapter.close(drain=False, timeout=0.2)
-            log.info('voice shadow stopped: %s', adapter.metrics())
-        core_shadow = getattr(self, '_core_shadow', None)
-        if core_shadow is not None:
-            core_shadow.close(timeout=0.2)
-            log.info('core shadow stopped: %s', core_shadow.metrics())
         if self.task_ipc is not None:
             self.task_ipc.stop()
         if self.task_executor is not None:

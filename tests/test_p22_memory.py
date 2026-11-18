@@ -93,7 +93,7 @@ try:
     check((hist / "audit.jsonl").exists() and "MEMORY.md" in (hist / "audit.jsonl").read_text(encoding="utf-8"), "audit line written by WorkspaceFiles")
 
     # 4. 白名单：记忆页只管自己那几个
-    for bad in ("SOUL.md", "AGENTS.md", "../x.md", "memory/notes.md", "skills/guanjia-notes/SKILL.md", ""):
+    for bad in ("SOUL.md", "AGENTS.md", "../x.md", "memory/notes.md", "skills/old/SKILL.md", ""):
         check(svc.get({"rel": bad})[0] == 400 and svc.post({"rel": bad, "text": "x", "base_sha": ""})[0] == 400, f"reject rel {bad!r} (400)")
     check(not (ws / "SOUL.md").exists(), "nothing written for rejected rel")
 

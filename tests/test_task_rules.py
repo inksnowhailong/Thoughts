@@ -13,6 +13,7 @@ def check(condition: bool, name: str) -> None:
 
 
 check("超过 5 秒" in rules and "task_start" in rules, "long multi-step work routes to task_start")
-check("短操作、普通聊天、单次查询、开已登记程序仍直接做" in rules, "ordinary conversation is not taskified")
-check("不会执行模型、下载、shell" in rules and "不会杀外部进程" in rules, "rules state no execution and no process killing")
+check("短操作、普通聊天、单次查询和开已登记程序直接处理" in rules, "ordinary conversation is not taskified")
+check("只调用当前请求实际提供的工具" in rules, "rules do not assume unavailable tools")
+check("不会杀外部进程" in rules, "task cancellation does not kill processes")
 print("ALL PASS test_task_rules")

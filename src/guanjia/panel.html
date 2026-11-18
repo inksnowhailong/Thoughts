@@ -108,12 +108,6 @@
     <div class="flow" id="flow"></div>
     <div id="current">还没有人说话</div>
     <div class="hint tip">点任意一个环节：看它的参数、改提示词（再点一次收起）</div>
-    <details id="shadowDetails" data-alt="architecture-shadow" style="margin-top:8px;font-size:12px;color:var(--dim);">
-      <summary style="cursor:pointer;">架构影子状态（只读）</summary>
-      <div id="shadowFlags" data-alt="shadow-flags" style="margin-top:4px;"></div>
-      <div id="shadowInputMetrics" data-alt="shadow-input-metrics"></div>
-      <div id="shadowCoreMetrics" data-alt="shadow-core-metrics"></div>
-    </details>
   </section>
   <section id="drawer" data-alt="node-drawer" hidden>
     <div class="drawer-head">
@@ -901,19 +895,6 @@ function renderAll() { renderStatus(); renderFlow(); renderRows(); renderDetail(
 let renderQueued = false;
 function scheduleRender() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderFlow(); renderRows(); renderDetail(); }); } }
 
-async function refreshShadowProjection() {
-  try {
-    const r = await getJson("/api/architecture-shadow");
-    if (!r.ok || !r.data || !r.data.shadow) return;
-    const sh = r.data.shadow || {};
-    const flags = sh.flags || {}, inp = sh.input || {}, core = sh.core || {};
-    const inDiffs = Array.isArray(inp.difference_fields) && inp.difference_fields.length ? inp.difference_fields.join("、") : "无";
-    const coreDiffs = Array.isArray(core.difference_fields) && core.difference_fields.length ? core.difference_fields.join("、") : "无";
-    if ($("shadowFlags")) $("shadowFlags").textContent = `开关：输入影子 ${flags.input_shadow_v1 ? "开" : "关"}　主程序影子 ${flags.core_shadow_v1 ? "开" : "关"}`;
-    if ($("shadowInputMetrics")) $("shadowInputMetrics").textContent = `输入影子：队列 ${inp.queue || 0}　接收 ${inp.accepted || 0}　丢弃 ${inp.dropped || 0}　失败 ${inp.failures || 0}　差异字段 ${inDiffs}`;
-    if ($("shadowCoreMetrics")) $("shadowCoreMetrics").textContent = `主程序影子：队列 ${core.queue || 0}　接收 ${core.accepted || 0}　丢弃 ${core.dropped || 0}　失败 ${core.failures || 0}　差异字段 ${coreDiffs}`;
-  } catch (e) {}
-}
 async function start() {
   const r = await fetch("/api/snapshot?token=" + encodeURIComponent(TOKEN));
   if (!r.ok) { banner("拿不到数据（" + r.status + "），请刷新页面"); return; }
@@ -922,7 +903,7 @@ async function start() {
   S.modules = snap.log_modules; S.hidden = new Set(snap.hidden_modules);
   for (const rec of snap.records) upsert(rec);
   S.logs = snap.logs || [];
-  buildFilters(); fillSettings(); renderAll(); renderLogs(); refreshSpeaker(); refreshShadowProjection(); setInterval(refreshShadowProjection, 3000);
+  buildFilters(); fillSettings(); renderAll(); renderLogs(); refreshSpeaker();
   const es = new EventSource("/api/events?token=" + encodeURIComponent(TOKEN));
   es.addEventListener("hello", () => banner(""));
   es.addEventListener("status", (e) => { S.status = JSON.parse(e.data).status; renderStatus(); });

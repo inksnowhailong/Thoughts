@@ -34,7 +34,6 @@ class TurnOutcome:
     correlation_id: str
     effects: tuple[StagedEffect, ...]
     committed: bool | None
-    shadow: bool
     repaired: bool = False
     replayed: bool = False
     result: object | None = None
@@ -141,11 +140,9 @@ class MainAgentRuntime:
         *,
         commit: CommitPort,
         repairer: Repairer | None = None,
-        shadow: bool = False,
     ) -> None:
         self._commit_port = commit
         self._repairer = repairer
-        self._shadow = shadow
 
     def process_jsonl(self, source: str | bytes) -> TurnOutcome:
         """Accept JSONL, optionally repair it once, then process it."""
@@ -179,9 +176,6 @@ class MainAgentRuntime:
     ) -> TurnOutcome:
         fingerprint = self._fingerprint(events)
         turn_id = str(events[-1].payload['turn_id'])
-        if self._shadow:
-            proposals = tuple(effect for effect in effects if effect.kind != 'session.write')
-            return TurnOutcome(events[0].correlation_id, (), None, True, repaired=repaired, proposals=proposals)
         committed = self._commit_port.commit_if_absent(turn_id, fingerprint, effects)
         return TurnOutcome(
             events[0].correlation_id,

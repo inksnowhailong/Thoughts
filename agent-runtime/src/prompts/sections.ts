@@ -1,7 +1,6 @@
 /**
  * Prompt Compiler 的角色分节定义（Phase 0 骨架）。
  *
- * section 名与 .trae/documents/agents-md-decomposition.md 的拆解映射表一一对应；
  * 模板文件在包根 prompts/<role>.md，用 `<!-- section:NAME -->` 标记行分节，
  * 编译器（src/prompts/compiler.ts）按这里的顺序拼接。
  */

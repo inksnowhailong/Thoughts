@@ -9,8 +9,8 @@
   位置/时间上下文推断待 E 习惯库置信度达标后接入（启用阈值在 proactive.json）
 - 错标双通道修正（JG-4/QC-18）：声纹开口回写 + 对话中被纠正即回写
 
-视觉调用走网关（127.0.0.1:18789 → 智谱 glm-5.3-flash），独立会话 agent:main:identity，
-不污染主会话与微信；输入用降级后的帧（隐私组合路，采集源头已生效）。
+视觉调用直调智谱熔断代理（127.0.0.1:18793，glm-5.3-flash；OpenClaw 网关已退役 2026-11-09），
+不污染主链会话；输入用降级后的帧（隐私组合路，采集源头已生效）。
 """
 
 from __future__ import annotations
@@ -26,11 +26,8 @@ from typing import Callable
 
 import httpx
 
-from guanjia.brain import load_gateway_token
 from guanjia.proactive.config import ProactiveConfig
 
-_IDENTITY_SESSION = 'agent:main:identity'
-_GATEWAY_URL = 'http://127.0.0.1:18789/v1/chat/completions'
 # 两口人映射（#F15 一男一女）：性别视觉 → 候选身份；声纹/对话纠正可覆盖。
 # 称呼按发起人要求：男主人称"先生"、女主人称"大小姐"。
 _GENDER_TO_WHO = {'男': '先生', '女': '大小姐'}
@@ -58,7 +55,11 @@ class IdentityTracker:
         self._snapshot_path = snapshot_path or (
             Path(str(self._config.path)).parent / 'identity.json'
         )
-        self._token = load_gateway_token()
+        # 直调智谱（经保险丝）：视觉身份判断不再走 OpenClaw 网关会话（网关已退役 2026-11-09）
+        from guanjia.config_hub import ConfigHub
+        hub = ConfigHub()
+        self._zhipu_key = hub.key('zhipu')
+        self._model_url = str(hub.get('models.brain.fuse', 'http://127.0.0.1:18793')).rstrip('/') + '/api/paas/v4/chat/completions'
         self._client_factory = client_factory or (lambda: httpx.Client(timeout=20.0, trust_env=False))
         self._lock = threading.Lock()
         self._presence: dict[str, object] | None = None   # 当前在场身份缓存
@@ -182,27 +183,36 @@ class IdentityTracker:
             self._write_snapshot()
 
     def _ask_gateway(self, content: list[dict[str, object]]) -> str | None:
-        """身份判断：干活模块参数——轻思考 low + 确定性输出 + 结构化 JSON 模式。"""
+        """身份判断：直调智谱（经保险丝）——确定性输出 + 结构化 JSON（OpenClaw 网关退役后）。
+
+        prompt 已要求只输出 JSON 且 _parse 兜底正则抽取，不再依赖 response_format；
+        流式读回避免保险丝 25 秒首字窗误杀（与 trigger._ask_gateway 同款写法）。
+        """
         body = {
-            'model': 'openclaw',
+            'model': 'glm-5.3-flash',
             'messages': [{'role': 'user', 'content': content}],
-            'stream': False,
-            'thinking': {'type': 'enabled'},   # flash 强制项
-            'reasoning_effort': 'low',         # 性别判断是简单任务，不吃深思考
-            'do_sample': False,                # 确定性：同一画面两次判断结论一致
-            'response_format': {'type': 'json_object'},  # 性别 JSON 结构化输出
+            'stream': True,
         }
         headers = {
-            'Authorization': f'Bearer {self._token}',
+            'Authorization': f'Bearer {self._zhipu_key}',
             'Content-Type': 'application/json',
-            'x-openclaw-session-key': _IDENTITY_SESSION,
-            'x-openclaw-agent-id': 'main',  # 多 agent 架构：网关要求显式指定，缺头会被 400 拒掉
+            'Accept': 'text/event-stream',
         }
+        parts: list[str] = []
         try:
             with self._client_factory() as client:
-                response = client.post(_GATEWAY_URL, headers=headers, json=body)
-                response.raise_for_status()
-                return str(response.json()['choices'][0]['message']['content'])
+                with client.stream('POST', self._model_url, headers=headers, json=body) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.startswith('data:'):
+                            continue
+                        data = line[5:].strip()
+                        if data == '[DONE]':
+                            break
+                        chunk = json.loads(data)
+                        for choice in chunk.get('choices') or []:
+                            parts.append((choice.get('delta') or {}).get('content') or '')
+            return ''.join(parts).strip() or None
         except Exception:
             return None
 

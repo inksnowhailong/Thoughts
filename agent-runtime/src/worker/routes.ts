@@ -6,7 +6,7 @@
  *   POST /v1/worker/runs/:id/cancel    取消（置标记；interrupt 挂起时按 reject 唤醒）
  *
  * 鉴权：opts.token 提供时对 /v1/worker/* 校验 Bearer（与主服务全局鉴权同 token，重复校验幂等）。
- * app.ts 接线：`registerWorkerRoutes(app, { token: opts.token })`。
+ * app.ts 接线时可选注入共享 Memory Engine。
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { ZodError } from 'zod';

@@ -1,9 +1,14 @@
 """O5 worker fixture：独立会话、并发、失败、协作取消和影音静默通知。"""
 
+import os
 import tempfile
 import threading
 import time
 from pathlib import Path
+
+# 本文件专测 openclaw 后端路径（brain_factory）。缺省后端已随 OpenClaw 退役切到 ts，
+# 显式钉住环境变量，避免默认值变化影响本测试。
+os.environ.setdefault("GUANJIA_WORKER_BACKEND", "openclaw")
 
 from guanjia.announcement import AnnouncementPolicy
 from guanjia.task_executor import TaskWorkerExecutor
