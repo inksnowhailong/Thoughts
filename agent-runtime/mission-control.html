@@ -17,7 +17,7 @@ header{height:48px;display:flex;align-items:center;gap:16px;padding:0 16px;borde
 .grow{flex:1}
 nav{display:flex;gap:4px}nav button{border:0;background:transparent;color:var(--dim);letter-spacing:.1em;padding:8px 10px}
 nav button.selected{color:#fff;border-bottom:1px solid #fff}
-main{height:calc(100vh - 48px);min-height:640px;display:grid;grid-template-columns:280px minmax(380px,1fr) 340px;grid-template-rows:minmax(0,1fr) 240px;gap:1px;background:var(--line)}
+main{height:calc(100vh - 48px);min-height:820px;display:grid;grid-template-columns:280px minmax(380px,1fr) 340px;grid-template-rows:minmax(0,1fr) 240px;gap:1px;background:var(--line)}
 aside,.center,.timeline{background:var(--bg);min-width:0;min-height:0}
 aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-direction:column;overflow:hidden}
 .panel-title{font-size:10px;color:var(--dim);letter-spacing:.14em;margin:0 0 10px;font-weight:600}
@@ -38,7 +38,8 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .event.key{border-color:rgba(217,180,91,.55);color:#cfc3a0}
 .center-head{display:flex;align-items:center;gap:12px;min-height:40px;padding:0 14px;border-bottom:1px solid var(--faint)}
 .center-head strong{font-size:10px;letter-spacing:.14em}.center-head span{color:var(--dim)}
-#topology{display:block;width:100%;flex:none;height:470px}
+#topology-wrap{flex:1;min-height:200px;overflow:auto}
+#topology{display:block;width:100%;min-width:900px;flex:none;height:100%;min-height:440px}
 .zone{fill:rgba(255,255,255,.022);stroke:var(--faint)}
 .zone-label{fill:var(--dim);font:10px "Segoe UI";letter-spacing:.2em}
 .edge{stroke:rgba(255,255,255,.16);stroke-width:1;fill:none}
@@ -58,6 +59,7 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .node.error .shape{stroke:var(--red)}
 @keyframes pulse{50%{filter:drop-shadow(0 0 1px #fff);opacity:.7}}
 .dialogue-flow{display:flex;gap:6px;align-items:stretch;padding:9px 14px 11px;border-top:1px solid var(--faint);overflow-x:auto;min-height:104px;max-height:240px;flex:none}
+.io-hint{flex:none;padding:5px 14px 8px;color:#6f7377;font-size:10px;border-top:1px solid var(--faint)}
 .flow-card{min-width:170px;max-width:340px;background:#0b0c0e;border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer;display:flex;flex-direction:column;gap:3px;flex:none}
 .flow-card:hover{border-color:#fff}
 .flow-card.empty{opacity:.55;cursor:default}
@@ -105,6 +107,7 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .badge{font:10px Consolas,monospace;color:var(--dim);border:1px solid var(--line);padding:2px 6px}
 .screen{display:none}.screen.active{display:block}
 @media(max-width:1020px){main{grid-template-columns:230px minmax(300px,1fr);grid-template-rows:minmax(340px,1fr) 195px 260px}aside{grid-column:1;grid-row:1}.center{grid-column:2;grid-row:1}.inspector{grid-column:1/3;grid-row:3}.timeline{grid-column:1/3;grid-row:2}}
+@media(max-width:1180px){main{grid-template-columns:240px minmax(340px,1fr) 300px}}
 @media(max-width:680px){header{gap:9px;padding:0 9px}.sub{display:none}nav button{padding:7px 5px}main{height:auto;min-height:calc(100vh - 48px);grid-template-columns:1fr;grid-template-rows:230px 380px 200px 340px}.center{grid-column:1;grid-row:2}.inspector{grid-column:1;grid-row:4}.timeline{grid-column:1;grid-row:3}aside{grid-column:1;grid-row:1}.bar-row{grid-template-columns:110px 1fr 45px}}
 main.memory-view{grid-template-rows:minmax(0,1fr) 0}
 @media(max-width:1020px){main.memory-view{grid-template-rows:minmax(340px,1fr) 0 260px}}
@@ -169,8 +172,9 @@ main.memory-view .timeline{display:none}
   </aside>
   <section class="center">
     <div class="center-head"><strong id="viewTitle">实时拓扑</strong><span id="viewSub">仅显示真实运行状态</span><span class="grow"></span><span id="topologyNote">当前没有执行中的对话</span><span id="watermark" class="mono">事件序号 —</span></div>
-    <svg id="topology" viewBox="0 0 920 440" preserveAspectRatio="xMidYMid meet" role="img" aria-label="运行拓扑"></svg>
+    <div id="topologyWrap"><svg id="topology" viewBox="0 0 920 440" preserveAspectRatio="xMidYMid meet" role="img" aria-label="运行拓扑"></svg></div>
     <div id="dialogueFlow" class="dialogue-flow"><span class="empty">选择左侧一条对话记录，这里会展示：说了什么 → 识别与说话人 → 管家的回复 → 播报情况。</span></div>
+    <div id="ioHint" class="io-hint">看完整输入输出：点右侧「发给模型的完整原文」或下方「直连模型调用」，时间轴每一步点开都有原始数据。</div>
     <div id="memoryCanvas" class="memory-canvas">
       <h2>记忆数据 / 来源：管家主记忆库</h2>
       <div id="memorySummary" class="muted">正在读取记忆索引</div>
@@ -713,11 +717,11 @@ main.memory-view .timeline{display:none}
     return section;
   }
 
-  function modelRoundCards(span) {
+  function modelRoundCards(span, options = {}) {
     // 直连模型调用专用：逐趟展开模型原始输出与工具往返，并常驻展示发给模型的全部原文
     const cards = [];
     const requestMessages = span.input?.request?.messages;
-    if (Array.isArray(requestMessages) && requestMessages.length) {
+    if (!options.skipMessages && Array.isArray(requestMessages) && requestMessages.length) {
       cards.push(messageBlockCard('发给模型的完整内容（按角色原文）', requestMessages));
     }
     const roundList = span.output?.rounds;
@@ -743,6 +747,29 @@ main.memory-view .timeline{display:none}
     return cards;
   }
 
+  function traceModelSpans(trace) {
+    // 整轮 trace 里的所有直连模型调用（可能多趟），按开始时间排序
+    return (trace?.spans ?? [])
+      .filter((span) => span.nodeId === 'model-provider')
+      .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+  }
+
+  function traceAllModelMessages(trace) {
+    // 取最后一趟模型调用的完整请求原文；多趟时前面的趟是工具轮，原始请求都在各自步骤里
+    const spans = traceModelSpans(trace);
+    for (let i = spans.length - 1; i >= 0; i -= 1) {
+      const messages = spans[i].input?.request?.messages;
+      if (Array.isArray(messages) && messages.length) return messages;
+    }
+    return [];
+  }
+
+  function traceAllModelRounds(trace) {
+    const cards = [];
+    for (const span of traceModelSpans(trace)) cards.push(...modelRoundCards(span, { skipMessages: true }));
+    return cards;
+  }
+
   function fieldRow(label, value) {
     const section = make('div', 'field-row-block');
     section.append(make('div', 'field-row-label', label));
@@ -762,7 +789,7 @@ main.memory-view .timeline{display:none}
 
   function rawBlock(label, value) {
     const details = make('details', 'raw');
-    details.append(make('summary', '', `${label}（原始 JSON）`));
+    details.append(make('summary', '', `${label}（原始 JSON，点开查看）`));
     details.append(make('pre', '', pretty(value)));
     return details;
   }
@@ -953,6 +980,9 @@ main.memory-view .timeline{display:none}
         ['说话人', (lastSpan(trace, 'speaker-recognition')?.output?.speaker) ?? '—'],
         ['模型', trace.input?.model ?? '—'],
       ]));
+      cards.push(messageBlockCard('发给模型的完整原文（本轮全部提示词）', traceAllModelMessages(trace)));
+      const modelRounds = traceAllModelRounds(trace);
+      if (modelRounds.length) cards.push(...modelRounds);
       cards.push(fieldCard('追踪信息', [
         ['追踪 ID', trace.traceId],
         ['会话', trace.sessionId],
