@@ -63,6 +63,17 @@ describe('Memory Engine Phases 1–5', () => {
           confidence: 1,
         }],
       }) as { id: string };
+      const page = await engine.browseMemories({ query: 'Orion', limit: 1 });
+      expect(page.total).toBe(1);
+      expect(page.items[0].id).toBe(memory.id);
+      const detail = await engine.getMemoryDetail(memory.id) as {
+        content: string;
+        sources: unknown[];
+        versions: unknown[];
+      };
+      expect(detail.content).toBe('The Orion project uses SQLite for local storage.');
+      expect(detail.sources).toHaveLength(1);
+      expect(detail.versions).toHaveLength(1);
       const context = await engine.createContext({
         agentId: 'test',
         sessionId: 'sqlite-test',

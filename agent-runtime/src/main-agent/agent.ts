@@ -22,6 +22,7 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { loadRuntimeConfig, type RuntimeConfig } from '../config.js';
 import { getChatModel } from '../models/provider.js';
 import { compileRole } from '../prompts/compiler.js';
+import type { TraceRecorder } from '../observability/runtime.js';
 import { ConversationStore, type PendingApproval } from './conversation.js';
 // Wave1-C 接线：真实 Tool Registry（能力声明→schema→bridge 执行，先过 Python Policy）。
 // 测试用 opts.toolsFactory 注入假工具（tool-mock），生产路径走 registry。
@@ -39,6 +40,7 @@ export interface VoiceTurnOptions {
   token?: string;
   /** Optional Phase 1 Memory Engine; absent means the legacy Bridge memory path remains active. */
   memoryEngine?: MemoryEngineAccess;
+  observability?: TraceRecorder;
   /** 测试注入假工具（tool-mock）；缺省真实 registry（mainVisible 能力子集）。 */
   toolsFactory?: (deps: { bridgeUrl: string; token: string }) => RuntimeTool[];
 }
@@ -173,51 +175,93 @@ export async function* handleVoiceTurn(
   speaker?: string,
   opts: VoiceTurnOptions = {},
 ): AsyncGenerator<VoiceChunk> {
-  const store = opts.store ?? defaultStore();
-  const bridgeUrl = opts.bridgeUrl ?? defaultRuntime().bridgeUrl;
-  const token = opts.token ?? defaultRuntime().token;
-  const model = opts.model ?? defaultModel();
-  const tools = (opts.toolsFactory ?? ((d: { bridgeUrl: string; token: string }) =>
-    toLangChainTools({ mainVisible: true }, d)))({ bridgeUrl, token });
-  // 按需检索最小记忆包（≤3 条 × 500 字），检索失败/超时都不阻断语音轮。
-  if (opts.memoryEngine) await recordConversation(opts.memoryEngine, sessionKey, userText);
-  const memory = opts.memoryEngine
-    ? await fetchMemoryFromEngine(opts.memoryEngine, sessionKey, userText)
-    : await fetchMemory(bridgeUrl, token, userText);
+  const agentSpan = opts.observability?.startSpan('main-agent', 'MAIN AGENT TURN', {
+    sessionKey,
+    speaker: speaker ?? null,
+    userText,
+  });
+  try {
+    const store = opts.store ?? defaultStore();
+    const bridgeUrl = opts.bridgeUrl ?? defaultRuntime().bridgeUrl;
+    const token = opts.token ?? defaultRuntime().token;
+    const model = opts.model ?? defaultModel();
+    const tools = (opts.toolsFactory ?? ((d: { bridgeUrl: string; token: string }) =>
+      toLangChainTools({ mainVisible: true }, d)))({ bridgeUrl, token });
+    // 按需检索最小记忆包（≤3 条 × 500 字），检索失败/超时都不阻断语音轮。
+    let memory: string;
+    if (opts.memoryEngine) {
+      const writeSpan = opts.observability?.startSpan('memory-engine', 'WRITE RAW CONVERSATION', {
+        sessionId: sessionKey,
+        eventType: 'conversation',
+        source: 'main-agent',
+        content: { role: 'user', text: userText },
+      }, agentSpan?.id);
+      const written = await recordConversation(opts.memoryEngine, sessionKey, userText);
+      writeSpan?.finish(written ? 'completed' : 'failed', { written });
 
-  const system = compileRole('main', {
-    CHANNEL: '语音',
-    SPEAKER: speaker || '未知',
-    CONTEXT: '', // 语音轮时间在用户消息的「[语音 …]」标记里，模板 voice-rules 已声明
-    MEMORY: memory, // bridge 返回的最小记忆包。
-  }).system;
+      const recallSpan = opts.observability?.startSpan('memory-engine', 'RECALL MEMORIES', {
+        query: userText,
+        sessionId: sessionKey,
+        limit: 3,
+      }, agentSpan?.id);
+      const recalled = await fetchMemoryFromEngine(opts.memoryEngine, sessionKey, userText);
+      memory = recalled.text;
+      recallSpan?.finish(recalled.ok ? 'completed' : 'failed', { memories: memory });
+    } else {
+      memory = await fetchMemory(bridgeUrl, token, userText);
+    }
 
-  const session = store.getSession(sessionKey);
-  const pending = session.pending;
-  if (pending) {
-    const intent = matchIntent(userText);
-    if (intent === 'affirm') {
-      yield* runAffirmFlow(sessionKey, userText, pending, { model, store, system, tools, bridgeUrl, token });
-      return;
+    const system = compileRole('main', {
+      CHANNEL: '语音',
+      SPEAKER: speaker || '未知',
+      CONTEXT: '', // 语音轮时间在用户消息的「[语音 …]」标记里，模板 voice-rules 已声明
+      MEMORY: memory, // bridge 返回的最小记忆包。
+    }).system;
+
+    const session = store.getSession(sessionKey);
+    const pending = session.pending;
+    if (pending) {
+      const intent = matchIntent(userText);
+      if (intent === 'affirm') {
+        yield* runAffirmFlow(sessionKey, userText, pending, {
+          model, store, system, tools, bridgeUrl, token,
+          observability: opts.observability,
+          parentSpanId: agentSpan?.id,
+        });
+        return;
+      }
+      if (intent === 'deny') {
+        store.setPending(sessionKey, null);
+        store.appendMessage(sessionKey, new HumanMessage(userText));
+        store.appendMessage(
+          sessionKey,
+          new SystemMessage(`用户拒绝了刚才的确认请求（${pending.capabilityId}），不要再尝试该操作，简短回应即可。`),
+        );
+        yield* runModelLoop(sessionKey, {
+          model, store, system, tools,
+          observability: opts.observability,
+          parentSpanId: agentSpan?.id,
+        });
+        return;
+      }
+      // 既非确认也非拒绝：当普通消息处理，pending 保留
     }
-    if (intent === 'deny') {
-      store.setPending(sessionKey, null);
-      store.appendMessage(sessionKey, new HumanMessage(userText));
-      store.appendMessage(
-        sessionKey,
-        new SystemMessage(`用户拒绝了刚才的确认请求（${pending.capabilityId}），不要再尝试该操作，简短回应即可。`),
-      );
-      yield* runModelLoop(sessionKey, { model, store, system, tools });
-      return;
-    }
-    // 既非确认也非拒绝：当普通消息处理，pending 保留
+
+    store.appendMessage(sessionKey, new HumanMessage(userText));
+    yield* runModelLoop(sessionKey, {
+      model, store, system, tools,
+      observability: opts.observability,
+      parentSpanId: agentSpan?.id,
+    });
+  } catch (error) {
+    agentSpan?.finish('failed', null, error instanceof Error ? error.message : String(error));
+    throw error;
+  } finally {
+    agentSpan?.finish('completed');
   }
-
-  store.appendMessage(sessionKey, new HumanMessage(userText));
-  yield* runModelLoop(sessionKey, { model, store, system, tools });
 }
 
-async function recordConversation(engine: MemoryEngineAccess, sessionId: string, text: string): Promise<void> {
+async function recordConversation(engine: MemoryEngineAccess, sessionId: string, text: string): Promise<boolean> {
   try {
     await engine.writeRaw({
       eventType: 'conversation',
@@ -226,17 +270,23 @@ async function recordConversation(engine: MemoryEngineAccess, sessionId: string,
       occurredAt: new Date().toISOString(),
       content: { role: 'user', text },
     });
+    return true;
   } catch (error) {
     console.warn('[memory-engine] raw conversation write failed:', error);
+    return false;
   }
 }
 
-async function fetchMemoryFromEngine(engine: MemoryEngineAccess, sessionId: string, query: string): Promise<string> {
+async function fetchMemoryFromEngine(
+  engine: MemoryEngineAccess,
+  sessionId: string,
+  query: string,
+): Promise<{ text: string; ok: boolean }> {
   try {
-    return await engine.recallForAgent(query, sessionId);
+    return { text: await engine.recallForAgent(query, sessionId), ok: true };
   } catch (error) {
     console.warn('[memory-engine] recall failed; continuing without injected memories:', error);
-    return '';
+    return { text: '', ok: false };
   }
 }
 
@@ -247,6 +297,8 @@ interface LoopDeps {
   tools: RuntimeTool[];
   bridgeUrl?: string;
   token?: string;
+  observability?: TraceRecorder;
+  parentSpanId?: string;
 }
 
 /** 模型循环：流式聚合 → 落 AIMessage → 执行 tool_calls → ToolMessage 回灌，直到无工具或超轮数。 */
@@ -256,12 +308,29 @@ async function* runModelLoop(sessionKey: string, deps: LoopDeps): AsyncGenerator
   let rounds = 0;
   while (true) {
     const messages: BaseMessage[] = [new SystemMessage(system), ...store.getSession(sessionKey).messages];
+    const modelSpan = deps.observability?.startSpan('model-provider', 'MODEL INVOCATION', {
+      model: model.constructor.name,
+      messages: messages.map((message) => ({
+        type: message.type,
+        content: message.content,
+        name: message.name,
+        additionalKwargs: message.additional_kwargs,
+        ...('tool_calls' in message ? { toolCalls: message.tool_calls } : {}),
+        ...('tool_call_id' in message ? { toolCallId: message.tool_call_id } : {}),
+      })),
+    }, deps.parentSpanId);
     let agg: AIMessageChunk | undefined;
-    for await (const c of await bound.stream(messages as never)) {
-      const chunk = c as AIMessageChunk;
-      agg = agg ? agg.concat(chunk) : chunk;
-      const text = typeof chunk.content === 'string' ? chunk.content : '';
-      if (text) yield { type: 'delta', text };
+    try {
+      for await (const c of await bound.stream(messages as never)) {
+        const chunk = c as AIMessageChunk;
+        agg = agg ? agg.concat(chunk) : chunk;
+        const text = typeof chunk.content === 'string' ? chunk.content : '';
+        if (text) yield { type: 'delta', text };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      modelSpan?.finish('failed', null, message);
+      throw error;
     }
     const ai = new AIMessage({
       content: agg && typeof agg.content === 'string' ? agg.content : '',
@@ -270,13 +339,19 @@ async function* runModelLoop(sessionKey: string, deps: LoopDeps): AsyncGenerator
     store.appendMessage(sessionKey, ai);
     const usage = agg?.usage_metadata;
     const toolCalls = ai.tool_calls ?? [];
+    modelSpan?.finish('completed', {
+      content: ai.content,
+      toolCalls,
+      usage: usage ?? null,
+      responseMetadata: agg?.response_metadata ?? {},
+    });
     if (toolCalls.length === 0 || rounds >= MAX_TOOL_ROUNDS) {
       if (usage) yield { type: 'usage', usage: toOpenAIUsage(usage) };
       return;
     }
     rounds += 1;
     for (const tc of toolCalls) {
-      yield* execToolCall(sessionKey, tc, tools, store);
+      yield* execToolCall(sessionKey, tc, tools, store, deps.observability, deps.parentSpanId);
     }
   }
 }
@@ -287,12 +362,22 @@ async function* execToolCall(
   tc: { id?: string; name: string; args?: Record<string, unknown> },
   tools: RuntimeTool[],
   store: ConversationStore,
+  observability?: TraceRecorder,
+  parentSpanId?: string,
 ): AsyncGenerator<VoiceChunk> {
+  const toolSpan = observability?.startSpan('tool-router', `TOOL ${tc.name}`, {
+    tool: tc.name,
+    args: tc.args ?? {},
+    callId: tc.id ?? null,
+  }, parentSpanId);
   let result: string;
   try {
     result = await invokeTool(tools, tc.name, (tc.args ?? {}) as Record<string, unknown>);
+    toolSpan?.finish('completed', { result });
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     if (isPolicyConfirmationError(e)) {
+      toolSpan?.finish('waiting', { awaitingApproval: true, summary: e.summary });
       store.setPending(sessionKey, {
         capabilityId: e.capabilityId,
         todoId: e.todoId,
@@ -302,7 +387,8 @@ async function* execToolCall(
       });
       result = `此操作被权限系统拦下，需要主人确认后才能执行：${e.summary}。请用一句口语问主人是否允许。`;
     } else {
-      result = `工具执行失败：${e instanceof Error ? e.message : String(e)}`;
+      toolSpan?.finish('failed', null, message);
+      result = `工具执行失败：${message}`;
     }
   }
   store.appendMessage(sessionKey, new ToolMessage({ content: result, tool_call_id: tc.id ?? '' }));
@@ -313,7 +399,7 @@ async function* runAffirmFlow(
   sessionKey: string,
   userText: string,
   pending: PendingApproval,
-  deps: Required<LoopDeps>,
+  deps: LoopDeps & { bridgeUrl: string; token: string },
 ): AsyncGenerator<VoiceChunk> {
   const { store, system, tools, bridgeUrl, token } = deps;
 
@@ -327,6 +413,12 @@ async function* runAffirmFlow(
 
   const retryCallId = `retry_${pending.todoId}`;
   const retryArgs: Record<string, unknown> = { ...pending.args };
+  const retrySpan = deps.observability?.startSpan('tool-router', `TOOL ${pending.toolName}`, {
+    tool: pending.toolName,
+    args: retryArgs,
+    callId: retryCallId,
+    retry: true,
+  }, deps.parentSpanId);
   let result: string;
   try {
     const credential = await confirmCredential(bridgeUrl, token, pending.todoId);
@@ -338,24 +430,37 @@ async function* runAffirmFlow(
     store.setPending(sessionKey, null);
     try {
       result = await invokeTool(tools, pending.toolName, retryArgs);
+      retrySpan?.finish('completed', { result });
     } catch (e) {
       if (isPolicyConfirmationError(e)) {
+        retrySpan?.finish('waiting', { awaitingApproval: true, summary: e.summary });
         store.setPending(sessionKey, { ...pending, todoId: e.todoId });
         result = `重试仍需要确认：${e.summary}`;
       } else {
-        result = `工具执行失败：${e instanceof Error ? e.message : String(e)}`;
+        const message = e instanceof Error ? e.message : String(e);
+        retrySpan?.finish('failed', null, message);
+        result = `工具执行失败：${message}`;
       }
     }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    retrySpan?.finish('failed', null, message);
     // confirm 拿不到 credential（如 409 已被处理）：不重试，把结果如实交给模型收尾
     store.appendMessage(
       sessionKey,
       new AIMessage({ content: '', tool_calls: [{ id: retryCallId, name: pending.toolName, args: retryArgs }] }),
     );
     store.setPending(sessionKey, null);
-    result = `确认未通过，操作未执行：${e instanceof Error ? e.message : String(e)}`;
+    result = `确认未通过，操作未执行：${message}`;
   }
   store.appendMessage(sessionKey, new ToolMessage({ content: result, tool_call_id: retryCallId }));
 
-  yield* runModelLoop(sessionKey, { model: deps.model, store, system, tools });
+  yield* runModelLoop(sessionKey, {
+    model: deps.model,
+    store,
+    system,
+    tools,
+    observability: deps.observability,
+    parentSpanId: deps.parentSpanId,
+  });
 }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, lte, or } from 'drizzle-orm';
 import type {
   CreateContextInput,
   CreateMemoryInput,
@@ -168,6 +168,68 @@ export class MemoryEngine {
     if (this.jobProcessor) clearInterval(this.jobProcessor);
     this.jobProcessor = null;
     await this.client.close();
+  }
+
+  async browseMemories(input: {
+    limit?: number;
+    offset?: number;
+    query?: string;
+    memoryType?: string;
+  } = {}): Promise<{ items: Array<Record<string, unknown>>; total: number; limit: number; offset: number }> {
+    await this.initialize();
+    const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 50)));
+    const offset = Math.max(0, Math.trunc(input.offset ?? 0));
+    const filters = [];
+    const query = input.query?.trim();
+    if (query) {
+      const pattern = `%${query}%`;
+      filters.push(or(
+        like(memories.content, pattern),
+        like(memories.briefContent, pattern),
+        like(memories.tags, pattern),
+        like(memories.entities, pattern),
+      ));
+    }
+    if (input.memoryType) filters.push(eq(memories.memoryType, input.memoryType));
+    const where = filters.length > 0 ? and(...filters) : undefined;
+    const [items, [totalRow]] = await Promise.all([
+      this.client.db.select({
+        id: memories.id,
+        briefContent: memories.briefContent,
+        memoryType: memories.memoryType,
+        tags: memories.tags,
+        entities: memories.entities,
+        importance: memories.importance,
+        confidence: memories.confidence,
+        status: memories.status,
+        origin: memories.origin,
+        createdAt: memories.createdAt,
+        updatedAt: memories.updatedAt,
+        version: memories.version,
+      }).from(memories).where(where)
+        .orderBy(desc(memories.updatedAt), desc(memories.id))
+        .limit(limit).offset(offset),
+      this.client.db.select({ value: count() }).from(memories).where(where),
+    ]);
+    return { items, total: totalRow?.value ?? 0, limit, offset };
+  }
+
+  async getMemoryDetail(memoryId: string): Promise<Record<string, unknown> | null> {
+    await this.initialize();
+    const [memory] = await this.client.db.select().from(memories)
+      .where(eq(memories.id, memoryId)).limit(1);
+    if (!memory) return null;
+    const [sources, relations, versions] = await Promise.all([
+      this.client.db.select().from(memorySources).where(eq(memorySources.memoryId, memoryId)),
+      this.client.db.select().from(memoryRelations).where(or(
+        eq(memoryRelations.sourceMemoryId, memoryId),
+        eq(memoryRelations.targetMemoryId, memoryId),
+      )),
+      this.client.db.select().from(memoryVersions)
+        .where(eq(memoryVersions.memoryId, memoryId))
+        .orderBy(desc(memoryVersions.version)),
+    ]);
+    return { ...memory, sources, relations, versions };
   }
 
   async createContext(input: CreateContextInput): Promise<Record<string, unknown>> {

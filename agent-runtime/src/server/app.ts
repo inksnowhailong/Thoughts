@@ -12,11 +12,15 @@
  * - 错误统一 OpenAI 格式 {error:{message,type}}（brain.py 按该形状解析）。
  */
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { handleVoiceTurn, type VoiceTurnOptions } from '../main-agent/agent.js';
 import { compileRole } from '../prompts/compiler.js';
 import { MemoryEngine } from '../memory-engine/service.js';
 import { registerMemoryRoutes } from '../memory-engine/routes.js';
+import { ObservabilityHub, type RuntimeEvent } from '../observability/runtime.js';
+import { AGENT_RUNTIME_ROOT } from '../tools/paths.js';
 import { registerWorkerRoutes } from '../worker/routes.js';
 
 export interface AppOptions {
@@ -24,6 +28,7 @@ export interface AppOptions {
   /** 透传给 handleVoiceTurn（测试注入假模型/临时会话目录等）。 */
   agentOpts?: VoiceTurnOptions;
   memoryEngine?: MemoryEngine;
+  observability?: ObservabilityHub;
   logger?: boolean;
 }
 
@@ -31,18 +36,132 @@ function headerStr(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+function cookieValue(cookieHeader: string | undefined, name: string): string | undefined {
+  const entry = cookieHeader?.split(';').map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
+  if (!entry) return undefined;
+  try {
+    return decodeURIComponent(entry.slice(name.length + 1));
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildApp(opts: AppOptions): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
+  const observability = opts.observability ?? new ObservabilityHub(':memory:');
 
   app.addHook('onRequest', async (req, reply) => {
-    if (req.url.split('?')[0] === '/healthz') return;
-    if (req.headers.authorization !== `Bearer ${opts.token}`) {
+    const requestPath = req.url.split('?')[0];
+    if (requestPath === '/healthz' || requestPath === '/mission-control') return;
+    const hasBearer = req.headers.authorization === `Bearer ${opts.token}`;
+    const hasPanelCookie = requestPath.startsWith('/api/observability/')
+      && cookieValue(req.headers.cookie, 'mission_control') === opts.token;
+    if (!hasBearer && !hasPanelCookie) {
       reply.status(401).send({ error: { message: '无效的访问令牌', type: 'invalid_request_error' } });
       return reply;
     }
   });
 
   app.get('/healthz', async () => ({ ok: true }));
+  app.addHook('onClose', async () => {
+    if (!opts.observability) observability.close();
+  });
+
+  app.get('/mission-control', async (_request, reply) => {
+    const html = await readFile(path.join(AGENT_RUNTIME_ROOT, 'mission-control.html'), 'utf8');
+    reply.header('cache-control', 'no-store');
+    reply.header('set-cookie',
+      `mission_control=${encodeURIComponent(opts.token)}; Path=/api/observability; HttpOnly; SameSite=Strict`);
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
+  app.get('/api/observability/snapshot', async () => ({
+    ...observability.snapshot(Boolean(opts.memoryEngine)),
+  }));
+  app.get('/api/observability/traces', async (request, reply) => {
+    const query = request.query as { limit?: string };
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return reply.code(400).send({ error: 'limit must be an integer from 1 to 100' });
+    }
+    return { traces: observability.listTraces(limit) };
+  });
+  app.get('/api/observability/traces/:traceId', async (request, reply) => {
+    const params = request.params as { traceId: string };
+    const trace = observability.getTrace(params.traceId);
+    if (!trace) return reply.code(404).send({ error: 'trace_not_found' });
+    return trace;
+  });
+  app.get('/api/observability/memories', async (request, reply) => {
+    if (!opts.memoryEngine) return reply.code(503).send({ error: 'memory_engine_not_configured' });
+    const query = request.query as { limit?: string; offset?: string; q?: string; type?: string };
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    const offset = query.offset === undefined ? 0 : Number(query.offset);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100
+      || !Number.isInteger(offset) || offset < 0) {
+      return reply.code(400).send({ error: 'invalid_memory_page' });
+    }
+    return opts.memoryEngine.browseMemories({
+      limit,
+      offset,
+      query: query.q,
+      memoryType: query.type,
+    });
+  });
+  app.get('/api/observability/memories/:memoryId', async (request, reply) => {
+    if (!opts.memoryEngine) return reply.code(503).send({ error: 'memory_engine_not_configured' });
+    const params = request.params as { memoryId: string };
+    const memory = await opts.memoryEngine.getMemoryDetail(params.memoryId);
+    if (!memory) return reply.code(404).send({ error: 'memory_not_found' });
+    return memory;
+  });
+  app.get('/api/observability/events', async (request, reply) => {
+    const query = request.query as { after?: string };
+    const lastEventId = headerStr(request.headers['last-event-id']);
+    const cursor = Number(lastEventId ?? query.after ?? '0');
+    if (!Number.isSafeInteger(cursor) || cursor < 0) {
+      return reply.code(400).send({ error: 'after must be a non-negative integer' });
+    }
+
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    let lastSent = cursor;
+    let closed = false;
+    const send = (event: RuntimeEvent): void => {
+      if (closed || event.hubOffset <= lastSent) return;
+      lastSent = event.hubOffset;
+      raw.write(`id: ${event.hubOffset}\nevent: runtime\ndata: ${JSON.stringify(event)}\n\n`);
+    };
+    const unsubscribe = observability.subscribe(send);
+    const cleanup = (): void => {
+      if (closed) return;
+      closed = true;
+      clearInterval(keepalive);
+      unsubscribe();
+    };
+    const keepalive = setInterval(() => {
+      if (!closed) raw.write(': keepalive\n\n');
+    }, 15_000);
+    keepalive.unref();
+    raw.on('close', cleanup);
+    raw.write(': connected\n\n');
+
+    const replay = observability.eventsSince(cursor);
+    for (const event of replay.events) send(event);
+    if (replay.hasMore) {
+      raw.write(`event: resync_required\ndata: ${JSON.stringify({ watermark: lastSent })}\n\n`);
+      cleanup();
+      raw.end();
+    }
+    return reply;
+  });
 
   // Wave1-C：Worker Runtime 路由（/v1/worker/*，Python Task Engine 经反转后的适配器调用）。
   // 鉴权复用全局 token；run 管理器的 checkpoint/bridge 地址走 runtime.json 默认值。
@@ -70,10 +189,16 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const completionId = `chatcmpl-${randomUUID()}`;
     const modelName = typeof body.model === 'string' && body.model.length > 0 ? body.model : 'main';
     const created = Math.floor(Date.now() / 1000);
+    const trace = observability.startTrace({
+      sessionId: sessionKey,
+      userText,
+      model: modelName,
+    });
 
     const turn = handleVoiceTurn(sessionKey, userText, speaker, {
       ...opts.agentOpts,
       ...(opts.memoryEngine ? { memoryEngine: opts.memoryEngine } : {}),
+      observability: trace,
     });
 
     if (body.stream === true) {
@@ -92,9 +217,11 @@ export function buildApp(opts: AppOptions): FastifyInstance {
         }
       };
       let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
+      let output = '';
       try {
         for await (const ev of turn) {
           if (ev.type === 'delta') {
+            output += ev.text;
             send({
               id: completionId,
               object: 'chat.completion.chunk',
@@ -106,6 +233,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
             usage = ev.usage;
           }
         }
+        trace.finish('completed', { output, usage: usage ?? null, model: modelName });
         send({
           id: completionId,
           object: 'chat.completion.chunk',
@@ -115,7 +243,9 @@ export function buildApp(opts: AppOptions): FastifyInstance {
           ...(usage ? { usage } : {}),
         });
       } catch (e) {
-        send({ error: { message: e instanceof Error ? e.message : String(e), type: 'runtime_error' } });
+        const message = e instanceof Error ? e.message : String(e);
+        trace.finish('failed', { output, model: modelName }, message);
+        send({ error: { message, type: 'runtime_error' } });
       }
       raw.write('data: [DONE]\n\n');
       raw.end();
@@ -131,10 +261,12 @@ export function buildApp(opts: AppOptions): FastifyInstance {
         else usage = ev.usage;
       }
     } catch (e) {
+      trace.finish('failed', { output: content, model: modelName }, e instanceof Error ? e.message : String(e));
       return reply
         .status(500)
         .send({ error: { message: e instanceof Error ? e.message : String(e), type: 'runtime_error' } });
     }
+    trace.finish('completed', { output: content, usage: usage ?? null, model: modelName });
     return {
       id: completionId,
       object: 'chat.completion',

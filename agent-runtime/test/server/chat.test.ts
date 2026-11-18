@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConversationStore } from '../../src/main-agent/conversation.js';
+import { MemoryEngine } from '../../src/memory-engine/service.js';
 import { mockToolState, resetMockToolState, toLangChainTools as mockTools } from '../../src/main-agent/tool-mock.js';
+import { ObservabilityHub } from '../../src/observability/runtime.js';
 import { buildApp } from '../../src/server/app.js';
 import { ScriptedChatModel } from '../helpers/scripted-model.js';
 
@@ -61,9 +63,103 @@ describe('鉴权', () => {
     const r = await app(new ScriptedChatModel([])).inject({ method: 'GET', url: '/internal/diag/prompt-report' });
     expect(r.statusCode).toBe(401);
   });
+
+  it('面板页面建立 HttpOnly 会话 Cookie，观测 API 仍需要鉴权', async () => {
+    const a = app(new ScriptedChatModel([]));
+    const page = await a.inject({ method: 'GET', url: '/mission-control' });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers['set-cookie']).toContain('HttpOnly');
+    expect(page.body).toContain('实时拓扑');
+
+    const denied = await a.inject({ method: 'GET', url: '/api/observability/snapshot' });
+    expect(denied.statusCode).toBe(401);
+    const allowed = await a.inject({
+      method: 'GET',
+      url: '/api/observability/snapshot',
+      headers: { cookie: 'mission_control=test-token' },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().watermark).toBe(0);
+    await a.close();
+  });
+});
+
+describe('Mission Control 记忆浏览', () => {
+  it('分页读取真实记忆并显示关联详情', async () => {
+    const engine = new MemoryEngine(path.join(dir, 'memory.sqlite3'));
+    await engine.initialize();
+    const memory = await engine.createMemory({
+      content: 'The household uses SQLite for local memory.',
+      briefContent: 'Local memory uses SQLite.',
+      memoryType: 'project_fact',
+      tags: ['SQLite'],
+      createdBy: 'test',
+    }) as { id: string };
+    const a = buildApp({ token: TOKEN, memoryEngine: engine });
+    try {
+      const page = await a.inject({
+        method: 'GET',
+        url: '/api/observability/memories?limit=1&offset=0&q=household',
+        headers: auth,
+      });
+      expect(page.statusCode).toBe(200);
+      expect(page.json()).toMatchObject({
+        total: 1,
+        items: [expect.objectContaining({ id: memory.id, briefContent: 'Local memory uses SQLite.' })],
+      });
+
+      const detail = await a.inject({
+        method: 'GET',
+        url: `/api/observability/memories/${memory.id}`,
+        headers: auth,
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({ id: memory.id, content: 'The household uses SQLite for local memory.' });
+    } finally {
+      await a.close();
+    }
+  });
 });
 
 describe('POST /v1/chat/completions 非流式', () => {
+  it('为真实对话保存输入、模型调用、响应和 Trace 事件', async () => {
+    const observability = new ObservabilityHub(':memory:');
+    const a = buildApp({
+      token: TOKEN,
+      observability,
+      agentOpts: {
+        model: new ScriptedChatModel([{ content: 'hello back' }]),
+        store: new ConversationStore(dir),
+        bridgeUrl: 'http://127.0.0.1:1',
+        token: 'bridge-token',
+        toolsFactory: (deps) => mockTools({}, deps),
+      },
+    });
+    try {
+      const response = await a.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        headers: auth,
+        payload: { model: 'test-model', messages: [{ role: 'user', content: 'hello trace' }] },
+      });
+      expect(response.statusCode).toBe(200);
+      const [summary] = observability.listTraces();
+      const trace = observability.getTrace(summary.traceId);
+      expect(trace?.input).toMatchObject({ userText: 'hello trace', model: 'test-model' });
+      expect(trace?.output).toMatchObject({ output: 'hello back' });
+      const modelSpan = trace?.spans.find((span) => span.nodeId === 'model-provider');
+      expect(modelSpan?.input).toMatchObject({
+        model: 'ScriptedChatModel',
+        messages: expect.arrayContaining([expect.objectContaining({ content: 'hello trace' })]),
+      });
+      expect(modelSpan?.output).toMatchObject({ content: 'hello back' });
+      expect(observability.eventsSince(0).events.map((event) => event.eventType)).toContain('trace.completed');
+    } finally {
+      await a.close();
+      observability.close();
+    }
+  });
+
   it('整段返回 choices[0].message.content（只取最后一条 user 消息）', async () => {
     const model = new ScriptedChatModel([{ content: '你好，我在。' }]);
     const r = await app(model).inject({

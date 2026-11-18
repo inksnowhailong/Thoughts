@@ -4,6 +4,7 @@
  */
 import { loadRuntimeConfig } from './config.js';
 import { MemoryEngine } from './memory-engine/service.js';
+import { ObservabilityHub } from './observability/runtime.js';
 import { buildApp } from './server/app.js';
 
 export const AGENT_RUNTIME_VERSION = '0.1.0';
@@ -16,7 +17,8 @@ async function main(): Promise<void> {
   }
   const memoryEngine = new MemoryEngine();
   await memoryEngine.initialize();
-  const app = buildApp({ token: cfg.token, logger: false, memoryEngine });
+  const observability = new ObservabilityHub();
+  const app = buildApp({ token: cfg.token, logger: false, memoryEngine, observability });
   await app.listen({ port: cfg.port, host: '127.0.0.1' });
   console.log(`agent-runtime ${AGENT_RUNTIME_VERSION} 监听 http://127.0.0.1:${cfg.port}（bridge ${cfg.bridgeUrl}）`);
 
@@ -24,7 +26,10 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (closing) return;
     closing = true;
-    app.close().finally(() => process.exit(0));
+    app.close().finally(() => {
+      observability.close();
+      process.exit(0);
+    });
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
