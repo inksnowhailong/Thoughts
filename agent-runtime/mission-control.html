@@ -512,9 +512,9 @@ main.memory-view .timeline{display:none}
 
   function renderGuanjiaStatus(nodes) {
     const voice = nodes.find((node) => node.id === 'voice-runtime');
-    const status = !voice?.observed ? '管家未接入'
-      : voice.health === 'online' ? '管家在线'
-        : voice.health === 'offline' ? '管家已离线' : '管家状态未知';
+    const instances = voice?.instances ?? [];
+    const status = instances.some((instance) => instance.health === 'online') ? '管家在线'
+      : instances.length > 0 ? '管家已离线' : '管家未接入';
     byId('guanjiaStatus').textContent = status;
   }
 
