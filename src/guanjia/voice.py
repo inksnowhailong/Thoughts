@@ -548,9 +548,19 @@ class VoiceDaemon:
             def observed():
                 trace = getattr(self, "_turn_observation", None)
                 parent = getattr(self, "_turn_observation_span", None)
+                provider = getattr(self, "_talk_direct", None)
+                request_view = None
+                try:  # span 一开始就把完整请求体（system 底盘/历史/当轮，图打标记）挂上去
+                    request_view = provider.preview_request(text, speaker=self._turn_speaker)
+                except Exception:
+                    request_view = None
+                    log.exception("failed to build model-provider request preview")
                 span = trace.start_span(
                     "model-provider", "直连模型调用",
-                    {"logicalInput": text, "providerPayload": "未采集"},
+                    {
+                        "logicalInput": text,
+                        "request": request_view,
+                    },
                     parent_span_id=parent.span_id if parent is not None else None,
                 ) if trace is not None else None
                 chunks = []
@@ -559,14 +569,20 @@ class VoiceDaemon:
                         chunks.append(chunk)
                         yield chunk
                     if span is not None:
+                        rounds = list(getattr(provider, "last_rounds", []) or [])
                         span.finish("completed", {
                             "content": "".join(chunks),
-                            "usage": getattr(self._talk_direct, "last_usage", None),
-                            "providerPayload": "未采集",
+                            "usage": getattr(provider, "last_usage", None),
+                            "rounds": rounds,  # 每趟真实请求体 + 模型原始输出 + 工具往返
                         })
                 except Exception as error:
                     if span is not None:
-                        span.finish("failed", error=str(error))
+                        rounds = list(getattr(provider, "last_rounds", []) or [])
+                        span.finish("failed", {
+                            "content": "".join(chunks),
+                            "rounds": rounds,
+                            "error": str(error),
+                        }, error=str(error))
                     raise
 
             return observed()
@@ -806,8 +822,16 @@ class VoiceDaemon:
                                  capture_started_at: str | None = None,
                                  capture_started_clock: float | None = None) -> Trace | None:
         client = getattr(self, "observability", None)
-        if client is None or source != "mic":
+        if client is None:
             return None
+        # 注入轮没有录音/ASR，直接从主智能体开始建主干 trace；麦克风轮先建听觉链
+        if source != "mic":
+            try:
+                trace = client.start_trace(MAIN_SESSION_KEY, text)
+                return trace
+            except Exception:
+                log.exception("failed to record injected input")
+                return None
         asr_seconds = max(0, asr_ms or 0) / 1000
         asr_started_at = datetime.fromtimestamp(time.time() - asr_seconds, timezone.utc) \
             .isoformat(timespec="milliseconds").replace("+00:00", "Z")

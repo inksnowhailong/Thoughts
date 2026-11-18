@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import re
@@ -393,6 +394,8 @@ class TalkDirect:
         self._base_sig: str | None = None
         self.last_usage: dict = {}
         self._turn_usage: dict = {}
+        self.last_request: dict | None = None   # 最后一趟的完整请求体（图 base64 换占位标记）
+        self.last_rounds: list[dict] = []       # 本轮每趟的请求体/原始输出/工具结果（面板采集用）
 
     def _base_prompt(self) -> str:
         """固定底盘：SOUL + USER + MEMORY + IDENTITY + 管家规则 + 红线 + 视觉说明。
@@ -451,16 +454,13 @@ class TalkDirect:
         except Exception:
             return '', note
 
-    def stream(self, text: str, speaker: str = '') -> Iterator[str]:
-        """一轮直调：生成器逐段 yield 回复文本（TurnRunner.open_stream 兼容形状）。
+    def _build_messages(self, text: str, speaker: str = '') -> tuple[list[dict], str, str]:
+        """组装一轮完整 messages（底盘 + 滚动历史 + 当轮），返回 (messages, tagged, vision_note)。
 
-        工具循环：模型返回 tool_calls → 本地执行 → 结果追加 → 再调，最多 _MAX_TOOL_ROUNDS 批。
-        usage 通过 self.last_usage 交给 voice 侧记账。
+        stream() 与 preview_request() 共用，保证面板看到的请求体就是真实发出的。
         """
-        self.last_usage = {}
         base = self._base_prompt()
         image_b64, vision_note = self._vision_frame_b64()
-
         messages: list[dict] = [{'role': 'system', 'content': base}]
         messages.extend(self._history.as_messages())
         user_content: list | str
@@ -479,12 +479,39 @@ class TalkDirect:
         else:
             user_content = tagged
         messages.append({'role': 'user', 'content': user_content})
+        return messages, tagged, vision_note
 
+    @staticmethod
+    def _redact_request(body: dict) -> dict:
+        """请求体深拷贝，图片 base64 换成占位标记（几十万字符的图会拖死面板渲染）。"""
+        view = copy.deepcopy(body)
+        for message in view.get('messages', []):
+            content = message.get('content')
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                url = (part.get('image_url') or {}).get('url', '') if isinstance(part, dict) else ''
+                if url.startswith('data:image'):
+                    part['image_url']['url'] = '[图片 base64 已省略，真实请求里是摄像头当前画面]'
+        return view
+
+    def stream(self, text: str, speaker: str = '') -> Iterator[str]:
+        """一轮直调：生成器逐段 yield 回复文本（TurnRunner.open_stream 兼容形状）。
+
+        工具循环：模型返回 tool_calls → 本地执行 → 结果追加 → 再调，最多 _MAX_TOOL_ROUNDS 批。
+        usage 通过 self.last_usage 交给 voice 侧记账。
+        """
+        self.last_usage = {}
+        self.last_request = None
+        self.last_rounds = []
+        messages, tagged, vision_note = self._build_messages(text, speaker)
         reply_parts: list[str] = []
         with httpx.Client(timeout=120.0, trust_env=False) as client:
             for round_no in range(_MAX_TOOL_ROUNDS):
                 body = {'model': _MODEL, 'messages': messages, 'tools': _TOOLS, 'stream': True}
+                self.last_request = self._redact_request(body)
                 self._turn_usage = {}
+                round_record: dict = {'round': round_no + 1, 'request': self.last_request}
                 r = client.stream('POST', self._url, headers={
                     'Authorization': f'Bearer {self._key}',
                     'Content-Type': 'application/json',
@@ -527,22 +554,37 @@ class TalkDirect:
                         for _, slot in sorted(tool_calls.items())
                     ]
                 messages.append(assistant_msg)
+                round_record['assistant'] = assistant_msg
+                round_record['usage'] = dict(self._turn_usage)
                 self._merge_turn_usage()  # 趟结束：usage 入整轮账
                 if not tool_calls:
+                    self.last_rounds.append(round_record)
                     break  # 纯文本收尾，出循环
                 if round_no == _MAX_TOOL_ROUNDS - 1:
+                    self.last_rounds.append(round_record)
                     yield '（还有要做的活我记下来慢慢做。）'
                     break
+                tool_results: list[dict] = []
                 for _, slot in sorted(tool_calls.items()):
                     try:
                         args = json.loads(slot['arguments'] or '{}')
                     except json.JSONDecodeError:
                         args = {}
                     result = self._toolbox.run(slot['name'], args)
+                    tool_results.append({'name': slot['name'], 'arguments': args, 'result': str(result)[:800]})
                     messages.append({'role': 'tool', 'tool_call_id': slot['id'],
                                      'content': str(result)[:800]})
+                round_record['toolResults'] = tool_results
+                self.last_rounds.append(round_record)
         reply = ''.join(reply_parts).strip()
         self._history.append(text, reply, vision_note)
+
+    def preview_request(self, text: str, speaker: str = '') -> dict:
+        """面板用：按当前底盘+历史+当轮组装请求体（不发请求），图 base64 打占位标记。"""
+        return self._redact_request({
+            'model': _MODEL, 'messages': self._build_messages(text, speaker)[0],
+            'tools': _TOOLS, 'stream': True,
+        })
 
     def _absorb_usage(self, usage: dict | None) -> None:
         """SSE 帧内 usage 是累计值（覆盖取最新帧）；趟间累加在 _merge_turn_usage。"""

@@ -17,7 +17,7 @@ header{height:48px;display:flex;align-items:center;gap:16px;padding:0 16px;borde
 .grow{flex:1}
 nav{display:flex;gap:4px}nav button{border:0;background:transparent;color:var(--dim);letter-spacing:.1em;padding:8px 10px}
 nav button.selected{color:#fff;border-bottom:1px solid #fff}
-main{height:calc(100vh - 48px);min-height:560px;display:grid;grid-template-columns:280px minmax(380px,1fr) 340px;grid-template-rows:minmax(0,1fr) 195px;gap:1px;background:var(--line)}
+main{height:calc(100vh - 48px);min-height:640px;display:grid;grid-template-columns:280px minmax(380px,1fr) 340px;grid-template-rows:minmax(0,1fr) 240px;gap:1px;background:var(--line)}
 aside,.center,.timeline{background:var(--bg);min-width:0;min-height:0}
 aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-direction:column;overflow:hidden}
 .panel-title{font-size:10px;color:var(--dim);letter-spacing:.14em;margin:0 0 10px;font-weight:600}
@@ -25,8 +25,8 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .trace-list,.memory-list,.event-list{display:flex;flex-direction:column;gap:2px}
 .entry{width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--faint);padding:9px 4px}
 .entry.selected{border-left:2px solid var(--gold);padding-left:8px;background:rgba(255,255,255,.04)}
-.entry strong{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-.entry .reply{color:#bdbdbd;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
+.entry strong{display:block;font-weight:500;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font-size:12px}
+.entry .reply{color:#bdbdbd;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;margin-top:2px;max-height:150px;overflow:auto}
 .entry small{color:var(--dim);display:block;margin-top:3px;font-size:10px}
 .chip{display:inline-block;border:1px solid var(--line);border-radius:9px;padding:0 7px;font-size:10px;margin-right:4px}
 .chip.running{color:var(--gold);border-color:var(--gold)}
@@ -38,7 +38,7 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .event.key{border-color:rgba(217,180,91,.55);color:#cfc3a0}
 .center-head{display:flex;align-items:center;gap:12px;min-height:40px;padding:0 14px;border-bottom:1px solid var(--faint)}
 .center-head strong{font-size:10px;letter-spacing:.14em}.center-head span{color:var(--dim)}
-#topology{display:block;width:100%;flex:1;min-height:240px}
+#topology{display:block;width:100%;flex:none;height:470px}
 .zone{fill:rgba(255,255,255,.022);stroke:var(--faint)}
 .zone-label{fill:var(--dim);font:10px "Segoe UI";letter-spacing:.2em}
 .edge{stroke:rgba(255,255,255,.16);stroke-width:1;fill:none}
@@ -57,13 +57,13 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .node.unknown .shape{stroke-dasharray:3 3;opacity:.75}
 .node.error .shape{stroke:var(--red)}
 @keyframes pulse{50%{filter:drop-shadow(0 0 1px #fff);opacity:.7}}
-.dialogue-flow{display:flex;gap:6px;align-items:stretch;padding:9px 14px 11px;border-top:1px solid var(--faint);overflow-x:auto;min-height:104px;flex:none}
-.flow-card{min-width:170px;max-width:250px;background:#0b0c0e;border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer;display:flex;flex-direction:column;gap:3px;flex:none}
+.dialogue-flow{display:flex;gap:6px;align-items:stretch;padding:9px 14px 11px;border-top:1px solid var(--faint);overflow-x:auto;min-height:104px;max-height:240px;flex:none}
+.flow-card{min-width:170px;max-width:340px;background:#0b0c0e;border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer;display:flex;flex-direction:column;gap:3px;flex:none}
 .flow-card:hover{border-color:#fff}
 .flow-card.empty{opacity:.55;cursor:default}
 .flow-card.selected{border-color:var(--gold)}
 .flow-title{font-size:9px;color:var(--gold);letter-spacing:.14em}
-.flow-main{font-size:13px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-line;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.flow-main{font-size:13px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-line;max-height:170px;overflow:auto}
 .flow-sub{font-size:10px;color:var(--dim)}
 .flow-arrow{align-self:center;color:var(--dim);font-size:14px;flex:none}
 .inspector{grid-column:3;grid-row:1;overflow:auto;padding:12px}
@@ -74,9 +74,15 @@ aside{padding:12px;overflow:auto}.center{position:relative;display:flex;flex-dir
 .card.error-card{border-color:var(--red)}
 .card.error-card .card-title{color:var(--red)}
 .kv{display:grid;grid-template-columns:92px 1fr;gap:5px 8px;margin:0}.kv span:nth-child(odd){color:var(--dim)}
+.kv span.mono{overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap}
+.msg-role{font-size:10px;color:var(--dim);letter-spacing:.1em;margin:10px 0 4px}
+.field-row-block{margin:8px 0}
+.field-row-label{font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:4px}
+.field-row-value{color:#d8d8d8;white-space:pre-wrap;overflow-wrap:anywhere}
 .raw summary{cursor:pointer;color:var(--dim);font-size:10px;letter-spacing:.08em;margin:10px 0 4px;list-style:none}
 .raw summary:hover{color:#fff}
-.raw pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#0b0c0e;border:1px solid var(--faint);padding:8px;margin:0;max-height:220px;overflow:auto;font-size:10px;line-height:1.5}
+.raw pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#0b0c0e;border:1px solid var(--faint);padding:8px;margin:0;max-height:none;overflow:auto;font-size:10px;line-height:1.5}
+.card pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#0b0c0e;border:1px solid var(--faint);padding:8px;margin:0;font-size:11px;line-height:1.55;max-height:none}
 .span-row{width:100%;text-align:left;background:transparent;border:1px solid var(--faint);border-radius:3px;padding:6px 8px;margin-top:5px;display:block}
 .span-row:hover{border-color:#fff}
 .span-row .t{color:#d8d8d8}.span-row .m{color:var(--dim);font-size:10px;margin-left:8px}
@@ -163,7 +169,7 @@ main.memory-view .timeline{display:none}
   </aside>
   <section class="center">
     <div class="center-head"><strong id="viewTitle">实时拓扑</strong><span id="viewSub">仅显示真实运行状态</span><span class="grow"></span><span id="topologyNote">当前没有执行中的对话</span><span id="watermark" class="mono">事件序号 —</span></div>
-    <svg id="topology" viewBox="0 0 920 440" role="img" aria-label="运行拓扑"></svg>
+    <svg id="topology" viewBox="0 0 920 440" preserveAspectRatio="xMidYMid meet" role="img" aria-label="运行拓扑"></svg>
     <div id="dialogueFlow" class="dialogue-flow"><span class="empty">选择左侧一条对话记录，这里会展示：说了什么 → 识别与说话人 → 管家的回复 → 播报情况。</span></div>
     <div id="memoryCanvas" class="memory-canvas">
       <h2>记忆数据 / 来源：管家主记忆库</h2>
@@ -299,6 +305,7 @@ main.memory-view .timeline{display:none}
     durationMs: '耗时',
     speaker: '说话人',
     logicalInput: '发给模型的文本',
+    request: '发给模型的完整请求',
     providerPayload: '原始请求载荷',
     reply: '管家的回复',
     spoken: '已播报的句子',
@@ -307,6 +314,10 @@ main.memory-view .timeline{display:none}
     error: '错误',
     content: '模型回复内容',
     usage: '本次用量',
+    rounds: '模型往返记录',
+    round: '第几趟',
+    assistant: '模型原始输出',
+    toolResults: '工具执行结果',
     interrupted: '是否被打断',
     prompt: '提示词',
     response: '模型返回',
@@ -316,6 +327,9 @@ main.memory-view .timeline{display:none}
     durationSeconds: (value) => `${Number(value).toFixed(2)} 秒`,
     durationMs: (value) => `${value} 毫秒`,
     sampleRate: (value) => `${value} Hz`,
+    usage: (value) => value && typeof value === 'object'
+      ? `输入 ${value.input ?? 0} · 输出 ${value.output ?? 0} · 缓存命中 ${value.cacheRead ?? 0} tokens`
+      : String(value ?? '—'),
   };
   const byId = (id) => document.getElementById(id);
   const make = (tag, className, text) => {
@@ -353,7 +367,7 @@ main.memory-view .timeline{display:none}
     if (FIELD_FORMAT[key]) return FIELD_FORMAT[key](value);
     if (typeof value === 'boolean') return value ? '是' : '否';
     if (Array.isArray(value)) return value.map((item) => typeof item === 'string' ? item : JSON.stringify(item)).join(' / ');
-    if (typeof value === 'object') return JSON.stringify(value);
+    if (typeof value === 'object') return pretty(value); // 对象字段不再压成一行 JSON
     return String(value);
   };
   const truncate = (text, limit = 90) => {
@@ -399,9 +413,9 @@ main.memory-view .timeline{display:none}
     for (const trace of state.traces) {
       const button = make('button', `entry${trace.traceId === state.selectedTrace?.traceId ? ' selected' : ''}`);
       button.type = 'button';
-      button.append(make('strong', '', truncate(trace.input?.userText ?? trace.traceId, 60)));
+      button.append(make('strong', '', trace.input?.userText ?? trace.traceId));
       const reply = trace.output?.reply;
-      if (reply) button.append(make('span', 'reply', `↳ ${truncate(reply, 70)}`));
+      if (reply) button.append(make('span', 'reply', `↳ ${reply}`));
       const meta = make('small', '');
       meta.append(chip(trace.status));
       meta.append(document.createTextNode(`${time(trace.startedAt)} · ${duration(trace.durationMs)}`));
@@ -455,19 +469,19 @@ main.memory-view .timeline{display:none}
   /* ---------- 拓扑：分区布局 + 真实调用链 ---------- */
 
   const NODE_LAYOUT = {
-    'voice-runtime': { x: 93, y: 62, shape: 'process', sub: '承载语音链路' },
-    'audio-capture': { x: 93, y: 138, shape: 'io', sub: '麦克风收音' },
-    'vad': { x: 93, y: 208, shape: 'io', sub: '有人在说话' },
-    'asr': { x: 93, y: 278, shape: 'io', sub: '语音转文字' },
-    'speaker-recognition': { x: 93, y: 348, shape: 'io', sub: '声纹认人' },
-    'agent-runtime': { x: 350, y: 62, shape: 'process', sub: '对话总入口' },
-    'main-agent': { x: 350, y: 222, shape: 'agent', sub: '理解与决策' },
-    'worker-runtime': { x: 350, y: 378, shape: 'process', sub: '后台任务' },
-    'memory-engine': { x: 628, y: 82, shape: 'memory', sub: '长期记忆' },
-    'model-provider': { x: 628, y: 194, shape: 'model', sub: '大模型' },
-    'tool-router': { x: 628, y: 306, shape: 'tool', sub: '能力工具' },
-    'tts': { x: 845, y: 140, shape: 'io', sub: '文字转语音' },
-    'audio-playback': { x: 845, y: 262, shape: 'io', sub: '念给你听' },
+    'voice-runtime': { x: 93, y: 86, shape: 'process', sub: '承载语音链路' },
+    'audio-capture': { x: 93, y: 160, shape: 'io', sub: '麦克风收音' },
+    'vad': { x: 93, y: 228, shape: 'io', sub: '有人在说话' },
+    'asr': { x: 58, y: 296, shape: 'io', sub: '语音转文字' },
+    'speaker-recognition': { x: 154, y: 296, shape: 'io', sub: '声纹认人' },
+    'agent-runtime': { x: 350, y: 86, shape: 'process', sub: '对话总入口' },
+    'main-agent': { x: 350, y: 232, shape: 'agent', sub: '理解与决策' },
+    'worker-runtime': { x: 430, y: 368, shape: 'process', sub: '后台任务' },
+    'memory-engine': { x: 628, y: 96, shape: 'memory', sub: '长期记忆' },
+    'model-provider': { x: 628, y: 220, shape: 'model', sub: '大模型' },
+    'tool-router': { x: 628, y: 316, shape: 'tool', sub: '能力工具' },
+    'tts': { x: 845, y: 150, shape: 'io', sub: '文字转语音' },
+    'audio-playback': { x: 845, y: 272, shape: 'io', sub: '念给你听' },
   };
   const TOPOLOGY_EDGES = [
     ['voice-runtime', 'agent-runtime', ''],
@@ -549,7 +563,16 @@ main.memory-view .timeline{display:none}
       let d;
       if (from.x === to.x) d = `M${from.x} ${from.y + (from.shape === 'agent' ? 46 : 20)} V${to.y - (to.shape === 'agent' ? 46 : 20)}`;
       else if (from.y === to.y) d = `M${from.x + (from.shape === 'agent' ? 46 : 44)} ${from.y} H${to.x - (to.shape === 'agent' ? 46 : 44)}`;
-      else d = `M${from.x} ${from.y} C${(from.x + to.x) / 2} ${from.y} ${(from.x + to.x) / 2} ${to.y} ${to.x} ${to.y}`;
+      else {
+        const dx = to.x - from.x, dy = to.y - from.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const sx = from.x + (from.shape === 'agent' ? ux * 46 : 0);
+        const sy = from.y + (from.shape === 'agent' ? uy * 46 : 0);
+        const ex = to.x - (to.shape === 'agent' ? ux * 46 : 0);
+        const ey = to.y - (to.shape === 'agent' ? uy * 46 : 0);
+        d = `M${sx} ${sy} C${(sx + ex) / 2} ${sy} ${(sx + ex) / 2} ${ey} ${ex} ${ey}`;
+      }
       path.setAttribute('d', d);
       svg.append(path);
     }
@@ -677,6 +700,57 @@ main.memory-view .timeline{display:none}
     return section;
   }
 
+  function messageBlockCard(label, messages) {
+    // 原始 prompt/模型输出按角色整段展示：用户要看的是发给模型的原文，不是摘要
+    const section = cardSection(label);
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const role = message?.role ?? 'unknown';
+      const text = typeof message?.content === 'string' ? message.content : pretty(message?.content);
+      const roleLabel = { system: '系统底盘', user: '用户（含画面备注）', assistant: '模型', tool: '工具结果' }[role] ?? role;
+      section.append(make('div', 'msg-role', roleLabel));
+      section.append(make('pre', '', text || '（空）'));
+    }
+    return section;
+  }
+
+  function modelRoundCards(span) {
+    // 直连模型调用专用：逐趟展开模型原始输出与工具往返，并常驻展示发给模型的全部原文
+    const cards = [];
+    const requestMessages = span.input?.request?.messages;
+    if (Array.isArray(requestMessages) && requestMessages.length) {
+      cards.push(messageBlockCard('发给模型的完整内容（按角色原文）', requestMessages));
+    }
+    const roundList = span.output?.rounds;
+    if (roundList?.length) {
+      for (const round of roundList) {
+        const section = cardSection(`第 ${round.round ?? '?'} 趟模型往返`);
+        section.append(fieldRow('模型原始输出', round.assistant?.content));
+        const toolCalls = round.assistant?.tool_calls ?? [];
+        for (const call of toolCalls) {
+          section.append(fieldRow(`调用工具 ${call.function?.name ?? '?'}`, call.function?.arguments));
+        }
+        for (const item of round.toolResults ?? []) {
+          section.append(fieldRow(`工具 ${item.name} 返回`, item.result));
+        }
+        const usage = round.usage ?? {};
+        const usageText = usage.input || usage.output
+          ? `输入 ${usage.input ?? 0} · 输出 ${usage.output ?? 0} · 缓存命中 ${usage.cacheRead ?? 0} tokens`
+          : '';
+        if (usageText) section.append(fieldRow('这一趟用量', usageText));
+        cards.push(section);
+      }
+    }
+    return cards;
+  }
+
+  function fieldRow(label, value) {
+    const section = make('div', 'field-row-block');
+    section.append(make('div', 'field-row-label', label));
+    if (value == null || value === '') section.append(make('div', 'field-row-value', '—'));
+    else section.append(make('pre', '', typeof value === 'string' ? value : pretty(value)));
+    return section;
+  }
+
   function fieldCard(title, fields, rawEntries = [], className = '') {
     const section = cardSection(title, className);
     const kv = make('div', 'kv');
@@ -704,6 +778,7 @@ main.memory-view .timeline{display:none}
     const used = new Set();
     for (const source of [span.input, span.output]) {
       for (const [key, value] of Object.entries(source ?? {})) {
+        if (key === 'request' || key === 'rounds') continue; // 原始请求与往返有专用全文渲染，不挤摘要卡
         if (!used.has(key)) { used.add(key); rows.push([FIELD_LABELS[key] ?? key, fmtField(key, value)]); }
       }
     }
@@ -751,7 +826,7 @@ main.memory-view .timeline{display:none}
       },
       {
         title: '管家的回复',
-        text: reply || (running ? '思考中…' : (main?.error ? `出错了：${truncate(main.error, 60)}` : '这一轮没有生成回复')),
+        text: reply || (running ? '思考中…' : (main?.error ? `出错了：${main.error}` : '这一轮没有生成回复')),
         sub: [main ? `状态：${statusLabel(main.status)}` : (running ? '' : '没有主智能体步骤记录'),
           main ? `耗时：${duration(main.durationMs)}` : ''].filter(Boolean).join(' · '),
         span: main,
@@ -761,7 +836,7 @@ main.memory-view .timeline{display:none}
         title: '语音播报',
         text: playback
           ? (playback.output?.interrupted ? '被打断，没播完' : '已播报完成')
-          : (tts ? (tts.output?.text ? `播报内容：${truncate(tts.output.text, 40)}` : '已合成语音') : (running ? '等待播报…' : '这一轮没有语音播报记录')),
+          : (tts ? (tts.output?.text ? `播报内容：${tts.output.text}` : '已合成语音') : (running ? '等待播报…' : '这一轮没有语音播报记录')),
         sub: [
           tts?.output?.durationMs != null ? `合成耗时 ${duration(tts.output.durationMs)}` : '',
           playback ? `播放耗时 ${duration(playback.durationMs)}` : '',
@@ -837,6 +912,7 @@ main.memory-view .timeline{display:none}
     ])];
     const fields = spanFields(span);
     if (fields.length) cards.push(fieldCard('这一步做了什么', fields));
+    if (span.nodeId === 'model-provider') cards.push(...modelRoundCards(span));
     if (span.error) {
       const errorCard = cardSection('出错了', 'error-card');
       errorCard.append(make('pre', 'error', span.error));
@@ -872,8 +948,8 @@ main.memory-view .timeline{display:none}
       const cards = [];
       const reply = trace.output?.reply;
       cards.push(fieldCard('这一轮对话', [
-        ['用户说了', truncate(trace.input?.userText ?? '（无文本）', 120)],
-        ['管家回复', reply ? truncate(reply, 160) : (trace.status === 'running' ? '思考中…' : '—')],
+        ['用户说了', trace.input?.userText ?? '（无文本）'],
+        ['管家回复', reply || (trace.status === 'running' ? '思考中…' : '—')],
         ['说话人', (lastSpan(trace, 'speaker-recognition')?.output?.speaker) ?? '—'],
         ['模型', trace.input?.model ?? '—'],
       ]));
